@@ -1,0 +1,13 @@
+# Local third-party barcode datasets (keep out of repo)
+InventBar/
+ParcelBar/
+
+# Generated debug captures & fixtures
+tests/fixtures/generated/
+tests/fixtures/roi_debug/
+*.pgm
+*.ppm
+
+# OS / Editor artifacts
+.DS_Store
+Thumbs.db

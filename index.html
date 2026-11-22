@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#090d14">
+  <title>Sub-100ms Code 128 Scanner</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #090d14;
+      color: #f1f5f9;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      -webkit-font-smoothing: antialiased;
+    }
+    #app {
+      position: relative;
+      width: 100vw;
+      height: 100dvh;
+      overflow: hidden;
+      background: #090d14;
+    }
+    #camera-feed,
+    #hud-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    #camera-feed {
+      object-fit: cover;
+      background: #000;
+    }
+    #hud-overlay {
+      pointer-events: none;
+    }
+
+    /* Top Telemetry HUD */
+    .hud-top {
+      position: absolute;
+      top: env(safe-area-inset-top, 0px);
+      left: 0;
+      right: 0;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: linear-gradient(180deg, rgba(9, 13, 20, 0.90) 0%, rgba(9, 13, 20, 0.50) 80%, transparent 100%);
+      pointer-events: none;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      min-width: 0;
+    }
+    #status-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #status-dot {
+      flex: 0 0 auto;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    #status-dot[data-state="scanning"] { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    #status-dot[data-state="starting"] { background: #f59e0b; }
+    #status-dot[data-state="error"] { background: #ef4444; }
+    #status-dot[data-state="paused"] { background: #38bdf8; }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 4px;
+    }
+    .metric {
+      background: rgba(15, 23, 42, 0.76);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 6px;
+      padding: 4px 6px;
+    }
+    .metric-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      color: #94a3b8;
+      display: block;
+    }
+    .metric-val {
+      font-size: 12px;
+      font-weight: 700;
+      color: #e2e8f0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+    }
+    .metric-val.accent { color: #38bdf8; }
+    .metric-val.good { color: #4ade80; }
+
+    /* Bottom Payload, History & Controls */
+    .hud-bottom {
+      position: absolute;
+      bottom: env(safe-area-inset-bottom, 0px);
+      left: 0;
+      right: 0;
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: linear-gradient(0deg, rgba(9, 13, 20, 0.95) 0%, rgba(9, 13, 20, 0.68) 78%, transparent 100%);
+    }
+
+    /* Decode History Panel */
+    #history-panel {
+      background: rgba(15, 23, 42, 0.86);
+      border: 1px solid rgba(148, 163, 184, 0.26);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+      font-size: 11px;
+      font-weight: 700;
+      color: #cbd5e1;
+      gap: 8px;
+    }
+    .history-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .btn-mini {
+      min-height: 24px;
+      padding: 0 8px;
+      font-size: 10px;
+      border-radius: 5px;
+      flex: 0 0 auto;
+    }
+    #history-list {
+      list-style: none;
+      margin: 0;
+      padding: 4px 6px;
+      max-height: 132px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #history-panel.collapsed #history-list {
+      display: none;
+    }
+    #history-panel.collapsed .history-header {
+      border-bottom: none;
+    }
+    .history-empty {
+      font-size: 11px;
+      color: #64748b;
+      padding: 6px 4px;
+      text-align: center;
+    }
+    .history-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      background: rgba(30, 41, 59, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      cursor: pointer;
+    }
+    .history-item:hover {
+      border-color: rgba(56, 189, 248, 0.5);
+    }
+    .history-payload {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f8fafc;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .history-meta {
+      flex: 0 0 auto;
+      font-size: 10px;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .history-badge {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(34, 197, 94, 0.2);
+      color: #4ade80;
+      font-weight: 700;
+    }
+
+    #payload-card {
+      background: rgba(15, 23, 42, 0.86);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 10px;
+      padding: 9px 12px;
+      transition: border-color 140ms ease, background-color 140ms ease;
+    }
+    #payload-card.locked {
+      border-color: #22c55e;
+      background: rgba(6, 40, 24, 0.88);
+    }
+    #payload-card.flash {
+      animation: lockFlash 240ms ease-out;
+    }
+    @keyframes lockFlash {
+      0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.85); }
+      100% { box-shadow: 0 0 0 14px rgba(34, 197, 94, 0); }
+    }
+    #payload-value {
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: #f8fafc;
+      word-break: break-all;
+    }
+    #payload-meta {
+      margin-top: 2px;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    #payload-hex {
+      margin-top: 3px;
+      font-size: 10px;
+      color: #7dd3fc;
+      word-break: break-all;
+      line-height: 1.35;
+    }
+
+    /* Intermediate Pipeline Debug Drawer */
+    #debug-drawer {
+      position: absolute;
+      top: 122px;
+      right: 12px;
+      width: min(370px, calc(100vw - 24px));
+      max-height: calc(100dvh - 300px);
+      overflow-y: auto;
+      background: rgba(9, 13, 20, 0.92);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      border-radius: 10px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 20;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    }
+    #debug-drawer[hidden] {
+      display: none;
+    }
+    .dbg-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #38bdf8;
+      font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+    }
+    .dbg-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .dbg-card {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 6px;
+      padding: 5px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .dbg-card canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #020617;
+      border-radius: 4px;
+      image-rendering: pixelated;
+    }
+    .dbg-caption {
+      font-size: 9px;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+    }
+    #dbg-hex-box {
+      font-size: 10px;
+      color: #cbd5e1;
+      line-height: 1.4;
+      word-break: break-all;
+      background: #020617;
+      border-radius: 4px;
+      padding: 6px;
+    }
+    .controls {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button {
+      flex: 1 1 auto;
+      min-height: 38px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(30, 41, 59, 0.92);
+      color: #f8fafc;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.primary {
+      background: #0ea5e9;
+      border-color: #38bdf8;
+      color: #04121d;
+    }
+    button.active {
+      background: rgba(34, 197, 94, 0.22);
+      border-color: #22c55e;
+      color: #86efac;
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <main id="app">
+    <video id="camera-feed" playsinline muted autoplay></video>
+    <canvas id="hud-overlay"></canvas>
+
+    <section class="hud-top" aria-label="Scanner Telemetry HUD">
+      <div class="status-row">
+        <div class="status-left">
+          <span id="status-dot" data-state="idle"></span>
+          <span id="status-text">Initializing...</span>
+        </div>
+        <span id="hud-fps">0 fps</span>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric">
+          <span class="metric-label">t_capture</span>
+          <span id="hud-t-capture" class="metric-val">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">t_roi</span>
+          <span id="hud-t-roi" class="metric-val accent">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">t_decode</span>
+          <span id="hud-t-decode" class="metric-val accent">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">t_total</span>
+          <span id="hud-t-total" class="metric-val good">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">θ / Agree</span>
+          <span class="metric-val"><span id="hud-theta">--</span> · <span id="hud-agree">0x</span></span>
+        </div>
+      </div>
+
+      <div class="metrics-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+        <div class="metric">
+          <span class="metric-label">Resolution</span>
+          <span id="hud-res" class="metric-val">1280×720</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Focus Mode</span>
+          <span id="hud-focus" class="metric-val">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Capture Path</span>
+          <span id="hud-path" class="metric-val">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="hud-bottom">
+      <div id="history-panel">
+        <div class="history-header">
+          <span id="history-title">Cart Sweep: 0 unique (0 scans)</span>
+          <div class="history-actions">
+            <button id="btn-history-toggle" class="btn-mini" type="button">Hide</button>
+            <button id="btn-history-copy" class="btn-mini" type="button" disabled>Copy All</button>
+            <button id="btn-history-clear" class="btn-mini" type="button" disabled>New Cart</button>
+          </div>
+        </div>
+        <ul id="history-list">
+          <li class="history-empty">No barcodes decoded yet.</li>
+        </ul>
+      </div>
+
+      <div id="payload-card">
+        <div id="payload-value">Waiting for Code 128…</div>
+        <div id="payload-meta">Allowlist: CODE_128 • Multi-barcode sweep (Mod 103 + ≥2 consensus)</div>
+        <div id="payload-hex" hidden></div>
+      </div>
+
+      <div class="controls">
+        <button id="btn-start" class="primary" type="button">Start Camera</button>
+        <button id="btn-res" type="button">720p</button>
+        <button id="btn-switch-cam" type="button" hidden>Switch Cam</button>
+        <button id="btn-sound" class="active" type="button">Sound ON</button>
+        <button id="btn-debug" type="button">Debug View</button>
+        <button id="btn-inventbar" type="button">Random InventBar</button>
+        <button id="btn-uboat" type="button">U-Boat 4×4 / 2×2</button>
+        <button id="btn-synth" type="button">Next Synthetic</button>
+        <button id="btn-file" type="button">Open Image</button>
+        <button id="btn-torch" type="button" disabled>Torch</button>
+        <button id="btn-capture" type="button" disabled>Capture .pgm</button>
+        <input id="file-input" type="file" accept="image/*" hidden>
+      </div>
+    </section>
+
+    <aside id="debug-drawer" aria-label="Intermediate Pipeline Inspector" hidden>
+      <div class="dbg-title">
+        <span>Pipeline Intermediates</span>
+        <span id="dbg-dims">--</span>
+      </div>
+      <div class="dbg-grid">
+        <div class="dbg-card">
+          <div class="dbg-caption"><span>1a. Downsampled Y</span><span id="dbg-ds-info">--</span></div>
+          <canvas id="dbg-luma" width="160" height="90"></canvas>
+        </div>
+        <div class="dbg-card">
+          <div class="dbg-caption"><span>1b. Tensor θ / Top-K</span><span id="dbg-cluster-info">--</span></div>
+          <canvas id="dbg-tensor" width="160" height="90"></canvas>
+        </div>
+      </div>
+      <div class="dbg-card">
+        <div class="dbg-caption">
+          <span>2–3. Scanline Waveform + Extracted Bar/Space Strip</span>
+          <span id="dbg-run-info">--</span>
+        </div>
+        <canvas id="dbg-wave" width="340" height="92"></canvas>
+      </div>
+      <div class="dbg-card">
+        <div class="dbg-caption"><span>4–5. Hex &amp; Code 128 Raw Symbols</span></div>
+        <div id="dbg-hex-box">Waiting for decode…</div>
+      </div>
+    </aside>
+  </main>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
