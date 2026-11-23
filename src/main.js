@@ -949,10 +949,23 @@ function drawHudOverlay(msg) {
 async function pumpVideoFrame() {
   if (app.state !== 'SCANNING') return;
 
+  // Schedule next camera tick BEFORE awaiting VideoFrame.copyTo() so we never miss a tick
+  scheduleNextFrame();
+
   if (!app.workerBusy && els.video.readyState >= 2) {
     app.workerBusy = true;
     try {
       const cap = await extractLumaFrame(els.video);
+      if (app.state !== 'SCANNING') {
+        if (cap.isWebCodecsScratch) {
+          app.webcodecsBuf = new Uint8Array(cap.buffer);
+          app.webcodecsBufSize = cap.buffer.byteLength;
+        } else {
+          app.lumaBuffer = new Uint8Array(cap.buffer);
+        }
+        app.workerBusy = false;
+        return;
+      }
       lastTransferredWasWebCodecs = cap.isWebCodecsScratch;
       const frameId = ++app.frameId;
       app.worker.postMessage(
@@ -973,8 +986,6 @@ async function pumpVideoFrame() {
       app.workerBusy = false;
     }
   }
-
-  scheduleNextFrame();
 }
 
 function scheduleNextFrame() {
