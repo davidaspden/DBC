@@ -53,6 +53,7 @@ export class Code128Scanner {
     this._torchOn = false;
 
     this._worker = null;
+    this._workerBlobUrl = null;
     this._workerBusy = false;
     this._frameId = 0;
     this._rafHandle = 0;
@@ -97,9 +98,20 @@ export class Code128Scanner {
 
   _ensureWorker() {
     if (this._worker) return this._worker;
-    const worker = new Worker(new URL('./worker/scanner.worker.js', import.meta.url), {
-      type: 'module',
-    });
+    const workerUrl = new URL('./worker/scanner.worker.js', import.meta.url);
+    let worker;
+    if (typeof window !== 'undefined' && workerUrl.origin !== window.location.origin) {
+      // Cross-origin ESM bootstrapper: lets any site (including localhost or another domain)
+      // import `https://davidaspden.github.io/DBC/src/scanner.js` as a single source of truth
+      // without hitting the browser's same-origin `new Worker()` restriction.
+      const blob = new Blob([`import ${JSON.stringify(workerUrl.href)};`], {
+        type: 'text/javascript',
+      });
+      this._workerBlobUrl = URL.createObjectURL(blob);
+      worker = new Worker(this._workerBlobUrl, { type: 'module' });
+    } else {
+      worker = new Worker(workerUrl, { type: 'module' });
+    }
     worker.onmessage = this._boundOnWorkerMessage;
     worker.onerror = this._boundOnWorkerError;
     this._worker = worker;
@@ -214,6 +226,10 @@ export class Code128Scanner {
     if (this._worker) {
       this._worker.terminate();
       this._worker = null;
+    }
+    if (this._workerBlobUrl) {
+      URL.revokeObjectURL(this._workerBlobUrl);
+      this._workerBlobUrl = null;
     }
     this._lumaBuffer = null;
     this._webcodecsBuf = null;
