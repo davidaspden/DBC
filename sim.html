@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#090d14">
+  <title>DBC — WebGL 4×4 Tote Wall Simulator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg: #090d14;
+      --surface: #0f172a;
+      --surface-2: #162033;
+      --border: rgba(148, 163, 184, 0.24);
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --primary: #0ea5e9;
+      --green: #22c55e;
+      --green-bg: rgba(22, 163, 74, 0.18);
+      --amber: #f59e0b;
+      --red: #ef4444;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    .layout {
+      max-width: 1420px;
+      margin: 0 auto;
+      padding: 12px 14px 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 370px;
+      gap: 14px;
+      align-items: start;
+    }
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .spec-pill {
+      font-size: 11px;
+      color: #cbd5e1;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px 9px;
+    }
+    .nav-links {
+      display: flex;
+      gap: 8px;
+    }
+    .nav-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 5px 10px;
+      border-radius: 7px;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      background: rgba(14, 165, 233, 0.1);
+    }
+
+    /* Left Column: Viewport + Telemetry + 4x4 Wall Map */
+    .stage-col {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 0;
+    }
+    .viewport-shell {
+      position: relative;
+      width: 100%;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      max-height: 70vh;
+      touch-action: none;
+      cursor: grab;
+    }
+    .viewport-shell:active { cursor: grabbing; }
+    .canvas-frame {
+      position: relative;
+      width: 100%;
+      max-height: 70vh;
+      aspect-ratio: 16 / 9;
+      background: #020617;
+    }
+    #gl-canvas, #hud-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #hud-canvas { pointer-events: none; }
+
+    .metrics-strip {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 6px;
+    }
+    @media (max-width: 640px) {
+      .metrics-strip {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+    .metric {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+    }
+    .metric-label {
+      display: block;
+      font-size: 9px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .metric-val {
+      display: block;
+      font-size: 13px;
+      font-weight: 800;
+      color: #f8fafc;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .metric-val.good { color: #4ade80; }
+    .metric-val.warn { color: #fbbf24; }
+    .metric-val.bad { color: #f87171; }
+    .metric-val.accent { color: var(--accent); }
+
+    /* 4x4 Wall Coverage Scorecard */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 11px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .wall-grid-wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 170px;
+      gap: 12px;
+      align-items: center;
+    }
+    @media (max-width: 640px) {
+      .wall-grid-wrap { grid-template-columns: 1fr; }
+    }
+    .wall-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .cell-tile {
+      position: relative;
+      background: var(--surface-2);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 7px;
+      padding: 6px 5px;
+      text-align: center;
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    .cell-tile.decoded {
+      background: var(--green-bg);
+      border-color: var(--green);
+    }
+    .cell-tile.active-target {
+      box-shadow: 0 0 0 2px var(--accent);
+    }
+    .cell-id {
+      font-size: 11px;
+      font-weight: 800;
+      color: #f8fafc;
+    }
+    .cell-meta {
+      font-size: 9px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .cell-tile.decoded .cell-meta { color: #86efac; }
+
+    #minimap-canvas {
+      width: 100%;
+      aspect-ratio: 56 / 64;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      display: block;
+    }
+
+    /* Right Column: Controls */
+    .controls-col {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button {
+      flex: 1 1 auto;
+      min-height: 36px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: #1e293b;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--primary);
+      border-color: var(--accent);
+      color: #04121d;
+    }
+    button.chip {
+      min-height: 28px;
+      font-size: 11px;
+      padding: 0 8px;
+    }
+    button.chip.active {
+      background: rgba(56, 189, 248, 0.22);
+      border-color: var(--accent);
+      color: #e0f2fe;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .field-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .field-val {
+      font-weight: 700;
+      color: var(--accent);
+    }
+    select, input[type="range"] {
+      width: 100%;
+    }
+    select {
+      background: #020617;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 7px 8px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    input[type="range"] {
+      accent-color: var(--primary);
+      margin: 0;
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .check-row label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .progress-track {
+      height: 5px;
+      background: #020617;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--primary);
+      transition: width 60ms linear;
+    }
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="layout">
+    <header>
+      <div class="title-group">
+        <h1>WebGL 4×4 Tote Wall Simulator</h1>
+        <span class="spec-pill mono">14″×16″ totes (4×4 = 56″×64″) · centered 2″×6″ vertical Code 128</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="./index.html">&larr; Live Scanner</a>
+        <a class="nav-link" href="./diag.html">Device Check</a>
+      </nav>
+    </header>
+
+    <section class="stage-col">
+      <div id="viewport-shell" class="viewport-shell" title="Drag to pan (switches to Manual); scroll to zoom Z">
+        <div id="canvas-frame" class="canvas-frame">
+          <canvas id="gl-canvas"></canvas>
+          <canvas id="hud-canvas"></canvas>
+        </div>
+      </div>
+
+      <div class="progress-track" aria-label="Path progress">
+        <div id="path-progress" class="progress-fill"></div>
+      </div>
+
+      <div class="metrics-strip mono">
+        <div class="metric">
+          <span class="metric-label">Coverage</span>
+          <span id="m-cov" class="metric-val accent">0 / 16</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Sweep Time</span>
+          <span id="m-time" class="metric-val">0.00 s</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Worker t_total</span>
+          <span id="m-worker" class="metric-val good">-- ms</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Sim FPS</span>
+          <span id="m-fps" class="metric-val">0 fps</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Barcode PPM</span>
+          <span id="m-ppm" class="metric-val good">-- ppm</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Blur / FP</span>
+          <span id="m-blur" class="metric-val">0 px · 0 FP</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>4×4 Tote Decode Matrix (Real DBC Worker)</span>
+          <span id="m-lock-summary" class="mono">Waiting for first lock…</span>
+        </div>
+        <div class="wall-grid-wrap">
+          <div id="wall-grid" class="wall-grid"></div>
+          <canvas id="minimap-canvas" width="224" height="256" aria-label="Wall camera footprint minimap"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <aside class="controls-col">
+      <div class="card">
+        <div class="card-head">
+          <span>Playback &amp; Presets</span>
+          <span id="gl-badge" class="mono">WebGL</span>
+        </div>
+        <div class="btn-row">
+          <button id="btn-play" class="primary" type="button">Pause</button>
+          <button id="btn-restart" type="button">Restart</button>
+          <button id="btn-step" type="button">Step +1</button>
+          <button id="btn-clear" type="button">Clear 16</button>
+        </div>
+        <div class="btn-row">
+          <button class="chip" data-preset="a53-8-720" type="button">A53 8″ Slide 720p</button>
+          <button class="chip" data-preset="a53-8-1080" type="button">A53 8″ Slide 1080p</button>
+          <button class="chip" data-preset="tele-30" type="button">3× Tele 30″ Pan</button>
+          <button class="chip" data-preset="full-wall" type="button">Full Wall 48″</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span>Path &amp; Speed</span></div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="sel-path">Camera path</label>
+            <span id="lbl-path-len" class="field-val mono">-- in</span>
+          </div>
+          <select id="sel-path"></select>
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="rng-speed">Sweep speed</label>
+            <span id="lbl-speed" class="field-val mono">18 in/s</span>
+          </div>
+          <input id="rng-speed" type="range" min="4" max="70" step="1" value="18">
+          <div class="btn-row">
+            <button class="chip speed-chip" data-speed="10" type="button">10 in/s</button>
+            <button class="chip speed-chip active" data-speed="18" type="button">18 in/s</button>
+            <button class="chip speed-chip" data-speed="30" type="button">30 in/s</button>
+            <button class="chip speed-chip" data-speed="50" type="button">50 in/s</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="sel-fps">Simulated camera FPS cap</label>
+          </div>
+          <select id="sel-fps">
+            <option value="0">Uncapped (Monitor Hz)</option>
+            <option value="60">60 fps</option>
+            <option value="30" selected>30 fps (Standard mobile)</option>
+            <option value="13">13 fps (Galaxy A53 5G live)</option>
+            <option value="8">8 fps (Low-light stress)</option>
+          </select>
+        </div>
+
+        <div class="check-row">
+          <label><input id="chk-loop" type="checkbox" checked> Loop path</label>
+          <label><input id="chk-multi" type="checkbox" checked> Multi-barcode</label>
+          <label><input id="chk-roi" type="checkbox" checked> RoI overlay</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span>Camera Optics</span></div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="rng-dist">Camera distance Z</label>
+            <span id="lbl-dist" class="field-val mono">14 in</span>
+          </div>
+          <input id="rng-dist" type="range" min="6" max="72" step="1" value="14">
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="sel-fov">Lens horizontal FOV</label>
+            <span id="lbl-fov" class="field-val mono">70.7°</span>
+          </div>
+          <select id="sel-fov">
+            <option value="70.7" selected>70.7° — Main 1× (Galaxy A53 5G)</option>
+            <option value="38">38° — 2× Crop / Medium</option>
+            <option value="26">26° — 3× Telephoto</option>
+            <option value="105">105° — Ultrawide 0.5×</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="sel-res">Capture resolution</label>
+          </div>
+          <select id="sel-res">
+            <option value="1280x720" selected>1280×720 (720p Landscape)</option>
+            <option value="720x1280">720×1280 (720p Portrait)</option>
+            <option value="1920x1080">1920×1080 (1080p Landscape)</option>
+            <option value="1080x1920">1080×1920 (1080p Portrait)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span>Motion Blur &amp; Warehouse Conditions</span></div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="sel-shutter">Shutter exposure (motion blur)</label>
+            <span id="lbl-shutter" class="field-val mono">2 ms (1/500s)</span>
+          </div>
+          <select id="sel-shutter">
+            <option value="0">0 ms — Ideal sharp shutter</option>
+            <option value="2" selected>2 ms (1/500 s) — Bright / torch</option>
+            <option value="4">4 ms (1/250 s) — Good indoor</option>
+            <option value="8">8 ms (1/125 s) — Dim warehouse</option>
+            <option value="16">16 ms (1/60 s) — Heavy blur</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="rng-jitter">Handheld wobble / jitter</label>
+            <span id="lbl-jitter" class="field-val mono">15%</span>
+          </div>
+          <input id="rng-jitter" type="range" min="0" max="100" step="5" value="15">
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="rng-shadow">Shadow gradient</label>
+            <span id="lbl-shadow" class="field-val mono">35%</span>
+          </div>
+          <input id="rng-shadow" type="range" min="0" max="100" step="5" value="35">
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="rng-noise">Sensor noise</label>
+            <span id="lbl-noise" class="field-val mono">1.5%</span>
+          </div>
+          <input id="rng-noise" type="range" min="0" max="8" step="0.5" value="1.5">
+        </div>
+
+        <p class="hint">
+          Tip: Drag directly on the 3D view to switch to Manual mode and pan by hand; scroll wheel adjusts Z distance.
+        </p>
+      </div>
+    </aside>
+  </main>
+
+  <script type="module">
+    import {
+      WALL_WIDTH_IN,
+      WALL_HEIGHT_IN,
+      TOTE_WIDTH_IN,
+      TOTE_HEIGHT_IN,
+      BARCODE_WIDTH_IN,
+      BARCODE_HEIGHT_IN,
+      PATH_DEFINITIONS,
+      createWallCells,
+      computeOptics,
+      sampleCameraPose,
+    } from './src/sim/paths.js';
+    import { createWebGLWallRenderer } from './src/sim/webgl-wall.js';
+
+    const glCanvas = document.getElementById('gl-canvas');
+    const hudCanvas = document.getElementById('hud-canvas');
+    const hudCtx = hudCanvas.getContext('2d');
+    const canvasFrame = document.getElementById('canvas-frame');
+    const viewportShell = document.getElementById('viewport-shell');
+    const minimapCanvas = document.getElementById('minimap-canvas');
+    const miniCtx = minimapCanvas.getContext('2d');
+
+    const glBadge = document.getElementById('gl-badge');
+    const wallGridEl = document.getElementById('wall-grid');
+    const pathProgressEl = document.getElementById('path-progress');
+
+    const mCov = document.getElementById('m-cov');
+    const mTime = document.getElementById('m-time');
+    const mWorker = document.getElementById('m-worker');
+    const mFps = document.getElementById('m-fps');
+    const mPpm = document.getElementById('m-ppm');
+    const mBlur = document.getElementById('m-blur');
+    const mLockSummary = document.getElementById('m-lock-summary');
+
+    const btnPlay = document.getElementById('btn-play');
+    const btnRestart = document.getElementById('btn-restart');
+    const btnStep = document.getElementById('btn-step');
+    const btnClear = document.getElementById('btn-clear');
+
+    const selPath = document.getElementById('sel-path');
+    const lblPathLen = document.getElementById('lbl-path-len');
+    const rngSpeed = document.getElementById('rng-speed');
+    const lblSpeed = document.getElementById('lbl-speed');
+    const selFps = document.getElementById('sel-fps');
+    const chkLoop = document.getElementById('chk-loop');
+    const chkMulti = document.getElementById('chk-multi');
+    const chkRoi = document.getElementById('chk-roi');
+
+    const rngDist = document.getElementById('rng-dist');
+    const lblDist = document.getElementById('lbl-dist');
+    const selFov = document.getElementById('sel-fov');
+    const lblFov = document.getElementById('lbl-fov');
+    const selRes = document.getElementById('sel-res');
+
+    const selShutter = document.getElementById('sel-shutter');
+    const lblShutter = document.getElementById('lbl-shutter');
+    const rngJitter = document.getElementById('rng-jitter');
+    const lblJitter = document.getElementById('lbl-jitter');
+    const rngShadow = document.getElementById('rng-shadow');
+    const lblShadow = document.getElementById('lbl-shadow');
+    const rngNoise = document.getElementById('rng-noise');
+    const lblNoise = document.getElementById('lbl-noise');
+
+    // Populate path selector
+    for (const p of PATH_DEFINITIONS) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label;
+      selPath.appendChild(opt);
+    }
+
+    // Build 4x4 wall cells and coverage tiles
+    const cells = createWallCells();
+    const payloadToCell = new Map();
+    const cellTiles = [];
+    for (const cell of cells) {
+      payloadToCell.set(cell.payload, cell);
+      const tile = document.createElement('div');
+      tile.className = 'cell-tile mono';
+      tile.innerHTML = `<div class="cell-id">${cell.id}</div><div class="cell-meta">--</div>`;
+      wallGridEl.appendChild(tile);
+      cellTiles.push(tile);
+    }
+
+    // Initialize WebGL renderer
+    const renderer = createWebGLWallRenderer(glCanvas, cells);
+    glBadge.textContent = renderer.isWebGL2 ? 'WebGL2' : 'WebGL1';
+
+    // Initialize real DBC barcode scanner worker
+    const worker = new Worker(new URL('./src/worker/scanner.worker.js', import.meta.url), { type: 'module' });
+    let workerBusy = false;
+    let recycledBuffer = null;
+    let latestResult = null;
+
+    // Simulation state
+    const state = {
+      playing: true,
+      pathId: 'snake-h',
+      speedInPerSec: 18,
+      fpsCap: 30,
+      loop: true,
+      multi: true,
+      showRoi: true,
+      distanceIn: 14,
+      hfovDeg: 70.7,
+      width: 1280,
+      height: 720,
+      shutterMs: 2,
+      jitter: 0.15,
+      shadowStrength: 0.35,
+      noiseStrength: 0.015,
+      simTimeSec: 0,
+      frameId: 0,
+      manualPose: { x: 0, y: 0, z: 14, yawDeg: 0, pitchDeg: 0, rollDeg: 0 },
+    };
+
+    // Per-sweep decode tracking
+    const decodedCells = new Map(); // cell.index -> { firstSec, count }
+    let falsePositives = 0;
+    let timeToAll16Sec = null;
+    let lastTickPerf = performance.now();
+    let lastRenderPerf = 0;
+    let fpsFrames = 0;
+    let fpsWindowStart = performance.now();
+    let measuredFps = 0;
+
+    function allocWorkerBuffer(w, h) {
+      recycledBuffer = new ArrayBuffer(w * h);
+      worker.postMessage({ type: 'init', width: w, height: h });
+    }
+
+    function updateAspectFrame() {
+      canvasFrame.style.aspectRatio = `${state.width} / ${state.height}`;
+      hudCanvas.width = state.width;
+      hudCanvas.height = state.height;
+    }
+
+    function resetDetections() {
+      decodedCells.clear();
+      falsePositives = 0;
+      timeToAll16Sec = null;
+      latestResult = null;
+      for (let i = 0; i < cellTiles.length; i++) {
+        cellTiles[i].classList.remove('decoded');
+        cellTiles[i].querySelector('.cell-meta').textContent = '--';
+      }
+      mCov.textContent = '0 / 16';
+      mCov.className = 'metric-val accent';
+      mLockSummary.textContent = 'Waiting for first lock…';
+    }
+
+    function restartSweep() {
+      state.simTimeSec = 0;
+      resetDetections();
+      if (!state.playing) renderAndDispatchOnce();
+    }
+
+    function updateStaticLabels() {
+      const def = PATH_DEFINITIONS.find((p) => p.id === state.pathId);
+      lblPathLen.textContent = def && def.lengthIn > 0 ? `${Math.round(def.lengthIn)} in` : 'manual';
+      lblSpeed.textContent = `${state.speedInPerSec} in/s`;
+      lblDist.textContent = `${state.distanceIn} in`;
+      lblFov.textContent = `${state.hfovDeg}°`;
+      lblShutter.textContent = state.shutterMs === 0 ? '0 ms (sharp)' : `${state.shutterMs} ms (1/${Math.round(1000 / state.shutterMs)}s)`;
+      lblJitter.textContent = `${Math.round(state.jitter * 100)}%`;
+      lblShadow.textContent = `${Math.round(state.shadowStrength * 100)}%`;
+      lblNoise.textContent = `${(state.noiseStrength * 100).toFixed(1)}%`;
+
+      const optics = computeOptics({
+        distanceIn: state.distanceIn,
+        hfovDeg: state.hfovDeg,
+        widthPx: state.width,
+        heightPx: state.height,
+        totalModules: renderer.totalModules,
+      });
+      mPpm.textContent = `${optics.ppm.toFixed(2)} ppm`;
+      mPpm.className = `metric-val ${optics.ppm >= 2.2 ? 'good' : (optics.ppm >= 1.6 ? 'warn' : 'bad')}`;
+    }
+
+    // Handle real worker results
+    worker.onmessage = (ev) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === 'result') {
+        workerBusy = false;
+        if (msg.buffer && msg.buffer.byteLength === state.width * state.height) {
+          recycledBuffer = msg.buffer;
+        }
+        latestResult = msg;
+
+        mWorker.textContent = `${msg.tTotalMs.toFixed(1)} ms`;
+        mWorker.className = `metric-val ${msg.tTotalMs < 15 ? 'good' : (msg.tTotalMs < 25 ? 'warn' : 'bad')}`;
+
+        const dets = Array.isArray(msg.detections) && msg.detections.length > 0
+          ? msg.detections
+          : (msg.detected === 1 && msg.payload ? [msg] : []);
+
+        for (const d of dets) {
+          if (!d.payload) continue;
+          const cell = payloadToCell.get(d.payload);
+          if (!cell) {
+            falsePositives++;
+            continue;
+          }
+          let rec = decodedCells.get(cell.index);
+          if (!rec) {
+            rec = { firstSec: state.simTimeSec, count: 1 };
+            decodedCells.set(cell.index, rec);
+            const tile = cellTiles[cell.index];
+            tile.classList.add('decoded');
+            tile.querySelector('.cell-meta').textContent = `${rec.firstSec.toFixed(2)}s`;
+          } else {
+            rec.count++;
+          }
+        }
+
+        const count = decodedCells.size;
+        mCov.textContent = `${count} / 16`;
+        if (count === 16) {
+          mCov.className = 'metric-val good';
+          if (timeToAll16Sec === null) {
+            timeToAll16Sec = state.simTimeSec;
+          }
+          mLockSummary.textContent = `ALL 16/16 LOCKED in ${timeToAll16Sec.toFixed(2)} s (${falsePositives} FP)`;
+        } else if (count > 0) {
+          mLockSummary.textContent = `${count}/16 locked · ${msg.detectionCount || dets.length} in frame · ${falsePositives} FP`;
+        }
+      }
+    };
+
+    function drawHudOverlay(pose, optics) {
+      const w = hudCanvas.width;
+      const h = hudCanvas.height;
+      hudCtx.clearRect(0, 0, w, h);
+
+      // Subtle center reticle
+      hudCtx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      hudCtx.lineWidth = Math.max(1, w / 900);
+      const cx = w * 0.5;
+      const cy = h * 0.5;
+      hudCtx.beginPath();
+      hudCtx.moveTo(cx - 14, cy); hudCtx.lineTo(cx + 14, cy);
+      hudCtx.moveTo(cx, cy - 14); hudCtx.lineTo(cx, cy + 14);
+      hudCtx.stroke();
+
+      if (!latestResult) return;
+
+      // Optional Stage 1 blue RoI & purple theta line
+      if (state.showRoi && latestResult.roiW > 0 && latestResult.roiH > 0) {
+        hudCtx.strokeStyle = 'rgba(56, 189, 248, 0.7)';
+        hudCtx.lineWidth = Math.max(2, w / 550);
+        hudCtx.strokeRect(latestResult.roiX, latestResult.roiY, latestResult.roiW, latestResult.roiH);
+
+        const rad = (latestResult.thetaDeg * Math.PI) / 180;
+        const half = Math.max(28, latestResult.roiMajorLen * 0.45);
+        hudCtx.strokeStyle = 'rgba(232, 121, 249, 0.85)';
+        hudCtx.beginPath();
+        hudCtx.moveTo(latestResult.roiCenterX - Math.cos(rad) * half, latestResult.roiCenterY - Math.sin(rad) * half);
+        hudCtx.lineTo(latestResult.roiCenterX + Math.cos(rad) * half, latestResult.roiCenterY + Math.sin(rad) * half);
+        hudCtx.stroke();
+      }
+
+      // Green decoded boxes + payloads
+      const dets = Array.isArray(latestResult.detections) && latestResult.detections.length > 0
+        ? latestResult.detections
+        : (latestResult.detected === 1 && latestResult.payload ? [latestResult] : []);
+
+      const fontSize = Math.max(12, Math.round(w / 72));
+      hudCtx.font = `700 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+
+      for (const d of dets) {
+        const isKnown = payloadToCell.has(d.payload);
+        hudCtx.strokeStyle = isKnown ? '#22c55e' : '#ef4444';
+        hudCtx.lineWidth = Math.max(2.5, w / 420);
+        hudCtx.strokeRect(d.roiX, d.roiY, d.roiW, d.roiH);
+
+        const label = d.payload;
+        const tw = hudCtx.measureText(label).width;
+        const bx = Math.max(4, Math.min(w - tw - 12, d.roiX));
+        const by = Math.max(fontSize + 8, d.roiY - 4);
+        hudCtx.fillStyle = isKnown ? 'rgba(6, 40, 24, 0.88)' : 'rgba(69, 10, 10, 0.9)';
+        hudCtx.fillRect(bx, by - fontSize - 4, tw + 10, fontSize + 8);
+        hudCtx.fillStyle = isKnown ? '#86efac' : '#fca5a5';
+        hudCtx.fillText(label, bx + 5, by - 2);
+      }
+    }
+
+    function drawMinimap(pose, optics) {
+      const mw = minimapCanvas.width;
+      const mh = minimapCanvas.height;
+      miniCtx.clearRect(0, 0, mw, mh);
+
+      const pad = 10;
+      const scaleX = (mw - pad * 2) / WALL_WIDTH_IN;
+      const scaleY = (mh - pad * 2) / WALL_HEIGHT_IN;
+      const toX = (wx) => pad + (wx + WALL_WIDTH_IN * 0.5) * scaleX;
+      const toY = (wy) => pad + (WALL_HEIGHT_IN * 0.5 - wy) * scaleY;
+
+      // Draw 16 totes + centered vertical barcode markers
+      for (const c of cells) {
+        const x0 = toX(c.cx - TOTE_WIDTH_IN * 0.5);
+        const y0 = toY(c.cy + TOTE_HEIGHT_IN * 0.5);
+        const tw = TOTE_WIDTH_IN * scaleX;
+        const th = TOTE_HEIGHT_IN * scaleY;
+
+        const isDec = decodedCells.has(c.index);
+        miniCtx.fillStyle = isDec ? 'rgba(34, 197, 94, 0.30)' : 'rgba(30, 41, 59, 0.85)';
+        miniCtx.fillRect(x0 + 1, y0 + 1, tw - 2, th - 2);
+        miniCtx.strokeStyle = isDec ? '#22c55e' : 'rgba(148, 163, 184, 0.35)';
+        miniCtx.lineWidth = 1;
+        miniCtx.strokeRect(x0 + 1, y0 + 1, tw - 2, th - 2);
+
+        // Centered 2x6 in vertical barcode
+        const bx = toX(c.cx - BARCODE_WIDTH_IN * 0.5);
+        const by = toY(c.cy + BARCODE_HEIGHT_IN * 0.5);
+        miniCtx.fillStyle = isDec ? '#86efac' : '#e2e8f0';
+        miniCtx.fillRect(bx, by, BARCODE_WIDTH_IN * scaleX, BARCODE_HEIGHT_IN * scaleY);
+      }
+
+      // Highlight nearest cell under camera optical aim point
+      let nearestIdx = -1;
+      let bestDist = Infinity;
+      for (const c of cells) {
+        const d = Math.hypot(c.cx - pose.targetX, c.cy - pose.targetY);
+        if (d < bestDist) { bestDist = d; nearestIdx = c.index; }
+      }
+      for (let i = 0; i < cellTiles.length; i++) {
+        cellTiles[i].classList.toggle('active-target', i === nearestIdx);
+      }
+
+      // Draw camera FOV footprint rectangle on the wall
+      const fw = optics.visibleWidthIn * scaleX;
+      const fh = optics.visibleHeightIn * scaleY;
+      const fx = toX(pose.targetX) - fw * 0.5;
+      const fy = toY(pose.targetY) - fh * 0.5;
+      miniCtx.strokeStyle = '#38bdf8';
+      miniCtx.lineWidth = 2;
+      miniCtx.strokeRect(fx, fy, fw, fh);
+
+      // Center aim dot
+      miniCtx.fillStyle = '#38bdf8';
+      miniCtx.beginPath();
+      miniCtx.arc(toX(pose.targetX), toY(pose.targetY), 3, 0, Math.PI * 2);
+      miniCtx.fill();
+    }
+
+    function renderAndDispatchOnce() {
+      const cfg = {
+        distanceIn: state.distanceIn,
+        speedInPerSec: state.speedInPerSec,
+        jitter: state.jitter,
+        loop: state.loop,
+        manualPose: state.manualPose,
+      };
+      const pose = sampleCameraPose(state.pathId, state.simTimeSec, cfg);
+
+      // Build temporal sub-frame poses across shutter exposure interval for physical motion blur
+      const shutterSec = state.shutterMs * 0.001;
+      const poses = [];
+      if (shutterSec > 0 && state.pathId !== 'manual' && !pose.finished) {
+        const subFrames = state.shutterMs >= 8 ? 7 : 5;
+        for (let k = 0; k < subFrames; k++) {
+          const frac = (k / (subFrames - 1)) - 0.5; // -0.5 .. +0.5
+          poses.push(sampleCameraPose(state.pathId, Math.max(0, state.simTimeSec + frac * shutterSec), cfg));
+        }
+      } else {
+        poses.push(pose);
+      }
+
+      const optics = computeOptics({
+        distanceIn: pose.z,
+        hfovDeg: state.hfovDeg,
+        widthPx: state.width,
+        heightPx: state.height,
+        totalModules: renderer.totalModules,
+      });
+
+      const canDispatch = !workerBusy && recycledBuffer && recycledBuffer.byteLength === state.width * state.height;
+      const lumaView = canDispatch ? new Uint8Array(recycledBuffer) : null;
+
+      const tCap0 = performance.now();
+      renderer.renderFrame(
+        poses,
+        {
+          width: state.width,
+          height: state.height,
+          hfovDeg: state.hfovDeg,
+          shadowStrength: state.shadowStrength,
+          noiseStrength: state.noiseStrength,
+          glareStrength: 0.16,
+          frameSeed: state.frameId * 0.71,
+        },
+        lumaView
+      );
+      const tCaptureMs = performance.now() - tCap0;
+
+      if (canDispatch) {
+        workerBusy = true;
+        const bufToSend = recycledBuffer;
+        recycledBuffer = null;
+        state.frameId++;
+        worker.postMessage(
+          {
+            type: 'frame',
+            frameId: state.frameId,
+            width: state.width,
+            height: state.height,
+            byteOffset: 0,
+            tCaptureMs,
+            multi: state.multi,
+            debug: false,
+            buffer: bufToSend,
+          },
+          [bufToSend]
+        );
+      }
+
+      // Compute exact shutter blur streak in pixels
+      const blurPx = pose.speedInPerSec * shutterSec * optics.pxPerInch;
+      mTime.textContent = `${state.simTimeSec.toFixed(2)} s`;
+      mBlur.textContent = `${blurPx.toFixed(1)} px · ${falsePositives} FP`;
+      mBlur.className = `metric-val ${falsePositives > 0 ? 'bad' : (blurPx > 2.5 ? 'warn' : '')}`;
+      pathProgressEl.style.width = `${(pose.progress * 100).toFixed(1)}%`;
+
+      drawHudOverlay(pose, optics);
+      drawMinimap(pose, optics);
+
+      if (!state.loop && pose.finished && state.playing) {
+        state.playing = false;
+        btnPlay.textContent = 'Play';
+      }
+    }
+
+    function loop(now) {
+      const dt = Math.min(0.1, (now - lastTickPerf) * 0.001);
+      lastTickPerf = now;
+
+      const minIntervalMs = state.fpsCap > 0 ? (1000 / state.fpsCap) : 0;
+      if (now - lastRenderPerf >= minIntervalMs - 0.5) {
+        if (state.playing) {
+          state.simTimeSec += dt;
+        }
+        lastRenderPerf = now;
+        renderAndDispatchOnce();
+
+        fpsFrames++;
+        if (now - fpsWindowStart >= 500) {
+          measuredFps = (fpsFrames * 1000) / (now - fpsWindowStart);
+          mFps.textContent = `${measuredFps.toFixed(0)} fps`;
+          fpsFrames = 0;
+          fpsWindowStart = now;
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+
+    // ---- UI Event Wiring ----
+    function applyResolution(resStr) {
+      const [w, h] = resStr.split('x').map(Number);
+      state.width = w;
+      state.height = h;
+      updateAspectFrame();
+      allocWorkerBuffer(w, h);
+      updateStaticLabels();
+    }
+
+    function applyPreset(name) {
+      if (name === 'a53-8-720') {
+        state.pathId = 'snake-h';
+        state.distanceIn = 10;
+        state.hfovDeg = 70.7;
+        state.speedInPerSec = 18;
+        state.fpsCap = 13;
+        state.shutterMs = 2;
+        selRes.value = '1280x720';
+        applyResolution('1280x720');
+      } else if (name === 'a53-8-1080') {
+        state.pathId = 'snake-h';
+        state.distanceIn = 12;
+        state.hfovDeg = 70.7;
+        state.speedInPerSec = 20;
+        state.fpsCap = 13;
+        state.shutterMs = 2;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'tele-30') {
+        state.pathId = 'pan-snake';
+        state.distanceIn = 30;
+        state.hfovDeg = 26;
+        state.speedInPerSec = 22;
+        state.fpsCap = 30;
+        state.shutterMs = 2;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'full-wall') {
+        state.pathId = 'manual';
+        state.distanceIn = 52;
+        state.manualPose = { x: 0, y: 0, z: 52, yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+        state.hfovDeg = 70.7;
+        state.fpsCap = 30;
+        state.shutterMs = 0;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      }
+      selPath.value = state.pathId;
+      rngDist.value = String(state.distanceIn);
+      selFov.value = String(state.hfovDeg);
+      rngSpeed.value = String(state.speedInPerSec);
+      selFps.value = String(state.fpsCap);
+      selShutter.value = String(state.shutterMs);
+      updateSpeedChips();
+      updateStaticLabels();
+      restartSweep();
+    }
+
+    function updateSpeedChips() {
+      document.querySelectorAll('.speed-chip').forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.speed) === state.speedInPerSec);
+      });
+    }
+
+    btnPlay.addEventListener('click', () => {
+      state.playing = !state.playing;
+      btnPlay.textContent = state.playing ? 'Pause' : 'Play';
+      lastTickPerf = performance.now();
+    });
+    btnRestart.addEventListener('click', restartSweep);
+    btnStep.addEventListener('click', () => {
+      state.playing = false;
+      btnPlay.textContent = 'Play';
+      const stepDt = state.fpsCap > 0 ? 1 / state.fpsCap : 1 / 30;
+      state.simTimeSec += stepDt;
+      renderAndDispatchOnce();
+    });
+    btnClear.addEventListener('click', resetDetections);
+
+    document.querySelectorAll('[data-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+    });
+
+    selPath.addEventListener('change', () => {
+      state.pathId = selPath.value;
+      if (state.pathId === 'pan-snake' && state.distanceIn < 24) {
+        state.distanceIn = 30;
+        rngDist.value = '30';
+      }
+      updateStaticLabels();
+      restartSweep();
+    });
+
+    rngSpeed.addEventListener('input', () => {
+      state.speedInPerSec = Number(rngSpeed.value);
+      updateSpeedChips();
+      updateStaticLabels();
+    });
+    document.querySelectorAll('.speed-chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.speedInPerSec = Number(btn.dataset.speed);
+        rngSpeed.value = String(state.speedInPerSec);
+        updateSpeedChips();
+        updateStaticLabels();
+      });
+    });
+
+    selFps.addEventListener('change', () => { state.fpsCap = Number(selFps.value); });
+    chkLoop.addEventListener('change', () => { state.loop = chkLoop.checked; });
+    chkMulti.addEventListener('change', () => { state.multi = chkMulti.checked; });
+    chkRoi.addEventListener('change', () => { state.showRoi = chkRoi.checked; });
+
+    rngDist.addEventListener('input', () => {
+      state.distanceIn = Number(rngDist.value);
+      state.manualPose.z = state.distanceIn;
+      updateStaticLabels();
+    });
+    selFov.addEventListener('change', () => {
+      state.hfovDeg = Number(selFov.value);
+      updateStaticLabels();
+    });
+    selRes.addEventListener('change', () => applyResolution(selRes.value));
+
+    selShutter.addEventListener('change', () => {
+      state.shutterMs = Number(selShutter.value);
+      updateStaticLabels();
+    });
+    rngJitter.addEventListener('input', () => {
+      state.jitter = Number(rngJitter.value) / 100;
+      updateStaticLabels();
+    });
+    rngShadow.addEventListener('input', () => {
+      state.shadowStrength = Number(rngShadow.value) / 100;
+      updateStaticLabels();
+    });
+    rngNoise.addEventListener('input', () => {
+      state.noiseStrength = Number(rngNoise.value) / 100;
+      updateStaticLabels();
+    });
+
+    // Pointer drag & wheel for Manual pan/zoom directly on the 3D viewport
+    let dragging = false;
+    let dragLastX = 0;
+    let dragLastY = 0;
+    viewportShell.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      dragLastX = e.clientX;
+      dragLastY = e.clientY;
+      viewportShell.setPointerCapture(e.pointerId);
+      if (state.pathId !== 'manual') {
+        const cur = sampleCameraPose(state.pathId, state.simTimeSec, {
+          distanceIn: state.distanceIn,
+          speedInPerSec: state.speedInPerSec,
+          jitter: 0,
+          loop: state.loop,
+        });
+        state.manualPose = { x: cur.targetX, y: cur.targetY, z: state.distanceIn, yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+        state.pathId = 'manual';
+        selPath.value = 'manual';
+        updateStaticLabels();
+      }
+    });
+    viewportShell.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - dragLastX;
+      const dy = e.clientY - dragLastY;
+      dragLastX = e.clientX;
+      dragLastY = e.clientY;
+      const rect = canvasFrame.getBoundingClientRect();
+      const optics = computeOptics({
+        distanceIn: state.manualPose.z,
+        hfovDeg: state.hfovDeg,
+        widthPx: state.width,
+        heightPx: state.height,
+      });
+      state.manualPose.x = Math.max(-34, Math.min(34, state.manualPose.x - (dx / rect.width) * optics.visibleWidthIn));
+      state.manualPose.y = Math.max(-38, Math.min(38, state.manualPose.y + (dy / rect.height) * optics.visibleHeightIn));
+    });
+    viewportShell.addEventListener('pointerup', () => { dragging = false; });
+    viewportShell.addEventListener('pointercancel', () => { dragging = false; });
+    viewportShell.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const nextZ = Math.max(6, Math.min(72, state.distanceIn + Math.sign(e.deltaY) * 2));
+      state.distanceIn = nextZ;
+      state.manualPose.z = nextZ;
+      rngDist.value = String(nextZ);
+      updateStaticLabels();
+    }, { passive: false });
+
+    // Boot
+    updateAspectFrame();
+    allocWorkerBuffer(state.width, state.height);
+    updateStaticLabels();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

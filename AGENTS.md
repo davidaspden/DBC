@@ -84,10 +84,14 @@ Target total per-frame processing budget: **< 25 ms** on `1280x720` luma frames.
 ├── AGENTS.md                   # Workspace rules, performance guardrails, and agent standards
 ├── index.html                  # Mobile viewport, video layer, canvas HUD overlay
 ├── diag.html                   # Standalone device diagnostics page (Step D0; exempt from 25 ms scan budget)
+├── sim.html                    # WebGL 4×4 tote wall camera motion simulator (14×16 in totes, 2×6 in Code 128)
 ├── src/
 │   ├── main.js                 # App entry, UI state machine, frame dispatch loop
 │   ├── camera.js               # getUserMedia setup, track constraints, focus lock
 │   ├── scanner.js              # Headless drop-in Code 128 scanner API (cross-origin Blob worker support)
+│   ├── sim/                    # WebGL 4×4 tote wall simulator modules (zero dependencies)
+│   │   ├── paths.js            # Exact 14×16 in wall geometry, optics/PPM, camera paths & mat4 math
+│   │   └── webgl-wall.js       # WebGL2/1 analytical Code 128 shader, shutter blur & GPU luma pack
 │   ├── diag/                   # Standalone device diagnostics modules (D0; zero network calls after load)
 │   │   ├── probe.js            # Environment probe & full D0 orchestration
 │   │   ├── cameras.js          # Exclusive per-device probing, zoom sweep & lens heuristics
