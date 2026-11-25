@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#090d14">
+  <title>DBC — Device Check</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg: #090d14;
+      --surface: #0f172a;
+      --surface-2: #162033;
+      --border: rgba(148, 163, 184, 0.24);
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --primary: #0ea5e9;
+      --green: #22c55e;
+      --green-bg: rgba(22, 163, 74, 0.16);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245, 158, 11, 0.16);
+      --red: #ef4444;
+      --red-bg: rgba(239, 68, 68, 0.16);
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .page {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: max(16px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .back-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      background: rgba(14, 165, 233, 0.1);
+      white-space: nowrap;
+    }
+    .intro {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #cbd5e1;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card h2 {
+      margin: 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .action-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      flex: 1 1 auto;
+      min-height: 46px;
+      padding: 0 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: #1e293b;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button.primary {
+      background: var(--primary);
+      border-color: var(--accent);
+      color: #04121d;
+    }
+    button.secondary {
+      background: rgba(56, 189, 248, 0.14);
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #e0f2fe;
+    }
+    button:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 12px;
+      border-radius: 9px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .status-dot {
+      flex: 0 0 auto;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .status-dot[data-state="running"] { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+    .status-dot[data-state="done"] { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .status-dot[data-state="error"] { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+    .hold-still-banner {
+      padding: 10px 12px;
+      border-radius: 9px;
+      background: var(--amber-bg);
+      border: 1px solid var(--amber);
+      color: #fde68a;
+      font-size: 14px;
+      font-weight: 700;
+      text-align: center;
+    }
+    .hold-still-banner[hidden] { display: none; }
+
+    /* Compact 16:9 camera preview with 1:3 vertical label framing guide */
+    .preview-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #020617;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .preview-wrap.idle {
+      aspect-ratio: 16 / 5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #diag-preview {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .preview-wrap.idle #diag-preview {
+      display: none;
+    }
+    .preview-placeholder {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 0 12px;
+      text-align: center;
+    }
+    .preview-wrap:not(.idle) .preview-placeholder {
+      display: none;
+    }
+    .label-guide {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 16%;
+      height: 82%;
+      transform: translate(-50%, -50%);
+      border: 2px dashed rgba(56, 189, 248, 0.85);
+      border-radius: 6px;
+      box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.28);
+      pointer-events: none;
+    }
+    .preview-wrap.idle .label-guide {
+      display: none;
+    }
+    .preview-caption {
+      position: absolute;
+      bottom: 6px;
+      left: 8px;
+      right: 8px;
+      font-size: 11px;
+      color: #e2e8f0;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+    .preview-wrap.idle .preview-caption {
+      display: none;
+    }
+
+    /* Key-value grids and sub-cards */
+    .kv-list {
+      display: grid;
+      grid-template-columns: minmax(110px, auto) 1fr;
+      gap: 6px 12px;
+      font-size: 13px;
+    }
+    .kv-key { color: var(--muted); }
+    .kv-val { color: var(--text); word-break: break-word; }
+
+    .cam-list {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .cam-item {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 10px 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 12px;
+    }
+    .cam-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .cam-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f8fafc;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: rgba(148, 163, 184, 0.2);
+      color: #e2e8f0;
+    }
+    .badge.good { background: var(--green-bg); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.45); }
+    .badge.warn { background: var(--amber-bg); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.45); }
+    .badge.bad { background: var(--red-bg); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); }
+
+    .cam-detail {
+      color: #cbd5e1;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .cam-detail span.dim { color: var(--muted); }
+
+    .rec-card {
+      border-width: 1.5px;
+    }
+    .rec-card[data-tone="good"] {
+      background: var(--green-bg);
+      border-color: var(--green);
+    }
+    .rec-card[data-tone="warn"] {
+      background: var(--amber-bg);
+      border-color: var(--amber);
+    }
+    .rec-card[data-tone="bad"] {
+      background: var(--red-bg);
+      border-color: var(--red);
+    }
+    .rec-mode {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+    }
+    .rec-blurb {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #f8fafc;
+    }
+
+    .label-status {
+      font-size: 12px;
+      color: #cbd5e1;
+      line-height: 1.45;
+    }
+
+    #report-text {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+      background: #020617;
+      color: #e2e8f0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .privacy-note {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .muted { color: var(--muted); font-size: 13px; margin: 0; }
+    .sensor-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .sensor-table th, .sensor-table td {
+      text-align: left;
+      padding: 4px 6px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .sensor-table th { color: var(--muted); font-weight: 600; }
+    .copy-feedback {
+      font-size: 12px;
+      color: #86efac;
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>DBC Device Check</h1>
+      <a class="back-link" href="./index.html">&larr; Scanner</a>
+    </header>
+
+    <p class="intro">
+      Checks this phone's rear cameras, zoom, video capture path, and motion sensors to pick the best barcode wall-scanning mode.
+      This page <strong>never sends data anywhere</strong> — it builds a report on your phone that you can copy or share.
+      Needs HTTPS and camera permission.
+    </p>
+
+    <section class="card" aria-label="Run diagnostics">
+      <div class="action-row">
+        <button id="btn-start" class="primary" type="button">Start check</button>
+      </div>
+      <div class="status-bar" role="status" aria-live="polite">
+        <span id="status-dot" class="status-dot" data-state="idle"></span>
+        <span id="status-text">Idle — tap Start check to begin</span>
+      </div>
+      <div id="hold-still-banner" class="hold-still-banner" hidden>
+        Hold the phone still for 2 seconds… measuring gyro bias
+      </div>
+      <div id="preview-wrap" class="preview-wrap idle">
+        <video id="diag-preview" playsinline muted autoplay></video>
+        <div class="label-guide" aria-hidden="true"></div>
+        <div class="preview-caption mono">
+          <span id="preview-cap-left">Preview</span>
+          <span id="preview-cap-right">1:3 vertical label guide</span>
+        </div>
+        <div class="preview-placeholder">Camera preview appears here while probing or testing a label.</div>
+      </div>
+    </section>
+
+    <section id="sec-rec" class="card rec-card" hidden>
+      <h2>
+        <span>Recommendation</span>
+        <span id="rec-badge" class="badge">--</span>
+      </h2>
+      <div id="rec-mode" class="rec-mode mono">--</div>
+      <p id="rec-blurb" class="rec-blurb"></p>
+    </section>
+
+    <section class="card" aria-label="Environment">
+      <h2><span>Environment</span></h2>
+      <div id="env-body"><p class="muted">Not checked yet.</p></div>
+    </section>
+
+    <section class="card" aria-label="Cameras">
+      <h2>
+        <span>Cameras</span>
+        <span id="cam-count" class="badge">0</span>
+      </h2>
+      <div id="cam-body"><p class="muted">Not checked yet.</p></div>
+    </section>
+
+    <section class="card" aria-label="Capture path">
+      <h2><span>Capture path</span></h2>
+      <div id="cap-body"><p class="muted">Not checked yet.</p></div>
+    </section>
+
+    <section class="card" aria-label="Sensors">
+      <h2><span>Sensors</span></h2>
+      <div id="sens-body"><p class="muted">Not checked yet.</p></div>
+    </section>
+
+    <section class="card" aria-label="Optional live label test">
+      <h2>
+        <span>Optional live label test</span>
+        <span class="badge">Code 128</span>
+      </h2>
+      <p class="muted">
+        Hold a printed vertical Code 128 label inside the dashed guide for 3 seconds to measure real pixels-per-module and decode rate.
+      </p>
+      <div class="action-row">
+        <button id="btn-test-8" class="secondary" type="button" disabled>Test at 8 in (1x)</button>
+        <button id="btn-test-30" class="secondary" type="button" disabled>Test at 30 in (zoom)</button>
+      </div>
+      <div id="label-status" class="label-status mono">Run Start check first to enable live label tests.</div>
+    </section>
+
+    <section class="card" aria-label="Shareable report">
+      <h2><span>Report</span></h2>
+      <div class="action-row">
+        <button id="btn-copy" class="primary" type="button" disabled>Copy report</button>
+        <button id="btn-share" class="secondary" type="button" hidden disabled>Share</button>
+      </div>
+      <div id="copy-feedback" class="copy-feedback" aria-live="polite"></div>
+      <textarea id="report-text" class="mono" readonly placeholder="Report will appear here once the check completes…"></textarea>
+      <p class="privacy-note">Camera ids are hashed. Nothing leaves this phone unless you copy or share it.</p>
+    </section>
+  </main>
+
+  <script type="module">
+    import { stopCamera } from './src/camera.js';
+    import { runFullProbe } from './src/diag/probe.js';
+    import { recommend } from './src/diag/recommend.js';
+    import { runLabelTest } from './src/diag/decode-test.js';
+    import { formatReportText, copyReport, shareReport } from './src/diag/report.js';
+
+    const btnStart = document.getElementById('btn-start');
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const holdStillBanner = document.getElementById('hold-still-banner');
+    const previewWrap = document.getElementById('preview-wrap');
+    const previewEl = document.getElementById('diag-preview');
+    const previewCapLeft = document.getElementById('preview-cap-left');
+
+    const secRec = document.getElementById('sec-rec');
+    const recBadge = document.getElementById('rec-badge');
+    const recMode = document.getElementById('rec-mode');
+    const recBlurb = document.getElementById('rec-blurb');
+
+    const envBody = document.getElementById('env-body');
+    const camCount = document.getElementById('cam-count');
+    const camBody = document.getElementById('cam-body');
+    const capBody = document.getElementById('cap-body');
+    const sensBody = document.getElementById('sens-body');
+
+    const btnTest8 = document.getElementById('btn-test-8');
+    const btnTest30 = document.getElementById('btn-test-30');
+    const labelStatus = document.getElementById('label-status');
+
+    const btnCopy = document.getElementById('btn-copy');
+    const btnShare = document.getElementById('btn-share');
+    const copyFeedback = document.getElementById('copy-feedback');
+    const reportTextarea = document.getElementById('report-text');
+
+    if (typeof navigator.share === 'function') {
+      btnShare.hidden = false;
+    }
+
+    let currentReport = null;
+    let currentDeviceMap = new Map();
+    let probeRunning = false;
+    let labelTestRunning = false;
+    let interruptedByHide = false;
+
+    function esc(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function fmtRange(val) {
+      if (!val || val === 'n/a') return 'n/a';
+      if (typeof val !== 'object') return String(val);
+      const step = val.step !== undefined ? ` (step ${val.step})` : '';
+      return `${val.min}–${val.max}${step}`;
+    }
+
+    function setStatus(msg, state = 'running') {
+      statusText.textContent = msg;
+      statusDot.dataset.state = state;
+      const isHold = msg.toLowerCase().includes('hold the phone still');
+      holdStillBanner.hidden = !isHold;
+    }
+
+    function setPreviewActive(active, caption = 'Preview') {
+      previewWrap.classList.toggle('idle', !active);
+      previewCapLeft.textContent = caption;
+    }
+
+    function renderEnv(env) {
+      if (!env) return;
+      const he = env.highEntropy || {};
+      const model = he.model || env.uaModelGuess || 'Not exposed by browser';
+      const os = he.platform
+        ? `${he.platform}${he.platformVersion ? ' ' + he.platformVersion : ''}`
+        : (env.osGuess || 'Unknown');
+      const sc = env.supportedConstraints || {};
+      const yesKeys = Object.keys(sc).filter((k) => sc[k]);
+
+      envBody.innerHTML = `
+        <div class="kv-list">
+          <span class="kv-key">Device / OS</span>
+          <span class="kv-val">${esc(model)} · ${esc(os)} · ${esc(env.browserGuess)}</span>
+          <span class="kv-key">Display</span>
+          <span class="kv-val mono">${env.screenWidth}×${env.screenHeight} CSS px · DPR ${env.devicePixelRatio}</span>
+          <span class="kv-key">Context</span>
+          <span class="kv-val">${env.isSecureContext ? '<span class="badge good">HTTPS / Secure</span>' : '<span class="badge bad">Insecure (Need HTTPS)</span>'}</span>
+          <span class="kv-key">Constraints</span>
+          <span class="kv-val mono">${esc(yesKeys.join(', ') || 'none')}</span>
+        </div>
+      `;
+    }
+
+    function renderCameras(cameras, camPerm) {
+      if (camPerm && camPerm.granted === false) {
+        camCount.textContent = 'denied';
+        camBody.innerHTML = `<p class="muted">Camera access failed: <span class="mono">${esc(camPerm.error || 'denied')}</span></p>`;
+        return;
+      }
+      const list = Array.isArray(cameras) ? cameras : [];
+      camCount.textContent = String(list.length);
+      if (list.length === 0) {
+        camBody.innerHTML = '<p class="muted">No videoinput devices found.</p>';
+        return;
+      }
+
+      const items = list.map((c) => {
+        const tone = c.error ? 'bad' : (c.suitable === false ? 'warn' : (c.roleGuess === 'MAIN?' || c.roleGuess === 'TELE?' ? 'good' : ''));
+        if (c.error) {
+          return `
+            <div class="cam-item">
+              <div class="cam-head">
+                <span class="cam-title">${esc(c.label)}</span>
+                <span class="badge bad">${esc(c.roleGuess)}</span>
+              </div>
+              <div class="cam-detail mono"><span class="dim">id:</span> ${esc(c.idHash.slice(0, 8))}… · <span class="dim">facing:</span> ${esc(c.facing)} · <span class="dim">error:</span> ${esc(c.error)}</div>
+            </div>
+          `;
+        }
+        const caps = c.capabilities || {};
+        const focusList = Array.isArray(caps.focusMode) ? caps.focusMode.join('/') : (caps.focusMode || 'n/a');
+        const torchStr = caps.torch === true ? 'yes' : (caps.torch === false ? 'no' : 'n/a');
+        const resParts = [];
+        if (c.resolutions) {
+          for (const k of ['720p', '1080p', '4K']) {
+            const r = c.resolutions[k];
+            if (!r) continue;
+            resParts.push(r.ok ? `${k} ${r.width}×${r.height}@${r.frameRate || '?'}` : `${k} refused`);
+          }
+        }
+        let sweepHtml = '';
+        if (c.zoomSweep && Array.isArray(c.zoomSweep.steps) && c.zoomSweep.steps.length) {
+          const seq = c.zoomSweep.steps.map((s) => (s.error ? `${s.requested}(err)` : s.achieved)).join(' → ');
+          const note = c.zoomSweep.logicalZoomLikely ? 'framing/caps jump; possible lens switch' : 'no framing jump; likely digital';
+          sweepHtml = `<div class="cam-detail mono"><span class="dim">zoom sweep:</span> ${esc(seq)} (${esc(note)})</div>`;
+        }
+        const warnHtml = c.unsuitableReason
+          ? `<div class="cam-detail"><span class="badge warn">${esc(c.unsuitableReason)}</span></div>`
+          : '';
+        return `
+          <div class="cam-item">
+            <div class="cam-head">
+              <span class="cam-title">${esc(c.label)}</span>
+              <span class="badge ${tone}">${esc(c.roleGuess)}</span>
+            </div>
+            <div class="cam-detail mono"><span class="dim">facing:</span> ${esc(c.facing)} · <span class="dim">id:</span> ${esc(c.idHash.slice(0, 8))}…</div>
+            <div class="cam-detail mono"><span class="dim">caps:</span> zoom ${esc(fmtRange(caps.zoom))} · focus ${esc(focusList)} · focusDist ${esc(fmtRange(caps.focusDistance))} · expTime ${esc(fmtRange(caps.exposureTime))} · iso ${esc(fmtRange(caps.iso))} · torch ${torchStr}</div>
+            ${resParts.length ? `<div class="cam-detail mono"><span class="dim">modes:</span> ${esc(resParts.join(' · '))}</div>` : ''}
+            ${sweepHtml}
+            ${warnHtml}
+          </div>
+        `;
+      });
+      camBody.innerHTML = `<div class="cam-list">${items.join('')}</div>`;
+    }
+
+    function renderCapture(cap) {
+      if (!cap) return;
+      const vfBadge = cap.videoFrameSupported && cap.copyToOk
+        ? `<span class="badge good">${esc(cap.videoFrameFormat || 'ok')} (${cap.tCaptureMs ?? '?'} ms)</span>`
+        : `<span class="badge warn">${cap.videoFrameSupported ? esc(cap.videoFrameError || 'fallback') : 'not supported'}</span>`;
+      capBody.innerHTML = `
+        <div class="kv-list">
+          <span class="kv-key">Frame pacing</span>
+          <span class="kv-val mono">${cap.rVfcSupported ? 'rVFC' : 'rAF'} · ${cap.measuredFps} fps (${cap.frameCount} frames)</span>
+          <span class="kv-key">VideoFrame</span>
+          <span class="kv-val">${vfBadge}</span>
+          <span class="kv-key">Worker transfer</span>
+          <span class="kv-val">${cap.workerTransferOk ? '<span class="badge good">OK (64 KiB)</span>' : '<span class="badge bad">Failed</span>'}</span>
+        </div>
+      `;
+    }
+
+    function renderSensors(sens) {
+      if (!sens) return;
+      const generic = sens.generic || {};
+      const rows = Object.keys(generic).map((name) => {
+        const g = generic[name];
+        const status = g.sampleCount > 0
+          ? `<span class="badge good">${g.measuredHz} Hz</span>`
+          : `<span class="badge">${esc(g.error || '0 samples')}</span>`;
+        return `<tr><td class="mono">${esc(name)}</td><td>${status}</td><td class="mono">${g.sampleCount}</td></tr>`;
+      });
+      const dm = sens.deviceMotion || {};
+      rows.push(
+        `<tr><td class="mono">devicemotion</td><td>${dm.sampleCount > 0 ? `<span class="badge good">${dm.measuredHz} Hz${dm.hasRotationRate ? ' +rot' : ''}</span>` : '<span class="badge">no events</span>'}</td><td class="mono">${dm.sampleCount || 0}</td></tr>`
+      );
+
+      let restHtml = '';
+      if (sens.atRest) {
+        const r = sens.atRest;
+        const b = r.biasDps || { x: 0, y: 0, z: 0 };
+        const tone = r.movedDuringTest ? 'warn' : (r.pass ? 'good' : 'warn');
+        const tag = r.movedDuringTest ? 'Moved during check' : (r.pass ? 'Still — pass' : 'High bias / low samples');
+        restHtml = `
+          <div class="cam-detail mono" style="margin-top:6px;">
+            <span class="dim">2 s stationary gyro (${esc(r.source)}):</span>
+            bias x/y/z = ${b.x} / ${b.y} / ${b.z} dps · rms ${r.rmsDps} dps
+            <span class="badge ${tone}">${tag}</span>
+          </div>
+        `;
+      } else if (!sens.gyroAvailable) {
+        restHtml = '<p class="muted" style="margin-top:6px;">No gyroscope stream available.</p>';
+      }
+
+      sensBody.innerHTML = `
+        <table class="sensor-table">
+          <thead><tr><th>Sensor</th><th>Rate / Status</th><th>Samples</th></tr></thead>
+          <tbody>${rows.join('')}</tbody>
+        </table>
+        ${restHtml}
+      `;
+    }
+
+    function renderRecommendation(rec) {
+      if (!rec) return;
+      secRec.hidden = false;
+      let tone = 'warn';
+      if (rec.mode === 'part3-tele' || rec.mode === 'part2-slide') tone = 'good';
+      else if (rec.mode === 'blocked') tone = 'bad';
+      secRec.dataset.tone = tone;
+      recMode.textContent = rec.mode;
+      recBadge.textContent = `${rec.confidence || 'info'} confidence`;
+      recBadge.className = `badge ${tone}`;
+      recBlurb.textContent = rec.blurb || '';
+    }
+
+    function refreshReportText() {
+      if (!currentReport) return;
+      const text = formatReportText(currentReport);
+      reportTextarea.value = text;
+      btnCopy.disabled = false;
+      btnShare.disabled = false;
+    }
+
+    function updateLabelTestButtons() {
+      const canTest = Boolean(
+        !probeRunning &&
+        !labelTestRunning &&
+        currentReport &&
+        currentReport.cameraPermission &&
+        currentReport.cameraPermission.granted &&
+        currentReport.cameras.some((c) => !c.error)
+      );
+      btnTest8.disabled = !canTest;
+      btnTest30.disabled = !canTest;
+
+      if (currentReport && currentReport.recommendation && currentReport.recommendation.mode === 'part3-tele') {
+        btnTest30.textContent = 'Test at 30 in (tele / 3x)';
+      } else {
+        btnTest30.textContent = 'Test at 30 in (2x zoom)';
+      }
+    }
+
+    function getTargetCameraForLabelTest(distanceIn) {
+      if (!currentReport) return { deviceId: null, zoom: null };
+      const recHash = currentReport.recommendation && currentReport.recommendation.recommendedCameraHash;
+      const cams = currentReport.cameras || [];
+      const recCam = cams.find((c) => c.idHash === recHash && !c.error) ||
+        cams.find((c) => c.roleGuess === 'MAIN?' && !c.error) ||
+        cams.find((c) => c.facing === 'environment' && !c.error) ||
+        cams.find((c) => !c.error);
+
+      if (!recCam) return { deviceId: null, zoom: null };
+      const rawId = currentDeviceMap.get(recCam.idHash) || null;
+      if (distanceIn <= 12) {
+        return { deviceId: rawId, zoom: 1 };
+      }
+      const zCap = recCam.capabilities && typeof recCam.capabilities.zoom === 'object'
+        ? recCam.capabilities.zoom
+        : null;
+      if (currentReport.recommendation && currentReport.recommendation.mode === 'part3-tele') {
+        return { deviceId: rawId, zoom: zCap ? Math.min(zCap.max, 3) : null };
+      }
+      return { deviceId: rawId, zoom: zCap ? Math.min(zCap.max, 2) : null };
+    }
+
+    function renderLabelSummary() {
+      const lt = (currentReport && currentReport.labelTests) || {};
+      const lines = [];
+      for (const [key, label] of [['in8', '8 in'], ['in30', '30 in']]) {
+        const res = lt[key];
+        if (!res) continue;
+        if (res.skipped) {
+          lines.push(`${label}: skipped (${res.reason})`);
+        } else {
+          lines.push(
+            `${label}: ${Math.round(res.decodeRate * 100)}% decode (${res.decodes}/${res.frames}), ` +
+            `ppm=${res.medianPpm ?? 'n/a'}, t=${res.medianTotalMs} ms, ` +
+            `res=${res.width}×${res.height}, zoom=${res.zoom}` +
+            (res.samplePayload ? `, payload=${res.samplePayload}` : '')
+          );
+        }
+      }
+      labelStatus.textContent = lines.length
+        ? lines.join('\n')
+        : 'Ready — point at a vertical Code 128 label and tap a button above.';
+    }
+
+    async function handleStart() {
+      if (probeRunning || labelTestRunning) return;
+      probeRunning = true;
+      interruptedByHide = false;
+      copyFeedback.textContent = '';
+      btnStart.disabled = true;
+      btnCopy.disabled = true;
+      btnShare.disabled = true;
+      updateLabelTestButtons();
+      setPreviewActive(true, 'Probing cameras…');
+      setStatus('Starting device check…', 'running');
+
+      try {
+        const { report, deviceMap } = await runFullProbe({
+          previewEl,
+          onStatus: (msg) => {
+            const state = msg === 'Done' ? 'done' : (msg === 'Need HTTPS' ? 'error' : 'running');
+            setStatus(msg, state);
+            if (msg.startsWith('Probing cameras') || msg.startsWith('Probing capture')) {
+              setPreviewActive(true, msg);
+            } else if (msg.includes('motion') || msg.includes('Hold the phone') || msg === 'Done') {
+              setPreviewActive(false);
+            }
+          },
+          onPartial: (partial) => {
+            if (partial.env) renderEnv(partial.env);
+            if (partial.cameras) renderCameras(partial.cameras, partial.cameraPermission);
+            if (partial.capture) renderCapture(partial.capture);
+            if (partial.sensors) renderSensors(partial.sensors);
+            if (partial.recommendation) renderRecommendation(partial.recommendation);
+          },
+        });
+
+        currentReport = report;
+        currentDeviceMap = deviceMap;
+        renderCameras(report.cameras, report.cameraPermission);
+        renderRecommendation(report.recommendation);
+        refreshReportText();
+        renderLabelSummary();
+
+        if (interruptedByHide) {
+          setStatus('Interrupted when app went to background — tap Re-run check for clean results.', 'error');
+        } else if (report.recommendation && report.recommendation.mode === 'blocked') {
+          setStatus(`Blocked (${report.recommendation.reason})`, 'error');
+        } else {
+          setStatus('Done — report ready to copy or share.', 'done');
+        }
+      } catch (err) {
+        setStatus(`Error: ${err && err.message ? err.message : String(err)}`, 'error');
+      } finally {
+        probeRunning = false;
+        setPreviewActive(false);
+        holdStillBanner.hidden = true;
+        btnStart.disabled = false;
+        btnStart.textContent = 'Re-run check';
+        updateLabelTestButtons();
+      }
+    }
+
+    async function handleLabelTest(distanceIn) {
+      if (probeRunning || labelTestRunning || !currentReport) return;
+      labelTestRunning = true;
+      btnStart.disabled = true;
+      updateLabelTestButtons();
+      setPreviewActive(true, `Live label test (${distanceIn} in) — 3 s…`);
+      labelStatus.textContent = `Running 3 s Code 128 test at ${distanceIn} in… hold label inside the dashed vertical box.`;
+
+      try {
+        const target = getTargetCameraForLabelTest(distanceIn);
+        const result = await runLabelTest({
+          distanceIn,
+          videoEl: previewEl,
+          deviceId: target.deviceId,
+          zoom: target.zoom,
+          durationMs: 3000,
+          maxFrames: 90,
+          onProgress: ({ frames, decodes, lastPayload }) => {
+            labelStatus.textContent =
+              `Testing at ${distanceIn} in: ${frames} frames, ${decodes} decodes` +
+              (lastPayload ? ` (${lastPayload})` : '') + '…';
+          },
+        });
+
+        const key = distanceIn <= 12 ? 'in8' : 'in30';
+        currentReport.labelTests[key] = result;
+        currentReport.recommendation = recommend(currentReport);
+        renderRecommendation(currentReport.recommendation);
+        renderLabelSummary();
+        refreshReportText();
+      } finally {
+        labelTestRunning = false;
+        setPreviewActive(false);
+        btnStart.disabled = false;
+        updateLabelTestButtons();
+      }
+    }
+
+    btnStart.addEventListener('click', handleStart);
+    btnTest8.addEventListener('click', () => handleLabelTest(8));
+    btnTest30.addEventListener('click', () => handleLabelTest(30));
+
+    btnCopy.addEventListener('click', async () => {
+      if (!reportTextarea.value) return;
+      const res = await copyReport(reportTextarea.value, reportTextarea);
+      copyFeedback.textContent = res.ok
+        ? 'Report copied to clipboard.'
+        : 'Report selected — tap Copy on your phone menu.';
+    });
+
+    btnShare.addEventListener('click', async () => {
+      if (!reportTextarea.value) return;
+      const res = await shareReport(reportTextarea.value);
+      if (res.ok) {
+        copyFeedback.textContent = 'Shared via system sheet.';
+      } else if (res.error !== 'AbortError') {
+        copyFeedback.textContent = `Share unavailable (${res.error}) — use Copy report instead.`;
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && (probeRunning || labelTestRunning)) {
+        interruptedByHide = true;
+        if (previewEl.srcObject) {
+          stopCamera(previewEl.srcObject);
+          previewEl.srcObject = null;
+        }
+      }
+    });
+
+    // Immediate secure-context hint before user even taps Start
+    if (!window.isSecureContext) {
+      setStatus('Need HTTPS — open this page over https:// or localhost', 'error');
+    }
+  </script>
+</body>
+</html>

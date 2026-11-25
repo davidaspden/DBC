@@ -83,9 +83,20 @@ Target total per-frame processing budget: **< 25 ms** on `1280x720` luma frames.
 /
 ├── AGENTS.md                   # Workspace rules, performance guardrails, and agent standards
 ├── index.html                  # Mobile viewport, video layer, canvas HUD overlay
+├── diag.html                   # Standalone device diagnostics page (Step D0; exempt from 25 ms scan budget)
 ├── src/
 │   ├── main.js                 # App entry, UI state machine, frame dispatch loop
 │   ├── camera.js               # getUserMedia setup, track constraints, focus lock
+│   ├── scanner.js              # Headless drop-in Code 128 scanner API (cross-origin Blob worker support)
+│   ├── diag/                   # Standalone device diagnostics modules (D0; zero network calls after load)
+│   │   ├── probe.js            # Environment probe & full D0 orchestration
+│   │   ├── cameras.js          # Exclusive per-device probing, zoom sweep & lens heuristics
+│   │   ├── capture.js          # rVFC/rAF fps, VideoFrame copyTo & worker transferability check
+│   │   ├── sensors.js          # Generic Sensor / DeviceMotion probe & 2 s stationary gyro check
+│   │   ├── decode-test.js      # Optional 8 in / 30 in live Code 128 decode test
+│   │   ├── recommend.js        # Deterministic mode recommendation engine
+│   │   ├── report.js           # Plain-text + JSON (v1) report formatter, copy & share helpers
+│   │   └── hash.js             # 12-char SHA-256 deviceId hashing (no raw deviceIds in reports)
 │   └── worker/
 │       ├── scanner.worker.js   # Pipeline orchestrator & pre-allocated TypedArray pool
 │       ├── roi.js              # Downscaler, Gx/Gy pass, Structure Tensor theta estimator
@@ -95,7 +106,8 @@ Target total per-frame processing budget: **< 25 ms** on `1280x720` luma frames.
 │           ├── code128.js      # Code 128 guard pattern anchor & Mod 103 checksum
 │           └── ean13.js        # EAN-13/UPC-A guard anchor & Mod 10 checksum
 └── tests/
-    └── harness.js              # Offline runner & synthetic/real test image generator
+    ├── harness.js              # Offline runner & synthetic/real test image generator
+    └── diag.test.js            # Unit tests for D0 diagnostics hashing, classification & recommendations
 ```
 
 ---
