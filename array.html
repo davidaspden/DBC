@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#090d14">
+  <title>DBC — Tilt &amp; Pan Array Scanner</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg: #090d14;
+      --surface: #0f172a;
+      --surface-2: #162033;
+      --border: rgba(148, 163, 184, 0.24);
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --primary: #0ea5e9;
+      --green: #22c55e;
+      --green-bg: rgba(22, 163, 74, 0.20);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245, 158, 11, 0.18);
+      --red: #ef4444;
+      --red-bg: rgba(239, 68, 68, 0.18);
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    .page {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: max(10px, env(safe-area-inset-top)) 10px max(24px, env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .nav-links {
+      display: flex;
+      gap: 6px;
+    }
+    .nav-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      background: rgba(14, 165, 233, 0.10);
+      white-space: nowrap;
+    }
+
+    /* Live Camera Viewport */
+    .cam-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      max-height: 46dvh;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      touch-action: none;
+    }
+    #cam-video, #cam-hud {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #cam-video {
+      object-fit: cover;
+      background: #000;
+    }
+    #cam-hud {
+      pointer-events: none;
+    }
+    .cam-banner {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      right: 8px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: rgba(9, 13, 20, 0.84);
+      border: 1px solid rgba(148, 163, 184, 0.30);
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .cam-banner.warn {
+      background: rgba(120, 53, 15, 0.90);
+      border-color: var(--amber);
+      color: #fde68a;
+    }
+    .cam-banner.good {
+      background: rgba(6, 40, 24, 0.90);
+      border-color: var(--green);
+      color: #86efac;
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .dot {
+      flex: 0 0 auto;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .dot[data-state="active"] { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot[data-state="cal"] { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+    .dot[data-state="error"] { background: var(--red); }
+
+    /* Telemetry Strip */
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 5px;
+    }
+    @media (min-width: 560px) {
+      .metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    }
+    .metric {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 5px 7px;
+    }
+    .metric-label {
+      display: block;
+      font-size: 9px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .metric-val {
+      display: block;
+      font-size: 12px;
+      font-weight: 800;
+      color: #f8fafc;
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .metric-val.good { color: #4ade80; }
+    .metric-val.warn { color: #fbbf24; }
+    .metric-val.accent { color: var(--accent); }
+
+    /* Cards & Controls */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 10px 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button {
+      flex: 1 1 auto;
+      min-height: 38px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: #1e293b;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button.primary {
+      background: var(--primary);
+      border-color: var(--accent);
+      color: #04121d;
+    }
+    button.active {
+      background: var(--green-bg);
+      border-color: var(--green);
+      color: #86efac;
+    }
+    button.warn-btn {
+      background: var(--amber-bg);
+      border-color: var(--amber);
+      color: #fde68a;
+    }
+    button:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
+
+    /* Interactive Array Map Canvas */
+    #array-canvas {
+      width: 100%;
+      aspect-ratio: 14 / 13;
+      max-height: 380px;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      display: block;
+      cursor: crosshair;
+      touch-action: manipulation;
+    }
+    .hint {
+      margin: 0;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    @media (max-width: 480px) {
+      .field-grid { grid-template-columns: 1fr; }
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .field-top {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #cbd5e1;
+    }
+    select, input[type="range"] { width: 100%; }
+    select {
+      background: #020617;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    input[type="range"] {
+      accent-color: var(--primary);
+      margin: 0;
+    }
+    .check-row {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .check-row label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+    .unplaced-list {
+      font-size: 11px;
+      color: #fde68a;
+      background: var(--amber-bg);
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      border-radius: 7px;
+      padding: 6px 8px;
+    }
+    .unplaced-list[hidden] { display: none; }
+    .toast {
+      font-size: 11px;
+      color: #86efac;
+      min-height: 15px;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>Tilt &amp; Pan Array Scanner</h1>
+      <nav class="nav-links">
+        <a class="nav-link" href="./index.html">&larr; Scanner</a>
+        <a class="nav-link" href="./sim.html">3D Sim</a>
+        <a class="nav-link" href="./diag.html">Device Check</a>
+      </nav>
+    </header>
+
+    <section id="cam-stage" class="cam-stage" title="On desktop without gyro, drag here to simulate tilt & pan">
+      <video id="cam-video" playsinline muted autoplay></video>
+      <canvas id="cam-hud"></canvas>
+      <div id="cam-banner" class="cam-banner">
+        <div class="status-left">
+          <span id="status-dot" class="dot" data-state="idle"></span>
+          <span id="status-text">Tap Start to enable camera &amp; gyro</span>
+        </div>
+        <span id="hud-fps" class="mono">0 fps</span>
+      </div>
+    </section>
+
+    <section class="metrics mono" aria-label="Array Scan Telemetry">
+      <div class="metric">
+        <span class="metric-label">Cells</span>
+        <span id="m-cells" class="metric-val accent">0 / 16</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Pan / Tilt</span>
+        <span id="m-angles" class="metric-val">0° / 0°</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Pan Rate</span>
+        <span id="m-rate" class="metric-val">0 °/s</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Sensor</span>
+        <span id="m-sensor" class="metric-val">idle</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">t_total</span>
+        <span id="m-worker" class="metric-val good">-- ms</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Est D / Zoom</span>
+        <span id="m-dist" class="metric-val">30″ · 1.0×</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="btn-row">
+        <button id="btn-start" class="primary" type="button">Start Camera &amp; Gyro</button>
+        <button id="btn-zero" type="button" disabled>Zero Center</button>
+        <button id="btn-cal2" type="button" disabled>2-Corner Cal</button>
+      </div>
+      <div class="btn-row">
+        <button id="btn-switch-cam" type="button" hidden>Switch Lens</button>
+        <button id="btn-res" type="button">1080p</button>
+        <button id="btn-torch" type="button" disabled>Torch</button>
+        <button id="btn-sound" class="active" type="button">Beep ON</button>
+      </div>
+      <div id="zoom-row" class="field" hidden>
+        <div class="field-top">
+          <label for="rng-zoom">Camera Zoom</label>
+          <span id="lbl-zoom" class="mono">1.0×</span>
+        </div>
+        <input id="rng-zoom" type="range" min="1" max="5" step="0.1" value="1">
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <span>Live Tilt &amp; Pan Array Map</span>
+        <span id="aim-cell-label" class="mono">Aim: --</span>
+      </div>
+      <canvas id="array-canvas" width="680" height="630" aria-label="Interactive array scan grid"></canvas>
+      <div id="unplaced-box" class="unplaced-list mono" hidden></div>
+      <div class="btn-row">
+        <button id="btn-copy-csv" type="button" disabled>Copy CSV</button>
+        <button id="btn-reset" type="button">Reset Array</button>
+      </div>
+      <div id="toast" class="toast" aria-live="polite"></div>
+      <p class="hint">
+        Stand in front of the wall, tap <strong>Zero Center</strong> (or tap any cell in the grid above to anchor your current aim to that cell), then tilt &amp; pan smoothly across the array. Use <strong>2-Corner Cal</strong> (R1C1 &rarr; bottom-right) to auto-fit any distance or desk mockup.
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><span>Array &amp; Sensor Settings</span></div>
+      <div class="field-grid">
+        <div class="field">
+          <div class="field-top"><label for="sel-layout">Array preset</label></div>
+          <select id="sel-layout">
+            <option value="4x4-tote" selected>4×4 Totes (14″ × 16″)</option>
+            <option value="3x3-tote">3×3 Totes (14″ × 16″)</option>
+            <option value="2x2-tote">2×2 Totes (14″ × 16″)</option>
+            <option value="2x2-desk">2×2 Desk Test (6″ × 8″)</option>
+            <option value="4x4-desk">4×4 Desk Test (4″ × 5″)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="rng-standoff">Standoff distance D</label>
+            <span id="lbl-standoff" class="mono">30 in</span>
+          </div>
+          <input id="rng-standoff" type="range" min="10" max="60" step="1" value="30">
+        </div>
+      </div>
+
+      <div class="check-row">
+        <label><input id="chk-inv-pan" type="checkbox"> Invert Pan (L/R)</label>
+        <label><input id="chk-inv-tilt" type="checkbox"> Invert Tilt (U/D)</label>
+        <label><input id="chk-blur-gate" type="checkbox" checked> Pitch-shake blur guard</label>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { startCamera, stopCamera, setTorch, listVideoDevices } from './src/camera.js';
+    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js';
+    import { createPanArrayMapper } from './src/array/pan-mapper.js';
+
+    const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
+
+    // DOM elements
+    const camStage = document.getElementById('cam-stage');
+    const videoEl = document.getElementById('cam-video');
+    const camHud = document.getElementById('cam-hud');
+    const camHudCtx = camHud.getContext('2d');
+    const camBanner = document.getElementById('cam-banner');
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const hudFps = document.getElementById('hud-fps');
+
+    const mCells = document.getElementById('m-cells');
+    const mAngles = document.getElementById('m-angles');
+    const mRate = document.getElementById('m-rate');
+    const mSensor = document.getElementById('m-sensor');
+    const mWorker = document.getElementById('m-worker');
+    const mDist = document.getElementById('m-dist');
+
+    const btnStart = document.getElementById('btn-start');
+    const btnZero = document.getElementById('btn-zero');
+    const btnCal2 = document.getElementById('btn-cal2');
+    const btnSwitchCam = document.getElementById('btn-switch-cam');
+    const btnRes = document.getElementById('btn-res');
+    const btnTorch = document.getElementById('btn-torch');
+    const btnSound = document.getElementById('btn-sound');
+    const zoomRow = document.getElementById('zoom-row');
+    const rngZoom = document.getElementById('rng-zoom');
+    const lblZoom = document.getElementById('lbl-zoom');
+
+    const arrayCanvas = document.getElementById('array-canvas');
+    const arrayCtx = arrayCanvas.getContext('2d');
+    const aimCellLabel = document.getElementById('aim-cell-label');
+    const unplacedBox = document.getElementById('unplaced-box');
+    const btnCopyCsv = document.getElementById('btn-copy-csv');
+    const btnReset = document.getElementById('btn-reset');
+    const toastEl = document.getElementById('toast');
+
+    const selLayout = document.getElementById('sel-layout');
+    const rngStandoff = document.getElementById('rng-standoff');
+    const lblStandoff = document.getElementById('lbl-standoff');
+    const chkInvPan = document.getElementById('chk-inv-pan');
+    const chkInvTilt = document.getElementById('chk-inv-tilt');
+    const chkBlurGate = document.getElementById('chk-blur-gate');
+
+    // Audio beep feedback (unlocks on Start tap)
+    let audioCtx = null;
+    let soundEnabled = true;
+    function beep(freq = 1120, dur = 0.06) {
+      if (!soundEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + dur);
+      } catch {}
+    }
+
+    // Core modules
+    const orient = createOrientationTracker();
+    const mapper = createPanArrayMapper({
+      cols: 4,
+      rows: 4,
+      pitchXIn: 14,
+      pitchYIn: 16,
+      distanceIn: 30,
+      hfovDeg: 70.7,
+    });
+
+    const worker = new Worker(new URL('./src/worker/scanner.worker.js', import.meta.url), { type: 'module' });
+
+    // Runtime state
+    const app = {
+      running: false,
+      cam: null,
+      devices: [],
+      deviceIndex: 0,
+      targetRes: '1080p',
+      torchOn: false,
+      zoom: 1,
+      frameW: 1280,
+      frameH: 720,
+      workerBusy: false,
+      recycledBuffer: null,
+      webcodecsBuf: null,
+      useWebCodecs: typeof VideoFrame !== 'undefined',
+      fallbackCanvas: null,
+      fallbackCtx: null,
+      frameId: 0,
+      lastResult: null,
+      cal2Step: 0, // 0 = idle, 1 = waiting for R1C1, 2 = waiting for last corner
+      blurGate: true,
+      fpsCount: 0,
+      fpsWindowStart: performance.now(),
+      // Desktop manual drag simulation when no gyro exists
+      manualPanDeg: 0,
+      manualTiltDeg: 0,
+    };
+
+    const qFrame = new Float64Array(4);
+    const anglesTmp = { panDeg: 0, tiltDeg: 0, rollDeg: 0 };
+    const pendingFrameTimes = new Map(); // frameId -> tFrameMs
+
+    function setBanner(msg, state = 'idle', tone = '') {
+      statusText.textContent = msg;
+      statusDot.dataset.state = state;
+      camBanner.className = `cam-banner ${tone}`.trim();
+    }
+
+    function showToast(msg) {
+      toastEl.textContent = msg;
+      setTimeout(() => { if (toastEl.textContent === msg) toastEl.textContent = ''; }, 3000);
+    }
+
+    function ensureBuffers(w, h) {
+      app.frameW = w;
+      app.frameH = h;
+      camHud.width = w;
+      camHud.height = h;
+      app.recycledBuffer = new ArrayBuffer(w * h);
+      app.fallbackCanvas = typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(w, h)
+        : Object.assign(document.createElement('canvas'), { width: w, height: h });
+      app.fallbackCtx = app.fallbackCanvas.getContext('2d', { willReadFrequently: true });
+      worker.postMessage({ type: 'init', width: w, height: h });
+    }
+
+    function updateSummaryUi() {
+      const s = mapper.getSummary();
+      mCells.textContent = `${s.readCount} / ${s.total}`;
+      mCells.className = `metric-val ${s.complete ? 'good' : (s.conflictCount > 0 ? 'warn' : 'accent')}`;
+      btnCopyCsv.disabled = s.readCount === 0 && s.conflictCount === 0;
+
+      const unp = mapper.getUnplaced();
+      if (unp.length > 0) {
+        unplacedBox.hidden = false;
+        unplacedBox.textContent = `Unplaced reads (${unp.length}): ` + unp.slice(-4).map((u) => u.payload).join(', ');
+      } else {
+        unplacedBox.hidden = true;
+      }
+    }
+
+    // Worker decode result handler
+    worker.onmessage = (ev) => {
+      const msg = ev.data;
+      if (!msg || msg.type !== 'result') return;
+      app.workerBusy = false;
+      if (msg.buffer && msg.buffer.byteLength === app.frameW * app.frameH) {
+        app.recycledBuffer = msg.buffer;
+      }
+      app.lastResult = msg;
+      mWorker.textContent = `${msg.tTotalMs.toFixed(1)} ms`;
+      mWorker.className = `metric-val ${msg.tTotalMs <= 20 ? 'good' : 'warn'}`;
+
+      const tFrameMs = pendingFrameTimes.get(msg.frameId) ?? performance.now();
+      pendingFrameTimes.delete(msg.frameId);
+      if (pendingFrameTimes.size > 16) pendingFrameTimes.clear();
+
+      // Interpolate orientation quaternion at (tFrameMs - camSensorOffsetMs)
+      orient.getQuaternionAt(tFrameMs - mapper.cfg.camSensorOffsetMs, qFrame);
+
+      const dets = Array.isArray(msg.detections) && msg.detections.length > 0
+        ? msg.detections
+        : (msg.detected === 1 && msg.payload ? [msg] : []);
+
+      let gotNewCell = false;
+      for (const d of dets) {
+        if (!d.payload) continue;
+        const prevStateMap = mapper.getCells().map((c) => c.state);
+        const res = mapper.addObservation(
+          {
+            payload: d.payload,
+            cx: d.roiCenterX,
+            cy: d.roiCenterY,
+            lenPx: d.roiMajorLen,
+            consensus: d.consensusCount,
+            tFrameMs,
+          },
+          qFrame,
+          app.frameW,
+          app.frameH
+        );
+        if (res.placed && prevStateMap[res.cell.index] === 'EMPTY') {
+          gotNewCell = true;
+        }
+      }
+
+      if (gotNewCell) {
+        const summary = mapper.getSummary();
+        beep(summary.complete ? 1560 : 1120, summary.complete ? 0.14 : 0.06);
+        if (navigator.vibrate) navigator.vibrate(summary.complete ? [30, 40, 60] : 22);
+      }
+      updateSummaryUi();
+    };
+
+    // Draw camera overlay (green decode boxes + center aim reticle + row alignment bar)
+    function drawCameraHud(footprint, status) {
+      const w = camHud.width;
+      const h = camHud.height;
+      camHudCtx.clearRect(0, 0, w, h);
+
+      // Subtle vertical 1:3 label guide in center
+      const guideH = h * 0.44;
+      const guideW = guideH / 3;
+      const gx = (w - guideW) * 0.5;
+      const gy = (h - guideH) * 0.5;
+      camHudCtx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+      camHudCtx.lineWidth = Math.max(2, w / 480);
+      camHudCtx.setLineDash([8, 6]);
+      camHudCtx.strokeRect(gx, gy, guideW, guideH);
+      camHudCtx.setLineDash([]);
+
+      // Horizontal row-level guide line
+      camHudCtx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      camHudCtx.lineWidth = 1.5;
+      camHudCtx.beginPath();
+      camHudCtx.moveTo(w * 0.12, h * 0.5);
+      camHudCtx.lineTo(w * 0.88, h * 0.5);
+      camHudCtx.stroke();
+
+      // Target cell badge near center crosshair
+      if (footprint.targetCell) {
+        const tag = `${footprint.targetCell.id}${footprint.targetCell.state === 'READ' ? ' ✓' : ''}`;
+        const fs = Math.max(14, Math.round(w / 52));
+        camHudCtx.font = `800 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+        const tw = camHudCtx.measureText(tag).width;
+        camHudCtx.fillStyle = footprint.targetCell.state === 'READ'
+          ? 'rgba(6, 40, 24, 0.85)'
+          : 'rgba(15, 23, 42, 0.82)';
+        camHudCtx.fillRect(w * 0.5 - tw * 0.5 - 8, gy - fs - 12, tw + 16, fs + 8);
+        camHudCtx.fillStyle = footprint.targetCell.state === 'READ' ? '#86efac' : '#7dd3fc';
+        camHudCtx.fillText(tag, w * 0.5 - tw * 0.5, gy - 8);
+      }
+
+      // Decoded barcode boxes from worker
+      const msg = app.lastResult;
+      if (msg) {
+        const dets = Array.isArray(msg.detections) && msg.detections.length > 0
+          ? msg.detections
+          : (msg.detected === 1 && msg.payload ? [msg] : []);
+        const fs = Math.max(13, Math.round(w / 62));
+        camHudCtx.font = `700 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+        for (const d of dets) {
+          camHudCtx.strokeStyle = '#22c55e';
+          camHudCtx.lineWidth = Math.max(3, w / 360);
+          camHudCtx.strokeRect(d.roiX, d.roiY, d.roiW, d.roiH);
+          const tw = camHudCtx.measureText(d.payload).width;
+          const bx = Math.max(4, Math.min(w - tw - 10, d.roiX));
+          const by = Math.max(fs + 8, d.roiY - 4);
+          camHudCtx.fillStyle = 'rgba(6, 40, 24, 0.90)';
+          camHudCtx.fillRect(bx, by - fs - 4, tw + 10, fs + 8);
+          camHudCtx.fillStyle = '#86efac';
+          camHudCtx.fillText(d.payload, bx + 5, by - 2);
+        }
+      }
+
+      // Pitch-shake warning tint on border
+      const pitchBlurMods = (Math.abs(status.wPitchDps) * (Math.PI / 180) * mapper.stance.d * 0.004) / (mapper.cfg.labelLenIn / mapper.cfg.labelModules);
+      if (app.blurGate && pitchBlurMods > 0.8) {
+        camHudCtx.strokeStyle = 'rgba(245, 158, 11, 0.85)';
+        camHudCtx.lineWidth = Math.max(6, w / 160);
+        camHudCtx.strokeRect(3, 3, w - 6, h - 6);
+      }
+    }
+
+    // Draw interactive Array Wall canvas with live projected camera FOV quad & aim reticle
+    function drawArrayCanvas(footprint) {
+      const cw = arrayCanvas.width;
+      const ch = arrayCanvas.height;
+      arrayCtx.clearRect(0, 0, cw, ch);
+
+      const cols = mapper.cfg.cols;
+      const rows = mapper.cfg.rows;
+      const wallW = cols * mapper.cfg.pitchXIn;
+      const wallH = rows * mapper.cfg.pitchYIn;
+      const pad = 26;
+      const scale = Math.min((cw - pad * 2) / wallW, (ch - pad * 2) / wallH);
+      const originX = cw * 0.5;
+      const originY = ch * 0.5;
+
+      const toX = (wx) => originX + wx * scale;
+      const toY = (wy) => originY - wy * scale;
+
+      // Save coordinate transform for tap-to-anchor hit testing
+      arrayCanvas._geom = { scale, originX, originY };
+
+      const cells = mapper.getCells();
+      for (const c of cells) {
+        const x0 = toX(c.cx - mapper.cfg.pitchXIn * 0.5);
+        const y0 = toY(c.cy + mapper.cfg.pitchYIn * 0.5);
+        const tw = mapper.cfg.pitchXIn * scale;
+        const th = mapper.cfg.pitchYIn * scale;
+
+        const isAimed = footprint.targetCell && footprint.targetCell.index === c.index;
+        let fill = '#131d31';
+        let stroke = 'rgba(148, 163, 184, 0.30)';
+        if (c.state === 'READ') {
+          fill = 'rgba(22, 163, 74, 0.28)';
+          stroke = '#22c55e';
+        } else if (c.state === 'CONFLICT') {
+          fill = 'rgba(245, 158, 11, 0.28)';
+          stroke = '#f59e0b';
+        }
+
+        arrayCtx.fillStyle = fill;
+        arrayCtx.fillRect(x0 + 3, y0 + 3, tw - 6, th - 6);
+        arrayCtx.strokeStyle = isAimed ? '#38bdf8' : stroke;
+        arrayCtx.lineWidth = isAimed ? 3 : 1.5;
+        arrayCtx.strokeRect(x0 + 3, y0 + 3, tw - 6, th - 6);
+
+        // Centered vertical barcode icon (proportional to 2x6 in)
+        const bw = Math.max(8, (2 / 14) * tw);
+        const bh = Math.max(20, (6 / 16) * th);
+        const bx = x0 + (tw - bw) * 0.5;
+        const by = y0 + (th - bh) * 0.5;
+        arrayCtx.fillStyle = c.state === 'READ' ? 'rgba(134, 239, 172, 0.45)' : 'rgba(226, 232, 240, 0.16)';
+        arrayCtx.fillRect(bx, by, bw, bh);
+
+        // Cell label (top-left)
+        arrayCtx.font = '800 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        arrayCtx.fillStyle = isAimed ? '#7dd3fc' : '#cbd5e1';
+        arrayCtx.textAlign = 'left';
+        arrayCtx.fillText(c.id, x0 + 9, y0 + 20);
+
+        // Payload / status (bottom)
+        arrayCtx.textAlign = 'center';
+        if (c.payload) {
+          const shortP = c.payload.length > 13 ? '…' + c.payload.slice(-12) : c.payload;
+          arrayCtx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+          arrayCtx.fillStyle = c.state === 'CONFLICT' ? '#fde68a' : '#86efac';
+          arrayCtx.fillText(shortP, x0 + tw * 0.5, y0 + th - 11);
+        } else {
+          arrayCtx.font = '600 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+          arrayCtx.fillStyle = '#475569';
+          arrayCtx.fillText('empty', x0 + tw * 0.5, y0 + th - 11);
+        }
+      }
+      arrayCtx.textAlign = 'left';
+
+      // Draw live projected camera FOV polygon on the wall!
+      if (footprint.ok && footprint.corners.every((p) => p.ok)) {
+        arrayCtx.beginPath();
+        footprint.corners.forEach((p, idx) => {
+          const px = toX(p.wx);
+          const py = toY(p.wy);
+          if (idx === 0) arrayCtx.moveTo(px, py);
+          else arrayCtx.lineTo(px, py);
+        });
+        arrayCtx.closePath();
+        arrayCtx.fillStyle = 'rgba(56, 189, 248, 0.12)';
+        arrayCtx.fill();
+        arrayCtx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+        arrayCtx.lineWidth = 2;
+        arrayCtx.stroke();
+      }
+
+      // Draw live optical center aim crosshair
+      if (footprint.ok) {
+        const ax = toX(footprint.center.wx);
+        const ay = toY(footprint.center.wy);
+        arrayCtx.strokeStyle = '#38bdf8';
+        arrayCtx.lineWidth = 2.5;
+        arrayCtx.beginPath();
+        arrayCtx.arc(ax, ay, 8, 0, Math.PI * 2);
+        arrayCtx.moveTo(ax - 15, ay); arrayCtx.lineTo(ax + 15, ay);
+        arrayCtx.moveTo(ax, ay - 15); arrayCtx.lineTo(ax, ay + 15);
+        arrayCtx.stroke();
+      }
+    }
+
+    // Luma extraction & worker dispatch
+    async function extractAndSendFrame(tFrameMs) {
+      if (!app.running || app.workerBusy || !app.recycledBuffer || videoEl.readyState < 2) return;
+
+      // Pitch-shake blur guard: skip decoding frames during rapid vertical row tilts
+      const st = orient.getStatus();
+      const pitchBlurMods = (Math.abs(st.wPitchDps) * (Math.PI / 180) * mapper.stance.d * 0.004) / (mapper.cfg.labelLenIn / mapper.cfg.labelModules);
+      if (app.blurGate && pitchBlurMods > 0.85) return;
+
+      app.workerBusy = true;
+      const w = app.frameW;
+      const h = app.frameH;
+      const outLuma = new Uint8Array(app.recycledBuffer);
+      const t0 = performance.now();
+      let copied = false;
+
+      if (app.useWebCodecs) {
+        let vf = null;
+        try {
+          vf = new VideoFrame(videoEl);
+          if (!vf.format || !YUV_Y_FIRST_FORMATS.has(vf.format)) {
+            app.useWebCodecs = false;
+          } else {
+            const allocSize = vf.allocationSize();
+            if (!app.webcodecsBuf || app.webcodecsBuf.byteLength < allocSize) {
+              app.webcodecsBuf = new Uint8Array(allocSize);
+            }
+            const layouts = await vf.copyTo(app.webcodecsBuf);
+            const stride = layouts[0].stride;
+            const off = layouts[0].offset;
+            if (stride === w && off === 0) {
+              outLuma.set(app.webcodecsBuf.subarray(0, w * h));
+            } else {
+              for (let y = 0; y < h; y++) {
+                const srcOff = off + y * stride;
+                outLuma.set(app.webcodecsBuf.subarray(srcOff, srcOff + w), y * w);
+              }
+            }
+            copied = true;
+          }
+        } catch {
+          app.useWebCodecs = false;
+        } finally {
+          if (vf) vf.close();
+        }
+      }
+
+      if (!copied) {
+        app.fallbackCtx.drawImage(videoEl, 0, 0, w, h);
+        const rgba = app.fallbackCtx.getImageData(0, 0, w, h).data;
+        for (let i = 0, j = 0; i < outLuma.length; i++, j += 4) {
+          outLuma[i] = (77 * rgba[j] + 150 * rgba[j + 1] + 29 * rgba[j + 2]) >> 8;
+        }
+      }
+
+      const tCaptureMs = performance.now() - t0;
+      const buf = app.recycledBuffer;
+      app.recycledBuffer = null;
+      app.frameId++;
+      pendingFrameTimes.set(app.frameId, tFrameMs);
+      worker.postMessage(
+        {
+          type: 'frame',
+          frameId: app.frameId,
+          width: w,
+          height: h,
+          byteOffset: 0,
+          tCaptureMs,
+          multi: true,
+          debug: false,
+          buffer: buf,
+        },
+        [buf]
+      );
+    }
+
+    function scheduleVideoPump() {
+      if (!app.running) return;
+      if (typeof videoEl.requestVideoFrameCallback === 'function') {
+        videoEl.requestVideoFrameCallback((now, metadata) => {
+          const ts = (metadata && metadata.captureTime) || now;
+          extractAndSendFrame(ts);
+          app.fpsCount++;
+          if (now - app.fpsWindowStart >= 500) {
+            const fps = (app.fpsCount * 1000) / (now - app.fpsWindowStart);
+            hudFps.textContent = `${fps.toFixed(0)} fps`;
+            app.fpsCount = 0;
+            app.fpsWindowStart = now;
+          }
+          scheduleVideoPump();
+        });
+      } else {
+        requestAnimationFrame((now) => {
+          extractAndSendFrame(now);
+          scheduleVideoPump();
+        });
+      }
+    }
+
+    // Smooth 60 Hz UI / orientation reticle loop (independent of camera fps)
+    function uiLoop() {
+      const qRel = orient.getRelativeQuaternion();
+      const st = orient.getStatus();
+      extractPanTiltRollDeg(qRel, anglesTmp);
+
+      const footprint = mapper.getCameraFootprint(qRel, app.frameW, app.frameH);
+      drawArrayCanvas(footprint);
+      drawCameraHud(footprint, st);
+
+      mAngles.textContent = `${anglesTmp.panDeg.toFixed(0)}° / ${anglesTmp.tiltDeg.toFixed(0)}°`;
+      const absPan = Math.abs(st.wPanDps);
+      mRate.textContent = `${absPan.toFixed(0)} °/s`;
+      mRate.className = `metric-val ${absPan > 40 ? 'warn' : ''}`;
+
+      mSensor.textContent = st.active ? `${st.source === 'RelativeOrientationSensor' ? 'RelOrient' : st.source} ${st.measuredHz.toFixed(0)}Hz` : st.source;
+      mDist.textContent = `${Math.round(mapper.stance.d)}″ · ${app.zoom.toFixed(1)}×`;
+
+      if (footprint.targetCell) {
+        aimCellLabel.textContent = `Aim: ${footprint.targetCell.id} (${footprint.center.wx.toFixed(1)}″, ${footprint.center.wy.toFixed(1)}″)`;
+      } else {
+        aimCellLabel.textContent = `Aim: off-grid (${footprint.center.wx.toFixed(1)}″, ${footprint.center.wy.toFixed(1)}″)`;
+      }
+
+      if (mapper.stance.stanceWarning && app.running && app.cal2Step === 0) {
+        setBanner('Large stance shift detected — tap a cell on the grid to re-anchor', 'cal', 'warn');
+      }
+
+      requestAnimationFrame(uiLoop);
+    }
+
+    async function openCameraStream(deviceId = null) {
+      if (app.cam) {
+        stopCamera(app.cam.stream);
+        app.cam = null;
+      }
+      const reqW = app.targetRes === '1080p' ? 1920 : 1280;
+      const reqH = app.targetRes === '1080p' ? 1080 : 720;
+
+      // Unlock PTZ zoom permission on Chrome Android if not already granted
+      if (!deviceId) {
+        try {
+          const probe = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' }, zoom: true },
+            audio: false,
+          });
+          stopCamera(probe);
+        } catch {}
+      }
+
+      const cam = await startCamera(videoEl, { deviceId, width: reqW, height: reqH });
+      app.cam = cam;
+      app.torchOn = false;
+      btnTorch.disabled = !cam.hasTorch;
+      btnTorch.classList.remove('active');
+      btnTorch.textContent = 'Torch';
+
+      // Configure zoom slider if camera HAL exposes zoom
+      const zCap = cam.capabilities && cam.capabilities.zoom;
+      if (zCap && typeof zCap.max === 'number' && zCap.max > zCap.min) {
+        zoomRow.hidden = false;
+        rngZoom.min = String(zCap.min);
+        rngZoom.max = String(Math.min(zCap.max, 6));
+        rngZoom.step = String(zCap.step || 0.1);
+        app.zoom = cam.settings.zoom || zCap.min || 1;
+        rngZoom.value = String(app.zoom);
+        lblZoom.textContent = `${app.zoom.toFixed(1)}×`;
+        mapper.updateConfig({ zoom: app.zoom });
+      } else {
+        zoomRow.hidden = true;
+        app.zoom = 1;
+        mapper.updateConfig({ zoom: 1 });
+      }
+
+      ensureBuffers(cam.width, cam.height);
+
+      // Populate rear camera switcher
+      const allDevs = await listVideoDevices();
+      const rear = allDevs.filter((d) => /back|rear|environment/i.test(d.label));
+      app.devices = rear.length > 0 ? rear : allDevs;
+      if (app.devices.length > 1) {
+        btnSwitchCam.hidden = false;
+        const curId = cam.settings && cam.settings.deviceId;
+        const idx = app.devices.findIndex((d) => d.deviceId === curId);
+        if (idx >= 0) app.deviceIndex = idx;
+      }
+    }
+
+    async function handleStartStop() {
+      if (app.running) {
+        app.running = false;
+        orient.stop();
+        if (app.cam) { stopCamera(app.cam.stream); app.cam = null; }
+        videoEl.srcObject = null;
+        btnStart.textContent = 'Start Camera & Gyro';
+        btnStart.classList.add('primary');
+        btnZero.disabled = true;
+        btnCal2.disabled = true;
+        btnTorch.disabled = true;
+        setBanner('Stopped — tap Start to resume', 'idle');
+        return;
+      }
+
+      btnStart.disabled = true;
+      setBanner('Requesting motion sensors & camera…', 'cal');
+
+      try {
+        // Must call orient.start() inside user gesture for iOS permission
+        const sensRes = await orient.start();
+        await openCameraStream(null);
+        app.running = true;
+        btnStart.textContent = 'Stop';
+        btnStart.classList.remove('primary');
+        btnZero.disabled = false;
+        btnCal2.disabled = false;
+
+        if (sensRes.ok) {
+          setBanner('Hold still ~1.8 s to zero gyro…', 'cal', 'warn');
+          const cal = await orient.calibrateZero(1800);
+          if (cal.ok) {
+            setBanner(`Ready (${sensRes.source}) — tilt & pan across array`, 'active', 'good');
+            showToast(`Gyro zeroed (RMS ${cal.rmsDps} °/s)`);
+          } else {
+            setBanner('Gyro zeroed (moved slightly — tap Zero Center when aimed)', 'active');
+          }
+        } else {
+          setBanner('No gyro detected — drag camera view to simulate tilt & pan', 'active', 'warn');
+        }
+        scheduleVideoPump();
+      } catch (err) {
+        setBanner(`Start failed: ${err && err.message ? err.message : String(err)}`, 'error');
+      } finally {
+        btnStart.disabled = false;
+      }
+    }
+
+    // ---- Event Listeners ----
+    btnStart.addEventListener('click', handleStartStop);
+
+    btnZero.addEventListener('click', () => {
+      orient.zeroNow();
+      mapper.stance.px = 0;
+      mapper.stance.py = 0;
+      mapper.stance.stanceWarning = false;
+      beep(880, 0.05);
+      setBanner('Zeroed on array center — tilt & pan to scan', 'active', 'good');
+      showToast('Reticle zeroed at wall center.');
+    });
+
+    btnCal2.addEventListener('click', () => {
+      const cells = mapper.getCells();
+      const lastId = cells[cells.length - 1].id;
+      const qRel = orient.getRelativeQuaternion();
+
+      if (app.cal2Step === 0) {
+        app.cal2Step = 1;
+        btnCal2.textContent = 'Mark R1C1';
+        btnCal2.classList.add('warn-btn');
+        setBanner('2-Corner Cal (1/2): Aim at TOP-LEFT (R1C1) and tap Mark R1C1', 'cal', 'warn');
+      } else if (app.cal2Step === 1) {
+        const res = mapper.recordCornerCalibration(1, qRel);
+        if (!res.ok) {
+          showToast(`Cal step 1 failed (${res.error}) — try facing straighter.`);
+          return;
+        }
+        app.cal2Step = 2;
+        btnCal2.textContent = `Mark ${lastId}`;
+        beep(950, 0.05);
+        setBanner(`2-Corner Cal (2/2): Tilt & pan to BOTTOM-RIGHT (${lastId}) and tap Mark ${lastId}`, 'cal', 'warn');
+      } else if (app.cal2Step === 2) {
+        const res = mapper.recordCornerCalibration(2, qRel);
+        app.cal2Step = 0;
+        btnCal2.textContent = '2-Corner Cal';
+        btnCal2.classList.remove('warn-btn');
+        if (res.ok) {
+          rngStandoff.value = String(Math.round(Math.max(10, Math.min(60, res.estimatedDistanceIn))));
+          lblStandoff.textContent = `${res.estimatedDistanceIn} in (cal)`;
+          beep(1320, 0.08);
+          setBanner(`Calibrated! Est D = ${res.estimatedDistanceIn}″ — tilt & pan across array`, 'active', 'good');
+          showToast(`2-Corner Cal OK: D=${res.estimatedDistanceIn}″ (X/Y ratio ${res.aspectRatioCheck})`);
+        } else {
+          setBanner(`2-Corner Cal failed (${res.error}) — tap Zero Center or retry`, 'active', 'warn');
+        }
+      }
+    });
+
+    btnSwitchCam.addEventListener('click', async () => {
+      if (!app.running || app.devices.length < 2) return;
+      app.deviceIndex = (app.deviceIndex + 1) % app.devices.length;
+      const dev = app.devices[app.deviceIndex];
+      setBanner(`Switching lens to ${dev.label || 'cam ' + (app.deviceIndex + 1)}…`, 'cal');
+      try {
+        await openCameraStream(dev.deviceId);
+        setBanner(`Active: ${dev.label || 'rear lens'} (${app.frameW}×${app.frameH})`, 'active');
+      } catch (err) {
+        setBanner(`Switch lens failed: ${err.message}`, 'error');
+      }
+    });
+
+    btnRes.addEventListener('click', async () => {
+      app.targetRes = app.targetRes === '1080p' ? '720p' : '1080p';
+      btnRes.textContent = app.targetRes;
+      if (app.running) {
+        const dev = app.devices[app.deviceIndex];
+        await openCameraStream(dev ? dev.deviceId : null).catch(() => {});
+      }
+    });
+
+    btnTorch.addEventListener('click', async () => {
+      if (!app.cam || !app.cam.hasTorch) return;
+      app.torchOn = !app.torchOn;
+      await setTorch(app.cam.track, app.torchOn);
+      btnTorch.classList.toggle('active', app.torchOn);
+      btnTorch.textContent = app.torchOn ? 'Torch ON' : 'Torch';
+    });
+
+    btnSound.addEventListener('click', () => {
+      soundEnabled = !soundEnabled;
+      btnSound.classList.toggle('active', soundEnabled);
+      btnSound.textContent = soundEnabled ? 'Beep ON' : 'Beep OFF';
+    });
+
+    let lastZoomApply = 0;
+    rngZoom.addEventListener('input', () => {
+      const z = Number(rngZoom.value);
+      app.zoom = z;
+      lblZoom.textContent = `${z.toFixed(1)}×`;
+      mapper.updateConfig({ zoom: z });
+      const now = performance.now();
+      if (app.cam && app.cam.track && now - lastZoomApply >= 90) {
+        lastZoomApply = now;
+        app.cam.track.applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {});
+      }
+    });
+
+    // Tap any cell on the array canvas to anchor current aim to that exact cell!
+    arrayCanvas.addEventListener('click', (e) => {
+      const geom = arrayCanvas._geom;
+      if (!geom) return;
+      const rect = arrayCanvas.getBoundingClientRect();
+      const cx = (e.clientX - rect.left) * (arrayCanvas.width / rect.width);
+      const cy = (e.clientY - rect.top) * (arrayCanvas.height / rect.height);
+      const wx = (cx - geom.originX) / geom.scale;
+      const wy = (geom.originY - cy) / geom.scale;
+      const col = Math.round(wx / mapper.cfg.pitchXIn + (mapper.cfg.cols - 1) * 0.5);
+      const row = Math.round((mapper.cfg.rows - 1) * 0.5 - wy / mapper.cfg.pitchYIn);
+      if (col >= 0 && col < mapper.cfg.cols && row >= 0 && row < mapper.cfg.rows) {
+        mapper.anchorAimToCell(orient.getRelativeQuaternion(), row, col, app.frameW, app.frameH);
+        beep(920, 0.04);
+        showToast(`Anchored current aim to R${row + 1}C${col + 1}`);
+        if (app.running && app.cal2Step === 0) {
+          setBanner(`Anchored on R${row + 1}C${col + 1} — tilt & pan across array`, 'active', 'good');
+        }
+      }
+    });
+
+    btnCopyCsv.addEventListener('click', async () => {
+      const csv = mapper.exportCsv();
+      try {
+        await navigator.clipboard.writeText(csv);
+        showToast('Array CSV copied to clipboard.');
+      } catch {
+        showToast('Clipboard blocked — check browser permissions.');
+      }
+    });
+
+    btnReset.addEventListener('click', () => {
+      mapper.resetAll();
+      app.lastResult = null;
+      updateSummaryUi();
+      showToast('Array cleared.');
+    });
+
+    selLayout.addEventListener('change', () => {
+      const v = selLayout.value;
+      if (v === '4x4-tote') mapper.updateConfig({ cols: 4, rows: 4, pitchXIn: 14, pitchYIn: 16 });
+      else if (v === '3x3-tote') mapper.updateConfig({ cols: 3, rows: 3, pitchXIn: 14, pitchYIn: 16 });
+      else if (v === '2x2-tote') mapper.updateConfig({ cols: 2, rows: 2, pitchXIn: 14, pitchYIn: 16 });
+      else if (v === '2x2-desk') {
+        mapper.updateConfig({ cols: 2, rows: 2, pitchXIn: 6, pitchYIn: 8, distanceIn: 18 });
+        rngStandoff.value = '18';
+        lblStandoff.textContent = '18 in';
+      } else if (v === '4x4-desk') {
+        mapper.updateConfig({ cols: 4, rows: 4, pitchXIn: 4, pitchYIn: 5, distanceIn: 18 });
+        rngStandoff.value = '18';
+        lblStandoff.textContent = '18 in';
+      }
+      updateSummaryUi();
+    });
+
+    rngStandoff.addEventListener('input', () => {
+      const d = Number(rngStandoff.value);
+      lblStandoff.textContent = `${d} in`;
+      mapper.stance.calibratedTwoCorner = false;
+      mapper.updateConfig({ distanceIn: d });
+    });
+
+    chkInvPan.addEventListener('change', () => mapper.updateConfig({ invertPan: chkInvPan.checked }));
+    chkInvTilt.addEventListener('change', () => mapper.updateConfig({ invertTilt: chkInvTilt.checked }));
+    chkBlurGate.addEventListener('change', () => { app.blurGate = chkBlurGate.checked; });
+
+    // Desktop drag-to-pan fallback when no live gyro is active
+    let dragging = false;
+    let dragX = 0;
+    let dragY = 0;
+    camStage.addEventListener('pointerdown', (e) => {
+      if (orient.getStatus().active) return;
+      dragging = true;
+      dragX = e.clientX;
+      dragY = e.clientY;
+      camStage.setPointerCapture(e.pointerId);
+    });
+    camStage.addEventListener('pointermove', (e) => {
+      if (!dragging || orient.getStatus().active) return;
+      app.manualPanDeg = Math.max(-55, Math.min(55, app.manualPanDeg + (e.clientX - dragX) * 0.25));
+      app.manualTiltDeg = Math.max(-55, Math.min(55, app.manualTiltDeg - (e.clientY - dragY) * 0.25));
+      dragX = e.clientX;
+      dragY = e.clientY;
+      orient.setManualPanTilt(app.manualPanDeg, app.manualTiltDeg, 0);
+    });
+    camStage.addEventListener('pointerup', () => { dragging = false; });
+    camStage.addEventListener('pointercancel', () => { dragging = false; });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && app.running) {
+        handleStartStop();
+      }
+    });
+
+    updateSummaryUi();
+    requestAnimationFrame(uiLoop);
+  </script>
+</body>
+</html>

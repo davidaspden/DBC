@@ -85,10 +85,14 @@ Target total per-frame processing budget: **< 25 ms** on `1280x720` luma frames.
 ├── index.html                  # Mobile viewport, video layer, canvas HUD overlay
 ├── diag.html                   # Standalone device diagnostics page (Step D0; exempt from 25 ms scan budget)
 ├── sim.html                    # WebGL 4×4 tote wall camera motion simulator (14×16 in totes, 2×6 in Code 128)
+├── array.html                  # Live Tilt & Pan Array Scanner page (Part 3 stand-back gyro/ray-plane test)
 ├── src/
 │   ├── main.js                 # App entry, UI state machine, frame dispatch loop
 │   ├── camera.js               # getUserMedia setup, track constraints, focus lock
 │   ├── scanner.js              # Headless drop-in Code 128 scanner API (cross-origin Blob worker support)
+│   ├── array/                  # Stand-back Tilt & Pan Array Scanner modules (zero dependencies)
+│   │   ├── orient.js           # Fused RelativeOrientation/Gyro tracker, bias cal & timestamp ring buffer
+│   │   └── pan-mapper.js       # Ray-plane projection, 2-corner calibration, lattice snap & conflict guard
 │   ├── sim/                    # WebGL 4×4 tote wall simulator modules (zero dependencies)
 │   │   ├── paths.js            # Exact 14×16 in wall geometry, optics/PPM, camera paths & mat4 math
 │   │   └── webgl-wall.js       # WebGL2/1 analytical Code 128 shader, shutter blur & GPU luma pack
