@@ -11,9 +11,10 @@
  *  - Wall lies on Z = 0; camera stands at (Px, Py, D) looking along -Z when qRel = identity.
  */
 
-import { quatRotateVec } from './orient.js';
+import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js';
 
 const DEG_TO_RAD = Math.PI / 180;
+const RAD_TO_DEG = 180 / Math.PI;
 const MIN_WZ_IN = 0.25; // Reject oblique rays > ~75 deg off wall normal
 
 export function createPanArrayMapper(opts = {}) {
@@ -157,6 +158,41 @@ export function createPanArrayMapper(opts = {}) {
   }
 
   /**
+   * Computes the exact wall-normal orientation quaternion aiming from centered stance
+   * `(0, 0, stance.d)` directly at cell `(row, col)` (or wall center when `row === null`).
+   * Respects `cfg.invertPan` / `cfg.invertTilt` so `projectPixelToWall(q, cx, cy)` lands
+   * squarely on that cell with zero corner tangent distortion.
+   */
+  function getAimQuaternionForCell(row, col) {
+    let targetX = 0;
+    let targetY = 0;
+    if (row !== null && col !== null && row >= 0 && row < cfg.rows && col >= 0 && col < cfg.cols) {
+      const cell = cells[row * cfg.cols + col];
+      targetX = cell.cx;
+      targetY = cell.cy;
+    }
+    const d = Math.max(4, stance.d);
+    const sx = targetX / (stance.scaleX || 1);
+    const sy = targetY / (stance.scaleY || 1);
+    const panDeg = Math.atan2(sx, d) * RAD_TO_DEG * (cfg.invertPan ? -1 : 1);
+    const tiltDeg = Math.atan2(sy, Math.hypot(sx, d)) * RAD_TO_DEG * (cfg.invertTilt ? -1 : 1);
+    return {
+      quat: quatFromPanTiltRollDeg(panDeg, tiltDeg, 0),
+      panDeg,
+      tiltDeg,
+    };
+  }
+
+  /**
+   * Convenience helper returning the aim quaternion for `'top-left'`, `'top-right'`, or `'center'`.
+   */
+  function getStartCornerAim(corner = 'top-left') {
+    if (corner === 'top-left') return { ...getAimQuaternionForCell(0, 0), cell: cells[0] };
+    if (corner === 'top-right') return { ...getAimQuaternionForCell(0, cfg.cols - 1), cell: cells[cfg.cols - 1] };
+    return { ...getAimQuaternionForCell(null, null), cell: null };
+  }
+
+  /**
    * Anchors the current aim ray (center of screen at orientation `qRel`) to a specific
    * cell `(row, col)` — or wall center when `row === null`.
    */
@@ -177,13 +213,12 @@ export function createPanArrayMapper(opts = {}) {
   }
 
   /**
-   * 2-Corner Calibration:
-   *  - Step 1 (`step === 1`): operator aims at top-left cell (R1C1)
-   *  - Step 2 (`step === 2`): operator aims at bottom-right cell (R_last C_last)
-   * Computes empirical angular scale so tilting & panning matches the exact physical array span
-   * regardless of whether actual distance D or lens HFOV differs from nominal!
+   * 2-Corner Calibration supporting either top corner as the start:
+   *  - `startCorner === 'top-left'`:  Step 1 = R1C1 (top-left),  Step 2 = R_last C_last (bottom-right)
+   *  - `startCorner === 'top-right'`: Step 1 = R1C_last (top-right), Step 2 = R_last C1 (bottom-left)
+   * Computes empirical angular scale so tilting & panning matches the exact physical array span.
    */
-  function recordCornerCalibration(step, qRel) {
+  function recordCornerCalibration(step, qRel, startCorner = 'top-left') {
     quatRotateVec(qRel, 0, 0, -1, rotScratch);
     const rx = cfg.invertPan ? -rotScratch[0] : rotScratch[0];
     const ry = cfg.invertTilt ? -rotScratch[1] : rotScratch[1];
@@ -194,17 +229,19 @@ export function createPanArrayMapper(opts = {}) {
     const ty = ry / wzIn;
 
     if (step === 1) {
-      twoCornerAnchorA = { tx, ty };
-      return { ok: true, step: 1 };
+      const corner = startCorner === 'top-right' ? 'top-right' : 'top-left';
+      twoCornerAnchorA = { tx, ty, corner };
+      return { ok: true, step: 1, corner };
     }
 
     if (step === 2 && twoCornerAnchorA) {
-      const tl = cells[0];
-      const br = cells[cells.length - 1];
+      const isTR = twoCornerAnchorA.corner === 'top-right';
+      const cellA = isTR ? cells[cfg.cols - 1] : cells[0];
+      const cellB = isTR ? cells[(cfg.rows - 1) * cfg.cols] : cells[cells.length - 1];
       const dTx = tx - twoCornerAnchorA.tx;
       const dTy = ty - twoCornerAnchorA.ty;
-      const spanX = br.cx - tl.cx; // positive
-      const spanY = br.cy - tl.cy; // negative
+      const spanX = cellB.cx - cellA.cx; // + for TL->BR, - for TR->BL
+      const spanY = cellB.cy - cellA.cy; // - for both (top -> bottom)
 
       if (Math.abs(dTx) < 0.08 || Math.abs(dTy) < 0.08) {
         return { ok: false, error: 'AngleSpanTooSmall' };
@@ -223,9 +260,9 @@ export function createPanArrayMapper(opts = {}) {
       stance.scaleY = dEffY / dAvg;
       stance.yawTrimRad = 0;
       stance.pitchTrimRad = 0;
-      // Place (px, py) so corner A lands squarely on tl (R1C1)
-      stance.px = tl.cx - dAvg * twoCornerAnchorA.tx * stance.scaleX;
-      stance.py = tl.cy - dAvg * twoCornerAnchorA.ty * stance.scaleY;
+      // Place (px, py) so corner A lands squarely on cellA
+      stance.px = cellA.cx - dAvg * twoCornerAnchorA.tx * stance.scaleX;
+      stance.py = cellA.cy - dAvg * twoCornerAnchorA.ty * stance.scaleY;
       stance.calibratedTwoCorner = true;
       stance.stanceWarning = false;
       twoCornerAnchorA = null;
@@ -233,6 +270,7 @@ export function createPanArrayMapper(opts = {}) {
       return {
         ok: true,
         step: 2,
+        startCorner: isTR ? 'top-right' : 'top-left',
         estimatedDistanceIn: Math.round(dAvg * 10) / 10,
         aspectRatioCheck: Math.round((dEffX / dEffY) * 100) / 100,
       };
@@ -412,6 +450,8 @@ export function createPanArrayMapper(opts = {}) {
     getFocalLengthPx,
     projectPixelToWall,
     getCameraFootprint,
+    getAimQuaternionForCell,
+    getStartCornerAim,
     anchorAimToCell,
     recordCornerCalibration,
     addObservation,

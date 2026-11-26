@@ -260,6 +260,24 @@ export function createOrientationTracker() {
   }
 
   /**
+   * Sets the reference frame so the current physical phone orientation maps exactly
+   * to `targetQuat` in wall-normal space (`qZeroInv = targetQuat * conj(qCur)`).
+   * Used when zeroing on Top-Left (R1C1) or Top-Right (R1C4) without tangent distortion.
+   */
+  function zeroToQuaternion(targetQuat) {
+    if (!targetQuat) {
+      zeroNow();
+      return;
+    }
+    quatConjugate(qCur, qTmp);
+    quatMultiply(targetQuat, qTmp, qZeroInv);
+    quatNormalize(qZeroInv, qZeroInv);
+    quatMultiply(qZeroInv, qCur, qRel);
+    const now = performance.now();
+    pushRing(now, qRel, wPanDps, wPitchDps);
+  }
+
+  /**
    * Manually sets relative orientation (used for desktop drag-to-pan simulation fallback).
    */
   function setManualPanTilt(panRightDeg, tiltUpDeg, rollDeg = 0) {
@@ -461,9 +479,9 @@ export function createOrientationTracker() {
 
   /**
    * Runs a stationary hold (`durationMs`, default 1800 ms) to verify stillness,
-   * estimate raw gyro bias, and lock the reference zero orientation.
+   * estimate raw gyro bias, and lock the reference zero orientation (optionally to `targetQuat`).
    */
-  async function calibrateZero(durationMs = 1800) {
+  async function calibrateZero(durationMs = 1800, targetQuat = null) {
     calActive = true;
     calSumX = 0; calSumY = 0; calSumZ = 0; calN = 0;
 
@@ -471,7 +489,8 @@ export function createOrientationTracker() {
     calActive = false;
 
     if (calN < 5) {
-      zeroNow();
+      if (targetQuat) zeroToQuaternion(targetQuat);
+      else zeroNow();
       return { ok: false, n: calN, rmsDps: 0, biasDps: 0, moved: false };
     }
 
@@ -499,7 +518,8 @@ export function createOrientationTracker() {
       biasCalibrated = true;
     }
     lastBiasRmsDps = rmsDps;
-    zeroNow();
+    if (targetQuat) zeroToQuaternion(targetQuat);
+    else zeroNow();
 
     return {
       ok: !moved,
@@ -564,6 +584,7 @@ export function createOrientationTracker() {
     start,
     stop,
     zeroNow,
+    zeroToQuaternion,
     calibrateZero,
     setManualPanTilt,
     getQuaternionAt,

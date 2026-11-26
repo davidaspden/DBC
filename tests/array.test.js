@@ -121,6 +121,50 @@ test('Conflict guard flags mismatched barcode landing on an already-read cell', 
   assert.equal(mapper.getCells()[0].state, 'CONFLICT');
 });
 
+test('Zeroing on Top-Left (R1C1) or Top-Right (R1C4) maps cleanly across entire 4x4 array', () => {
+  const mapper = createPanArrayMapper({ cols: 4, rows: 4, pitchXIn: 14, pitchYIn: 16, distanceIn: 30 });
+  const orient = createOrientationTracker();
+
+  // Start aimed at Top-Left (R1C1)
+  const tlAim = mapper.getStartCornerAim('top-left');
+  orient.zeroToQuaternion(tlAim.quat);
+  const pTL = mapper.projectPixelToWall(orient.getRelativeQuaternion(), 640, 360, 1280, 720);
+  assert.equal(pTL.ok, true);
+  assert.equal(Math.round(pTL.rowFloat) | 0, 0);
+  assert.equal(Math.round(pTL.colFloat) | 0, 0);
+  assert.ok(Math.abs(pTL.wx - (-21)) < 0.15, `TL wx=${pTL.wx}`);
+  assert.ok(Math.abs(pTL.wy - 24) < 0.15, `TL wy=${pTL.wy}`);
+
+  // Start aimed at Top-Right (R1C4)
+  const trAim = mapper.getStartCornerAim('top-right');
+  orient.zeroToQuaternion(trAim.quat);
+  const pTR = mapper.projectPixelToWall(orient.getRelativeQuaternion(), 640, 360, 1280, 720);
+  assert.equal(pTR.ok, true);
+  assert.equal(Math.round(pTR.rowFloat) | 0, 0);
+  assert.equal(Math.round(pTR.colFloat) | 0, 3);
+  assert.ok(Math.abs(pTR.wx - 21) < 0.15, `TR wx=${pTR.wx}`);
+  assert.ok(Math.abs(pTR.wy - 24) < 0.15, `TR wy=${pTR.wy}`);
+
+  // 2-Corner calibration starting from Top-Right (R1C4 -> R4C1) recovers true standoff D=38 in
+  const trueD = 38;
+  const qTR = quatFromPanTiltRollDeg(
+    Math.atan2(21, trueD) * (180 / Math.PI),
+    Math.atan2(24, Math.hypot(21, trueD)) * (180 / Math.PI),
+    0
+  );
+  const qBL = quatFromPanTiltRollDeg(
+    Math.atan2(-21, trueD) * (180 / Math.PI),
+    Math.atan2(-24, Math.hypot(-21, trueD)) * (180 / Math.PI),
+    0
+  );
+  const c1 = mapper.recordCornerCalibration(1, qTR, 'top-right');
+  assert.equal(c1.ok, true);
+  const c2 = mapper.recordCornerCalibration(2, qBL, 'top-right');
+  assert.equal(c2.ok, true);
+  assert.equal(c2.startCorner, 'top-right');
+  assert.ok(Math.abs(c2.estimatedDistanceIn - trueD) < 2.5, `estimated D=${c2.estimatedDistanceIn}, true=${trueD}`);
+});
+
 test('OrientationTracker manual pan/tilt lookup works cleanly', () => {
   const orient = createOrientationTracker();
   orient.setManualPanTilt(15, -10, 0);
