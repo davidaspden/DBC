@@ -442,8 +442,8 @@
 
   <script type="module">
     import { startCamera, stopCamera, setTorch, listVideoDevices } from './src/camera.js';
-    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js';
-    import { createPanArrayMapper } from './src/array/pan-mapper.js';
+    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=2';
+    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=2';
 
     const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 

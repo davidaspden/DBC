@@ -11,7 +11,7 @@
  *  - Wall lies on Z = 0; camera stands at (Px, Py, D) looking along -Z when qRel = identity.
  */
 
-import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js';
+import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js?v=2';
 
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
