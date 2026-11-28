@@ -28,6 +28,8 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
    - NO string building or template literals except when emitting a validated final decode result.
    - Reuse fixed-size pre-allocated result objects/TypedArrays and return numeric status codes or counts.
 
+See `docs/DBC-zero-alloc-buffer-strategies.md` for the concrete buffer additions and reuse contracts for the module-estimate / blur-edges / matched-filter / soft-DP / multi-scale-tensor work. All new buffers must still obey the rules above.
+
 ---
 
 ## 3. Numeric Performance
