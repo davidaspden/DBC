@@ -506,9 +506,12 @@ export const SIM_FLAG_COVERAGE = Object.freeze({
   arCompose: {
     registry: 'sim',
     scenarios: [],
-    tests: [{ file: 'tests/simflags.test.js', testName: 'All declared sim and AR flags default to false' }],
-    planned: 'M5/M6/S17',
-    reason: 'Wave 2-3 items M5/M6 (AR photometry & label compositor); registry tested in simflags.test.js.',
+    tests: [
+      { file: 'tests/simflags.test.js', testName: 'All declared sim and AR flags default to false' },
+      { file: 'tests/ar-compose.test.js', testName: 'M6 flag off: compose copies the raw frame bit-for-bit and draws nothing' },
+    ],
+    planned: 'S17 (AR replay scenario, M9)',
+    reason: 'Wave 2-3 items M5/M6 (AR photometry & label compositor); compositor covered by tests/ar-compose.test.js.',
   },
   arGyroPrior: {
     registry: 'sim',
