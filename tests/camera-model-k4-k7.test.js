@@ -28,6 +28,18 @@ import {
   stepAutofocus,
   applyOpticsModel,
 } from '../src/sim/camera-model/optics.js';
+import {
+  DEFAULT_COMPRESS_CONFIG,
+  computePsnr,
+  createCompressState,
+  applyCompression,
+} from '../src/sim/camera-model/compress.js';
+import {
+  createPipelineState,
+  createPipelineResult,
+  processFrameMulti,
+  extractMultiDetections,
+} from '../src/worker/scanner.worker.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -319,6 +331,118 @@ test('K5: zero-allocation hot loop in applyOpticsModel', () => {
     globalThis.gc();
     const bpf = Math.max(0, (process.memoryUsage().heapUsed - h0) / iters);
     assert.ok(bpf < 128, `K5 hot-loop heap growth too high: ${bpf.toFixed(1)} B/frame`);
+  }
+});
+
+// ============================================================================
+// K6 — 8x8 Separable DCT & JPEG-Style Luma Quantization Compression
+// ============================================================================
+
+test('K6: PSNR is strictly monotone with quality and default-off is exact no-op', () => {
+  assert.equal(DEFAULT_COMPRESS_CONFIG.enabled, false);
+  const w = 160;
+  const h = 120;
+  const src = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Textured high-frequency pattern (bars + smooth ramp)
+      const bars = ((y >> 1) & 1) ? 210 : 40;
+      const ramp = (x * 255 / w) | 0;
+      src[y * w + x] = (x > 40 && x < 120) ? bars : ramp;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  const st = createCompressState({ enabled: true, quality: 10 });
+
+  const qualities = [10, 20, 40, 60, 85, 95];
+  let prevPsnr = -Infinity;
+  for (const q of qualities) {
+    st.quality = q;
+    applyCompression(src, w, h, st, out);
+    const psnr = computePsnr(src, out);
+    assert.ok(psnr > prevPsnr, `PSNR must increase strictly with quality: Q=${q} (${psnr.toFixed(2)} dB) <= prev (${prevPsnr.toFixed(2)} dB)`);
+    prevPsnr = psnr;
+  }
+
+  st.enabled = false;
+  applyCompression(src, w, h, st, out);
+  assert.deepEqual(out, src);
+});
+
+test('K6: 1.5-2.0 px/module ladder barcode decodes at Q=85 and degrades at Q=20', () => {
+  const scene = createScene({
+    fcMode: true,
+    shadowStrength: 0.15,
+    noiseStrength: 0,
+    glareStrength: 0,
+    label: {
+      widthIn: 2.0,
+      heightIn: 3.5,
+      orientation: 'ladder',
+      payloadFn: () => 'tsX07wz7py1',
+    },
+  });
+  const cell = scene.cells[5];
+  const width = 1280;
+  const height = 720;
+  const hfovDeg = 70.7;
+  // At 12 in on 1280x720 (70.7 deg HFOV), 176 modules over 3.5 in => ~1.50 px/module;
+  // at 10.5 in => ~1.71 px/module (squarely in 1.5-2.0 px/module range)
+  const distIn = 10.5;
+  const optics = computeOptics({
+    distanceIn: distIn,
+    hfovDeg,
+    widthPx: width,
+    heightPx: height,
+    totalModules: 176,
+    labelWidthIn: 2.0,
+    labelHeightIn: 3.5,
+  });
+  const ppm = optics.barcodeHeightPx / 176;
+  assert.ok(ppm >= 1.5 && ppm <= 2.0,
+    `expected 1.5-2.0 px/module, got ${ppm.toFixed(2)}`);
+
+  const pose = { x: cell.cx, y: cell.cy, z: distIn, yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+  const clean = new Uint8Array(width * height);
+  renderFrame(scene, pose, { width, height, hfovDeg, seed: 1 }, clean);
+
+  const comp85 = new Uint8Array(width * height);
+  const comp20 = new Uint8Array(width * height);
+  const stComp = createCompressState({ enabled: true, quality: 85 });
+  applyCompression(clean, width, height, stComp, comp85);
+  stComp.quality = 20;
+  applyCompression(clean, width, height, stComp, comp20);
+
+  const psnr85 = computePsnr(clean, comp85);
+  const psnr20 = computePsnr(clean, comp20);
+  assert.ok(psnr85 > psnr20 + 6.0,
+    `expected Q=20 to degrade PSNR by >6 dB: Q85=${psnr85.toFixed(2)} dB, Q20=${psnr20.toFixed(2)} dB`);
+
+  const pipeState = createPipelineState(width, height);
+  pipeState.flags = 0;
+  const pipeRes = createPipelineResult();
+  processFrameMulti(comp85, width, height, pipeState, pipeRes, false);
+  const dets85 = extractMultiDetections(pipeState);
+  assert.ok(dets85.some((d) => d.payload === 'tsX07wz7py1'),
+    `expected Q=85 ladder (${ppm.toFixed(2)} px/mod) to decode tsX07wz7py1, got ${JSON.stringify(dets85.map((d) => d.payload))}`);
+});
+
+test('K6: zero-allocation hot loop in applyCompression', () => {
+  const w = 160;
+  const h = 96;
+  const src = new Uint8Array(w * h);
+  for (let i = 0; i < src.length; i++) src[i] = (i * 19) & 255;
+  const out = new Uint8Array(w * h);
+  const st = createCompressState({ enabled: true, quality: 75 });
+  for (let i = 0; i < 20; i++) applyCompression(src, w, h, st, out);
+  if (typeof globalThis.gc === 'function') {
+    globalThis.gc();
+    const h0 = process.memoryUsage().heapUsed;
+    const iters = 50;
+    for (let i = 0; i < iters; i++) applyCompression(src, w, h, st, out);
+    globalThis.gc();
+    const bpf = Math.max(0, (process.memoryUsage().heapUsed - h0) / iters);
+    assert.ok(bpf < 128, `K6 hot-loop heap growth too high: ${bpf.toFixed(1)} B/frame`);
   }
 });
 
