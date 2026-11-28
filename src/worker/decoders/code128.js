@@ -422,7 +422,13 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
           const totalStopErr = (sErr + ((Math.imul(sInd, 115) >> 8) | 0)) | 0;
           if (totalStopErr <= MAX_STOP_ERR_Q8) {
             const trailIdx = (cursor + Math.imul(7, step)) | 0;
-            const trailOk = trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= (prevCharW >> 2);
+            // H2: When cribMatch is active, require >= ~3.52 modules trailing quiet zone (strictly > 3.0)
+            // so Stop's own 3-module internal space cannot validate a false early Stop on symbol 74 + Stop[0].
+            // Flags-off preserves the exact baseline `prevCharW >> 2` (2.75 modules) check.
+            const minTrailW = (state.flags & FLAG_CRIB_MATCH) !== 0
+              ? ((Math.imul(prevCharW, 82) >> 8) | 0)
+              : (prevCharW >> 2);
+            const trailOk = trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW;
             if (trailOk) {
               stopped = 1;
               break;
