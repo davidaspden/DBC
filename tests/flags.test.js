@@ -17,6 +17,18 @@ import {
   describe,
 } from '../src/flags.js';
 import * as flagBits from '../src/worker/flagbits.js';
+import {
+  buildSyntheticTestMatrix,
+  FRAME_WIDTH,
+  FRAME_HEIGHT,
+  createScanResult,
+  resetScanResult,
+} from './harness.js';
+import {
+  createPipelineState,
+  processFrame,
+  extractPayloadString,
+} from '../src/worker/scanner.worker.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -55,19 +67,61 @@ test('URL ?flags= overrides localStorage and maps worker flags to exact bitmask'
   assert.equal(flagsToWorkerMask(resolved), expectedMask);
 });
 
-test('?flags=none overrides stored flags and ?flags=all enables all flags; ?tape=1 enables tapeRecord', () => {
+test('?flags=none overrides stored flags, ?flags=all excludes exclusive requirePrefixStrict, ?flags=allStrict enables all, ?tape=1 enables tapeRecord', () => {
   const none = resolveFlags({ stored: { vertFallback: true, camAlign: true }, search: '?flags=none' });
   assert.equal(none.vertFallback, false);
   assert.equal(none.camAlign, false);
   assert.equal(flagsToWorkerMask(none), 0);
 
   const all = resolveFlags({ search: '?flags=all' });
-  for (const def of FLAG_DEFS) assert.equal(all[def.name], true);
+  for (const def of FLAG_DEFS) {
+    assert.equal(all[def.name], !def.exclusive, `flag ${def.name} expected ${!def.exclusive} under ?flags=all`);
+  }
+  assert.equal(all.requirePrefixStrict, false);
   assert.ok(flagsToWorkerMask(all) > 0);
+  assert.equal((flagsToWorkerMask(all) & WORKER_FLAG_BITS.requirePrefixStrict), 0);
+
+  const allStrict = resolveFlags({ search: '?flags=allStrict' });
+  for (const def of FLAG_DEFS) assert.equal(allStrict[def.name], true);
+  assert.equal(allStrict.requirePrefixStrict, true);
+
+  const allPlusExplicit = resolveFlags({ search: '?flags=all,requirePrefixStrict' });
+  assert.equal(allPlusExplicit.requirePrefixStrict, true);
 
   const tape = resolveFlags({ search: '?tape=1' });
   assert.equal(tape.tapeRecord, true);
   assert.equal(tape.vertFallback, false);
+});
+
+test('H1 ?flags=all decodes 14/14 positive harness fixtures with 0 false positives', () => {
+  const allFlags = resolveFlags({ search: '?flags=all' });
+  const mask = flagsToWorkerMask(allFlags);
+  const fixtures = buildSyntheticTestMatrix();
+  const pipeState = createPipelineState(FRAME_WIDTH, FRAME_HEIGHT);
+  pipeState.flags = mask;
+  const result = createScanResult();
+
+  let posTotal = 0;
+  let posDecoded = 0;
+  let negTotal = 0;
+  let falsePositives = 0;
+
+  for (const fx of fixtures) {
+    resetScanResult(result);
+    const detected = processFrame(fx.luma, fx.width, fx.height, pipeState, result, false);
+    const decoded = detected === 1 ? extractPayloadString(result) : null;
+    if (fx.symbology === 'CODE_128') {
+      posTotal++;
+      if (detected === 1 && decoded === fx.payload) posDecoded++;
+    } else {
+      negTotal++;
+      if (detected === 1) falsePositives++;
+    }
+  }
+  assert.equal(posTotal, 14);
+  assert.equal(posDecoded, 14, `expected 14/14 decoded under ?flags=all, got ${posDecoded}/${posTotal}`);
+  assert.equal(negTotal, 2);
+  assert.equal(falsePositives, 0);
 });
 
 test('Unknown flag names in URL/storage are ignored safely and describe() returns full metadata', () => {

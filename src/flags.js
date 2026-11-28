@@ -4,7 +4,8 @@
  * Resolution priority: defaults (all false) < localStorage['dbc.flags'] < URL ?flags=...
  * Supports:
  *  - ?flags=overlayDim,tallGuide     (enable named flags)
- *  - ?flags=all                      (enable all flags for QA)
+ *  - ?flags=all                      (enable all non-exclusive flags for QA; excludes requirePrefixStrict)
+ *  - ?flags=allStrict                (enable every flag including exclusive gates like requirePrefixStrict)
  *  - ?flags=none                     (force all flags off, overriding localStorage)
  *  - ?flags=-flagName                (explicitly disable a flag enabled in localStorage)
  *
@@ -26,7 +27,7 @@ export const FLAG_DEFS = Object.freeze([
   { name: 'extraLines',          bit: WORKER_FLAG_BITS.extraLines,           default: false, item: 'W2',   desc: 'Use 13 scanlines instead of 11 on ROI path' },
   { name: 'cribMatch',           bit: WORKER_FLAG_BITS.cribMatch,            default: false, item: 'W3',   desc: 'Match tsX Code 128B prefix crib for scale and alignment' },
   { name: 'requirePrefix',       bit: WORKER_FLAG_BITS.requirePrefix,        default: false, item: 'W4',   desc: 'Prefix bonus with mandatory plain-decode fallback' },
-  { name: 'requirePrefixStrict', bit: WORKER_FLAG_BITS.requirePrefixStrict,  default: false, item: 'W4',   desc: 'Strict tsX prefix gate (FC array page only)' },
+  { name: 'requirePrefixStrict', bit: WORKER_FLAG_BITS.requirePrefixStrict,  default: false, exclusive: true, item: 'W4',   desc: 'Strict tsX prefix gate (FC array page only)' },
   { name: 'prefixStack',         bit: WORKER_FLAG_BITS.prefixStack,          default: false, item: 'W5',   desc: 'Prefix-aligned scanline profile stacking' },
   { name: 'illumNorm',           bit: WORKER_FLAG_BITS.illumNorm,            default: false, item: 'W6',   desc: 'Per-scanline running-mean illumination normalisation' },
   { name: 'subpixEdges',         bit: WORKER_FLAG_BITS.subpixEdges,          default: false, item: 'W7',   desc: 'Sub-pixel mid-crossing edge default at low px/module' },
@@ -112,6 +113,10 @@ export function resolveFlags(opts = {}) {
       const tokens = raw.split(',').map((s) => s.trim()).filter(Boolean);
       for (const tok of tokens) {
         if (tok === 'all') {
+          for (let i = 0; i < FLAG_DEFS.length; i++) {
+            if (!FLAG_DEFS[i].exclusive) out[FLAG_DEFS[i].name] = true;
+          }
+        } else if (tok === 'allStrict') {
           for (let i = 0; i < FLAG_DEFS.length; i++) out[FLAG_DEFS[i].name] = true;
         } else if (tok === 'none') {
           for (let i = 0; i < FLAG_DEFS.length; i++) out[FLAG_DEFS[i].name] = false;
@@ -194,6 +199,7 @@ export function describe() {
     item: def.item,
     enabled: Boolean(activeFlags[def.name]),
     default: def.default,
+    exclusive: Boolean(def.exclusive),
     bit: def.bit,
     desc: def.desc,
   }));
