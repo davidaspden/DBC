@@ -17,6 +17,7 @@ import {
   sampleBarcodeIntegrated1D,
   DEFAULT_LABEL_SPEC,
 } from './label.js';
+import { normalizeLipsSpec } from './lips.js';
 import {
   mat4Perspective,
   mat4CameraView,
@@ -119,7 +120,10 @@ function getEncodedScene(scene) {
   const cellTotalModules = new Int32Array(numCells);
   const cellCx = new Float32Array(numCells);
   const cellCy = new Float32Array(numCells);
+  const cellLabelOffX = new Float32Array(numCells);
+  const cellLabelOffY = new Float32Array(numCells);
   const toteLuma = new Float32Array(numCells);
+  let hasLabelOffset = false;
 
   for (let i = 0; i < numCells; i++) {
     const c = cells[i];
@@ -128,6 +132,11 @@ function getEncodedScene(scene) {
     cellTotalModules[i] = enc.totalModules;
     cellCx[i] = c.cx;
     cellCy[i] = c.cy;
+    const ox = Number.isFinite(c.labelOffsetXIn) ? c.labelOffsetXIn : 0;
+    const oy = Number.isFinite(c.labelOffsetYIn) ? c.labelOffsetYIn : 0;
+    cellLabelOffX[i] = ox;
+    cellLabelOffY[i] = oy;
+    if (ox !== 0 || oy !== 0) hasLabelOffset = true;
     const tone = 0.92 + 0.14 * hash12(c.col * 7.1, c.row * 13.7);
     toteLuma[i] = TOTE_BASE_LUMA * tone;
   }
@@ -138,6 +147,9 @@ function getEncodedScene(scene) {
     cellTotalModules,
     cellCx,
     cellCy,
+    cellLabelOffX,
+    cellLabelOffY,
+    hasLabelOffset,
     toteLuma,
   };
   sceneCacheMap.set(scene, cached);
@@ -284,8 +296,8 @@ function computeVisibleLabelBoxes(scene, enc, poses, numPoses, halfBW, halfBH, w
     mat4Multiply(projMat, viewMat, mvpMat);
 
     for (let i = 0; i < numCells; i++) {
-      const cx = enc.cellCx[i];
-      const cy = enc.cellCy[i];
+      const cx = enc.cellCx[i] + enc.cellLabelOffX[i];
+      const cy = enc.cellCy[i] + enc.cellLabelOffY[i];
       let minX = width;
       let maxX = -1;
       let minY = height;
@@ -414,8 +426,25 @@ function renderFullFrameSinglePose(
   const toteLuma = enc.toteLuma;
   const cellModules = enc.cellModules;
   const cellTotalModules = enc.cellTotalModules;
+  const cellLabelOffX = enc.cellLabelOffX;
+  const cellLabelOffY = enc.cellLabelOffY;
+  const hasLabelOffset = enc.hasLabelOffset;
   const maxCol = cols - 1;
   const maxRow = rows - 1;
+
+  // L4: Optional recessed tote lip & parallax occlusion parameters (null when simLips is off)
+  const lips = normalizeLipsSpec(scene.lips);
+  const hasLips = lips !== null;
+  const lipHeightIn = hasLips ? lips.lipHeightIn : 0.0;
+  const lipWidthIn = hasLips ? lips.lipWidthIn : 0.0;
+  const interlockOffsetIn = hasLips ? lips.interlockOffsetIn : 0.0;
+  const openHalfW = hasLips ? Math.max(0.5, halfToteW - lipWidthIn) : halfToteW;
+  const openTopY = hasLips ? Math.max(0.5, halfToteH - lipWidthIn - interlockOffsetIn) : halfToteH;
+  const openBotY = hasLips ? -Math.max(0.5, halfToteH - lipWidthIn) : -halfToteH;
+  const shadowBandIn = hasLips ? lips.shadowBandIn : 0.0;
+  const invShadowBand = (hasLips && shadowBandIn > 1e-6) ? (1.0 / shadowBandIn) : 0.0;
+  const shadowDarken = hasLips ? lips.shadowDarken : 0.0;
+  const lipHighlight = hasLips ? lips.lipHighlight : 0.0;
 
   // Inlined mulberry32 state
   let rng = (seedU32 >>> 0) || 0x6d2b79f5;
@@ -468,62 +497,130 @@ function renderFullFrameSinglePose(
       let ny = 0.0;
       let nz = 1.0;
 
-      if (includeLabels && absLx <= halfBW && absLy <= halfBH) {
-        isLabel = true;
-        const inBars = isPicket ? (absLy <= barHalfSpan) : (absLx <= barHalfSpan);
-        if (inBars) {
-          let v01, dvDx, dvDy;
-          if (!isPicket) {
-            v01 = (halfBH - ly) * invLabelH;
-            const dyInvDz = Dy * invDz;
-            dvDx = -t * (dDy_x - dyInvDz * dDz_x) * invLabelH;
-            dvDy = -t * (dDy_y - dyInvDz * dDz_y) * invLabelH;
+      // L4: Check ray intersection with protruding lip plane z = lipHeightIn before z = 0
+      let hitLip = false;
+      if (hasLips && camZ > lipHeightIn) {
+        const lipScale = lipHeightIn * invDz;
+        const wxLip = wx + lipScale * Dx;
+        const wyLip = wy + lipScale * Dy;
+        const uLip = (wxLip + halfWallW) * invPitchX;
+        const vLip = (halfWallH - wyLip) * invPitchY;
+        let colLip = uLip | 0;
+        if (colLip < 0) colLip = 0; else if (colLip > maxCol) colLip = maxCol;
+        let rowLip = vLip | 0;
+        if (rowLip < 0) rowLip = 0; else if (rowLip > maxRow) rowLip = maxRow;
+        const lxLip = (uLip - colLip - 0.5) * pitchX;
+        const lyLip = (0.5 - (vLip - rowLip)) * pitchY;
+        const absLxLip = lxLip < 0 ? -lxLip : lxLip;
+        const absLyLip = lyLip < 0 ? -lyLip : lyLip;
+
+        if (colLip !== col || rowLip !== row || absLxLip > openHalfW || lyLip > openTopY || lyLip < openBotY) {
+          hitLip = true;
+          const lipCellIdx = rowLip * cols + colLip;
+          const edgeXLip = halfToteW - absLxLip;
+          const edgeYLip = halfToteH - absLyLip;
+          const edgeDistLip = edgeXLip < edgeYLip ? edgeXLip : edgeYLip;
+          if (edgeDistLip < 0.22) {
+            albedo = SEAM_LUMA;
           } else {
-            v01 = (lx + halfBW) * invLabelW;
-            const dxInvDz = Dx * invDz;
-            dvDx = t * (dDx_x - dxInvDz * dDz_x) * invLabelW;
-            dvDy = t * (dDx_y - dxInvDz * dDz_y) * invLabelW;
+            albedo = toteLuma[lipCellIdx] * 0.84;
+            const dOpenX = absLxLip - openHalfW;
+            const dOpenTop = lyLip - openTopY;
+            const dOpenBot = openBotY - lyLip;
+            let dOpen = dOpenX > dOpenTop ? dOpenX : dOpenTop;
+            if (dOpenBot > dOpen) dOpen = dOpenBot;
+            if (dOpen >= 0.0 && dOpen < 0.16 && lipHighlight > 0.0) {
+              albedo += lipHighlight * (1.0 - dOpen * 6.25) * 0.55;
+            }
+            if (edgeXLip < edgeYLip) {
+              if (lxLip >= 0) {
+                nx = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PX;
+              } else {
+                nx = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NX;
+              }
+            } else {
+              if (lyLip >= 0) {
+                ny = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PY;
+              } else {
+                ny = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NY;
+              }
+            }
           }
-          const dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
-          const barCov = sampleBarcodeIntegrated1D(
-            cellModules[cellIdx],
-            cellTotalModules[cellIdx],
-            v01,
-            dv,
-            printGain
-          );
-          albedo = paperAlbedo + inkMinusPaper * barCov;
-        } else {
-          albedo = paperAlbedo;
         }
-      } else {
-        const edgeX = halfToteW - absLx;
-        const edgeY = halfToteH - absLy;
-        const edgeDist = edgeX < edgeY ? edgeX : edgeY;
-        if (edgeDist < 0.22) {
-          albedo = SEAM_LUMA;
-        } else if (edgeDist < 0.65) {
-          albedo = toteLuma[cellIdx] * 0.78;
-          if (edgeX < edgeY) {
-            if (lx >= 0) {
-              nx = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PX;
+      }
+
+      if (!hitLip) {
+        const llx = hasLabelOffset ? (lx - cellLabelOffX[cellIdx]) : lx;
+        const lly = hasLabelOffset ? (ly - cellLabelOffY[cellIdx]) : ly;
+        const absLlx = llx < 0 ? -llx : llx;
+        const absLly = lly < 0 ? -lly : lly;
+
+        if (includeLabels && absLlx <= halfBW && absLly <= halfBH) {
+          isLabel = true;
+          const inBars = isPicket ? (absLly <= barHalfSpan) : (absLlx <= barHalfSpan);
+          if (inBars) {
+            let v01, dvDx, dvDy;
+            if (!isPicket) {
+              v01 = (halfBH - lly) * invLabelH;
+              const dyInvDz = Dy * invDz;
+              dvDx = -t * (dDy_x - dyInvDz * dDz_x) * invLabelH;
+              dvDy = -t * (dDy_y - dyInvDz * dDz_y) * invLabelH;
             } else {
-              nx = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NX;
+              v01 = (llx + halfBW) * invLabelW;
+              const dxInvDz = Dx * invDz;
+              dvDx = t * (dDx_x - dxInvDz * dDz_x) * invLabelW;
+              dvDy = t * (dDx_y - dxInvDz * dDz_y) * invLabelW;
             }
+            const dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
+            const barCov = sampleBarcodeIntegrated1D(
+              cellModules[cellIdx],
+              cellTotalModules[cellIdx],
+              v01,
+              dv,
+              printGain
+            );
+            albedo = paperAlbedo + inkMinusPaper * barCov;
           } else {
-            if (ly >= 0) {
-              ny = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PY;
-            } else {
-              ny = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NY;
-            }
+            albedo = paperAlbedo;
           }
         } else {
-          albedo = toteLuma[cellIdx];
-          if (absLx < 2.6 && ly > 5.0 && ly < 6.2) {
-            albedo *= 0.65;
-          } else if (absLx > RIB_MIN_X && absLx < RIB_MAX_X && absLy < 5.5) {
-            const ribIdx = ((absLx - RIB_MIN_X) * RIB_LUT_SCALE) | 0;
-            albedo *= RIB_LUT[ribIdx];
+          const edgeX = halfToteW - absLx;
+          const edgeY = halfToteH - absLy;
+          const edgeDist = edgeX < edgeY ? edgeX : edgeY;
+          if (edgeDist < 0.22) {
+            albedo = SEAM_LUMA;
+          } else if (edgeDist < 0.65) {
+            albedo = toteLuma[cellIdx] * 0.78;
+            if (edgeX < edgeY) {
+              if (lx >= 0) {
+                nx = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PX;
+              } else {
+                nx = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NX;
+              }
+            } else {
+              if (ly >= 0) {
+                ny = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PY;
+              } else {
+                ny = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NY;
+              }
+            }
+          } else {
+            albedo = toteLuma[cellIdx];
+            if (absLx < 2.6 && ly > 5.0 && ly < 6.2) {
+              albedo *= 0.65;
+            } else if (absLx > RIB_MIN_X && absLx < RIB_MAX_X && absLy < 5.5) {
+              const ribIdx = ((absLx - RIB_MIN_X) * RIB_LUT_SCALE) | 0;
+              albedo *= RIB_LUT[ribIdx];
+            }
+          }
+        }
+
+        // L4: Upper-lip shadow band cast onto recessed tote face & upper label edge
+        if (hasLips && invShadowBand > 0.0 && shadowDarken > 0.0) {
+          const distBelowTop = openTopY - ly;
+          if (distBelowTop >= 0.0 && distBelowTop < shadowBandIn) {
+            const st = 1.0 - distBelowTop * invShadowBand;
+            baseIllum *= (1.0 - shadowDarken * st * st);
           }
         }
       }
@@ -651,8 +748,25 @@ function renderLabelBoxMultiPose(
   const toteLuma = enc.toteLuma;
   const cellModules = enc.cellModules;
   const cellTotalModules = enc.cellTotalModules;
+  const cellLabelOffX = enc.cellLabelOffX;
+  const cellLabelOffY = enc.cellLabelOffY;
+  const hasLabelOffset = enc.hasLabelOffset;
   const maxCol = cols - 1;
   const maxRow = rows - 1;
+
+  // L4: Optional recessed tote lip & parallax occlusion parameters (null when simLips is off)
+  const lips = normalizeLipsSpec(scene.lips);
+  const hasLips = lips !== null;
+  const lipHeightIn = hasLips ? lips.lipHeightIn : 0.0;
+  const lipWidthIn = hasLips ? lips.lipWidthIn : 0.0;
+  const interlockOffsetIn = hasLips ? lips.interlockOffsetIn : 0.0;
+  const openHalfW = hasLips ? Math.max(0.5, halfToteW - lipWidthIn) : halfToteW;
+  const openTopY = hasLips ? Math.max(0.5, halfToteH - lipWidthIn - interlockOffsetIn) : halfToteH;
+  const openBotY = hasLips ? -Math.max(0.5, halfToteH - lipWidthIn) : -halfToteH;
+  const shadowBandIn = hasLips ? lips.shadowBandIn : 0.0;
+  const invShadowBand = (hasLips && shadowBandIn > 1e-6) ? (1.0 / shadowBandIn) : 0.0;
+  const shadowDarken = hasLips ? lips.shadowDarken : 0.0;
+  const lipHighlight = hasLips ? lips.lipHighlight : 0.0;
   const p = ctx.poseParams;
 
   for (let k = 0; k < numPoses; k++) {
@@ -718,62 +832,128 @@ function renderLabelBoxMultiPose(
         let ny = 0.0;
         let nz = 1.0;
 
-        if (absLx <= halfBW && absLy <= halfBH) {
-          isLabel = true;
-          const inBars = isPicket ? (absLy <= barHalfSpan) : (absLx <= barHalfSpan);
-          if (inBars) {
-            let v01, dvDx, dvDy;
-            if (!isPicket) {
-              v01 = (halfBH - ly) * invLabelH;
-              const dyInvDz = Dy * invDz;
-              dvDx = -t * (dDy_x - dyInvDz * dDz_x) * invLabelH;
-              dvDy = -t * (dDy_y - dyInvDz * dDz_y) * invLabelH;
+        let hitLip = false;
+        if (hasLips && camZ > lipHeightIn) {
+          const lipScale = lipHeightIn * invDz;
+          const wxLip = wx + lipScale * Dx;
+          const wyLip = wy + lipScale * Dy;
+          const uLip = (wxLip + halfWallW) * invPitchX;
+          const vLip = (halfWallH - wyLip) * invPitchY;
+          let colLip = uLip | 0;
+          if (colLip < 0) colLip = 0; else if (colLip > maxCol) colLip = maxCol;
+          let rowLip = vLip | 0;
+          if (rowLip < 0) rowLip = 0; else if (rowLip > maxRow) rowLip = maxRow;
+          const lxLip = (uLip - colLip - 0.5) * pitchX;
+          const lyLip = (0.5 - (vLip - rowLip)) * pitchY;
+          const absLxLip = lxLip < 0 ? -lxLip : lxLip;
+          const absLyLip = lyLip < 0 ? -lyLip : lyLip;
+
+          if (colLip !== col || rowLip !== row || absLxLip > openHalfW || lyLip > openTopY || lyLip < openBotY) {
+            hitLip = true;
+            const lipCellIdx = rowLip * cols + colLip;
+            const edgeXLip = halfToteW - absLxLip;
+            const edgeYLip = halfToteH - absLyLip;
+            const edgeDistLip = edgeXLip < edgeYLip ? edgeXLip : edgeYLip;
+            if (edgeDistLip < 0.22) {
+              albedo = SEAM_LUMA;
             } else {
-              v01 = (lx + halfBW) * invLabelW;
-              const dxInvDz = Dx * invDz;
-              dvDx = t * (dDx_x - dxInvDz * dDz_x) * invLabelW;
-              dvDy = t * (dDx_y - dxInvDz * dDz_y) * invLabelW;
+              albedo = toteLuma[lipCellIdx] * 0.84;
+              const dOpenX = absLxLip - openHalfW;
+              const dOpenTop = lyLip - openTopY;
+              const dOpenBot = openBotY - lyLip;
+              let dOpen = dOpenX > dOpenTop ? dOpenX : dOpenTop;
+              if (dOpenBot > dOpen) dOpen = dOpenBot;
+              if (dOpen >= 0.0 && dOpen < 0.16 && lipHighlight > 0.0) {
+                albedo += lipHighlight * (1.0 - dOpen * 6.25) * 0.55;
+              }
+              if (edgeXLip < edgeYLip) {
+                if (lxLip >= 0) {
+                  nx = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PX;
+                } else {
+                  nx = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NX;
+                }
+              } else {
+                if (lyLip >= 0) {
+                  ny = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PY;
+                } else {
+                  ny = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NY;
+                }
+              }
             }
-            const dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
-            const barCov = sampleBarcodeIntegrated1D(
-              cellModules[cellIdx],
-              cellTotalModules[cellIdx],
-              v01,
-              dv,
-              printGain
-            );
-            albedo = paperAlbedo + inkMinusPaper * barCov;
-          } else {
-            albedo = paperAlbedo;
           }
-        } else {
-          const edgeX = halfToteW - absLx;
-          const edgeY = halfToteH - absLy;
-          const edgeDist = edgeX < edgeY ? edgeX : edgeY;
-          if (edgeDist < 0.22) {
-            albedo = SEAM_LUMA;
-          } else if (edgeDist < 0.65) {
-            albedo = toteLuma[cellIdx] * 0.78;
-            if (edgeX < edgeY) {
-              if (lx >= 0) {
-                nx = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PX;
+        }
+
+        if (!hitLip) {
+          const llx = hasLabelOffset ? (lx - cellLabelOffX[cellIdx]) : lx;
+          const lly = hasLabelOffset ? (ly - cellLabelOffY[cellIdx]) : ly;
+          const absLlx = llx < 0 ? -llx : llx;
+          const absLly = lly < 0 ? -lly : lly;
+
+          if (absLlx <= halfBW && absLly <= halfBH) {
+            isLabel = true;
+            const inBars = isPicket ? (absLly <= barHalfSpan) : (absLlx <= barHalfSpan);
+            if (inBars) {
+              let v01, dvDx, dvDy;
+              if (!isPicket) {
+                v01 = (halfBH - lly) * invLabelH;
+                const dyInvDz = Dy * invDz;
+                dvDx = -t * (dDy_x - dyInvDz * dDz_x) * invLabelH;
+                dvDy = -t * (dDy_y - dyInvDz * dDz_y) * invLabelH;
               } else {
-                nx = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NX;
+                v01 = (llx + halfBW) * invLabelW;
+                const dxInvDz = Dx * invDz;
+                dvDx = t * (dDx_x - dxInvDz * dDz_x) * invLabelW;
+                dvDy = t * (dDx_y - dxInvDz * dDz_y) * invLabelW;
               }
+              const dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
+              const barCov = sampleBarcodeIntegrated1D(
+                cellModules[cellIdx],
+                cellTotalModules[cellIdx],
+                v01,
+                dv,
+                printGain
+              );
+              albedo = paperAlbedo + inkMinusPaper * barCov;
             } else {
-              if (ly >= 0) {
-                ny = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PY;
-              } else {
-                ny = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NY;
-              }
+              albedo = paperAlbedo;
             }
           } else {
-            albedo = toteLuma[cellIdx];
-            if (absLx < 2.6 && ly > 5.0 && ly < 6.2) {
-              albedo *= 0.65;
-            } else if (absLx > RIB_MIN_X && absLx < RIB_MAX_X && absLy < 5.5) {
-              const ribIdx = ((absLx - RIB_MIN_X) * RIB_LUT_SCALE) | 0;
-              albedo *= RIB_LUT[ribIdx];
+            const edgeX = halfToteW - absLx;
+            const edgeY = halfToteH - absLy;
+            const edgeDist = edgeX < edgeY ? edgeX : edgeY;
+            if (edgeDist < 0.22) {
+              albedo = SEAM_LUMA;
+            } else if (edgeDist < 0.65) {
+              albedo = toteLuma[cellIdx] * 0.78;
+              if (edgeX < edgeY) {
+                if (lx >= 0) {
+                  nx = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PX;
+                } else {
+                  nx = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NX;
+                }
+              } else {
+                if (ly >= 0) {
+                  ny = BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_PY;
+                } else {
+                  ny = -BEVEL_S; nz = BEVEL_Z; baseIllum = BEVEL_ILLUM_NY;
+                }
+              }
+            } else {
+              albedo = toteLuma[cellIdx];
+              if (absLx < 2.6 && ly > 5.0 && ly < 6.2) {
+                albedo *= 0.65;
+              } else if (absLx > RIB_MIN_X && absLx < RIB_MAX_X && absLy < 5.5) {
+                const ribIdx = ((absLx - RIB_MIN_X) * RIB_LUT_SCALE) | 0;
+                albedo *= RIB_LUT[ribIdx];
+              }
+            }
+          }
+
+          if (hasLips && invShadowBand > 0.0 && shadowDarken > 0.0) {
+            const distBelowTop = openTopY - ly;
+            if (distBelowTop >= 0.0 && distBelowTop < shadowBandIn) {
+              const st = 1.0 - distBelowTop * invShadowBand;
+              baseIllum *= (1.0 - shadowDarken * st * st);
             }
           }
         }

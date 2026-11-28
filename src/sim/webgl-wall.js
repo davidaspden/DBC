@@ -14,6 +14,7 @@
  */
 
 import { encodeCode128B } from './label.js';
+import { normalizeLipsSpec } from './lips.js';
 import {
   TOTE_WIDTH_IN,
   TOTE_HEIGHT_IN,
@@ -84,6 +85,14 @@ uniform float uNoiseStrength;
 uniform float uGlareStrength;
 uniform float uSeed;
 uniform vec3 uCamPos;
+// L4: Recessed tote lips & ray parallax occlusion (0 = disabled, bit-identical legacy)
+uniform float uLipsEnabled;
+uniform float uLipHeightIn;
+uniform float uLipWidthIn;
+uniform float uInterlockOffsetIn;
+uniform float uShadowBandIn;
+uniform float uShadowDarken;
+uniform float uLipHighlight;
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -184,12 +193,58 @@ void main() {
 
   vec3 albedo = toteBase;
   float isLabel = 0.0;
+  float lipShadowFactor = 1.0;
+  bool hitLip = false;
+
+  // L4: Protruding lip plane z = uLipHeightIn parallax occlusion & lip-edge highlight
+  if (uLipsEnabled > 0.5 && uCamPos.z > uLipHeightIn) {
+    float openHalfW = max(0.5, ${TOTE_WIDTH_IN * 0.5}.0 - uLipWidthIn);
+    float openTopY = max(0.5, ${TOTE_HEIGHT_IN * 0.5}.0 - uLipWidthIn - uInterlockOffsetIn);
+    float openBotY = -max(0.5, ${TOTE_HEIGHT_IN * 0.5}.0 - uLipWidthIn);
+
+    vec3 rayDir = vWorldPos - uCamPos;
+    float lipScale = uLipHeightIn / min(rayDir.z, -0.0001);
+    vec2 lipXY = vWallXY + lipScale * rayDir.xy;
+    float uLip = (lipXY.x + ${WALL_WIDTH_IN * 0.5}.0) / ${TOTE_WIDTH_IN}.0;
+    float vLip = (${WALL_HEIGHT_IN * 0.5}.0 - lipXY.y) / ${TOTE_HEIGHT_IN}.0;
+    float colLip = clamp(floor(uLip), 0.0, 3.0);
+    float rowLip = clamp(floor(vLip), 0.0, 3.0);
+    float lxLip = (fract(uLip) - 0.5) * ${TOTE_WIDTH_IN}.0;
+    float lyLip = (0.5 - fract(vLip)) * ${TOTE_HEIGHT_IN}.0;
+
+    if (colLip != col || rowLip != row || abs(lxLip) > openHalfW || lyLip > openTopY || lyLip < openBotY) {
+      hitLip = true;
+      float lipTone = 0.92 + 0.14 * hash12(vec2(colLip * 7.1, rowLip * 13.7));
+      vec3 lipBase = vec3(0.24, 0.29, 0.36) * lipTone;
+      float edgeXLip = ${TOTE_WIDTH_IN * 0.5}.0 - abs(lxLip);
+      float edgeYLip = ${TOTE_HEIGHT_IN * 0.5}.0 - abs(lyLip);
+      float edgeDistLip = min(edgeXLip, edgeYLip);
+      if (edgeDistLip < 0.22) {
+        albedo = vec3(0.05, 0.06, 0.08);
+      } else {
+        albedo = lipBase * 0.84;
+        float dOpen = max(abs(lxLip) - openHalfW, max(lyLip - openTopY, openBotY - lyLip));
+        if (dOpen >= 0.0 && dOpen < 0.16 && uLipHighlight > 0.0) {
+          albedo += vec3(uLipHighlight * (1.0 - dOpen * 6.25) * 0.55);
+        }
+        float bxL = (edgeXLip < edgeYLip) ? sign(lxLip) * 0.35 : 0.0;
+        float byL = (edgeYLip <= edgeXLip) ? sign(lyLip) * 0.35 : 0.0;
+        N = normalize(vec3(bxL, byL, 1.0));
+      }
+    } else if (uShadowBandIn > 0.0001 && uShadowDarken > 0.0) {
+      float distBelowTop = openTopY - ly;
+      if (distBelowTop >= 0.0 && distBelowTop < uShadowBandIn) {
+        float st = 1.0 - distBelowTop / uShadowBandIn;
+        lipShadowFactor = 1.0 - uShadowDarken * st * st;
+      }
+    }
+  }
 
   // Centered barcode label: uBarcodeWidthIn wide x uBarcodeHeightIn tall (default 2 x 6 in; 2 x 3.5 in FC)
   float halfBW = uBarcodeWidthIn * 0.5;
   float halfBH = uBarcodeHeightIn * 0.5;
 
-  if (abs(lx) <= halfBW && abs(ly) <= halfBH) {
+  if (!hitLip && abs(lx) <= halfBW && abs(ly) <= halfBH) {
     isLabel = 1.0;
     // White thermal label stock (reflectance ~0.93)
     float paper = 0.93;
@@ -215,7 +270,7 @@ void main() {
   // Warehouse overhead lighting + optional diagonal shadow gradient
   vec3 lightDir = normalize(vec3(-0.18, 0.42, 0.89));
   float ndl = max(dot(N, lightDir), 0.0);
-  float illum = 0.38 + 0.62 * ndl;
+  float illum = (0.38 + 0.62 * ndl) * lipShadowFactor;
 
   // Overhead fixture falloff + uneven shadow sweep across the 4x4 wall
   float grad = 1.0 - uShadowStrength * (0.42 * (0.5 - wy / ${WALL_HEIGHT_IN}.0) + 0.25 * (0.5 + wx / ${WALL_WIDTH_IN}.0));
@@ -451,6 +506,13 @@ void main() {
     uGlareStrength: gl.getUniformLocation(wallProg, 'uGlareStrength'),
     uSeed: gl.getUniformLocation(wallProg, 'uSeed'),
     uCamPos: gl.getUniformLocation(wallProg, 'uCamPos'),
+    uLipsEnabled: gl.getUniformLocation(wallProg, 'uLipsEnabled'),
+    uLipHeightIn: gl.getUniformLocation(wallProg, 'uLipHeightIn'),
+    uLipWidthIn: gl.getUniformLocation(wallProg, 'uLipWidthIn'),
+    uInterlockOffsetIn: gl.getUniformLocation(wallProg, 'uInterlockOffsetIn'),
+    uShadowBandIn: gl.getUniformLocation(wallProg, 'uShadowBandIn'),
+    uShadowDarken: gl.getUniformLocation(wallProg, 'uShadowDarken'),
+    uLipHighlight: gl.getUniformLocation(wallProg, 'uLipHighlight'),
   };
   const blitLoc = {
     aQuad: gl.getAttribLocation(blitProg, 'aQuad'),
@@ -523,6 +585,18 @@ void main() {
     gl.uniform1f(wallLoc.uGlareStrength, opts.glareStrength ?? 0.15);
     gl.uniform1f(wallLoc.uSeed, seed);
     gl.uniform3f(wallLoc.uCamPos, pose.x, pose.y, pose.z);
+    const lips = normalizeLipsSpec(opts.lips);
+    if (lips) {
+      gl.uniform1f(wallLoc.uLipsEnabled, 1.0);
+      gl.uniform1f(wallLoc.uLipHeightIn, lips.lipHeightIn);
+      gl.uniform1f(wallLoc.uLipWidthIn, lips.lipWidthIn);
+      gl.uniform1f(wallLoc.uInterlockOffsetIn, lips.interlockOffsetIn);
+      gl.uniform1f(wallLoc.uShadowBandIn, lips.shadowBandIn);
+      gl.uniform1f(wallLoc.uShadowDarken, lips.shadowDarken);
+      gl.uniform1f(wallLoc.uLipHighlight, lips.lipHighlight);
+    } else {
+      gl.uniform1f(wallLoc.uLipsEnabled, 0.0);
+    }
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     if (wallLoc.aPos >= 0) gl.disableVertexAttribArray(wallLoc.aPos);
