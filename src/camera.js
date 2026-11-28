@@ -112,6 +112,109 @@ export async function startCamera(videoEl, opts = {}) {
 }
 
 /**
+ * C2: Clamps and applies zoom to a video track when `capabilities.zoom` is exposed.
+ * Re-applies continuous autofocus after zoom changes when supported (C3).
+ *
+ * @param {MediaStreamTrack | null} track
+ * @param {number} zoom
+ */
+export async function setZoom(track, zoom) {
+  if (!track || typeof track.applyConstraints !== 'function') return { ok: false, zoom: 1 };
+  const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+  const zCap = caps && caps.zoom && typeof caps.zoom === 'object' ? caps.zoom : null;
+  if (!zCap || typeof zCap.min !== 'number' || typeof zCap.max !== 'number') {
+    return { ok: false, zoom: 1 };
+  }
+  const step = zCap.step || 0.1;
+  const clamped = Math.min(zCap.max, Math.max(zCap.min, zCap.min + Math.round((zoom - zCap.min) / step) * step));
+  const rounded = Math.round(clamped * 100) / 100;
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: rounded }] });
+    await setFocusContinuous(track);
+    return { ok: true, zoom: rounded };
+  } catch (err) {
+    console.warn('[camera] setZoom failed:', err);
+    return { ok: false, zoom: rounded };
+  }
+}
+
+/**
+ * C3: Explicitly applies `focusMode: 'continuous'` when supported by the camera HAL.
+ */
+export async function setFocusContinuous(track) {
+  if (!track || typeof track.applyConstraints !== 'function') return false;
+  const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+  const modes = Array.isArray(caps.focusMode) ? caps.focusMode : [];
+  if (!modes.includes('continuous')) return false;
+  try {
+    await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * C3: Tap-to-focus at normalized `(xNorm, yNorm)` in `[0, 1]` with automatic return
+ * to continuous AF after 1.5 s (falls back to single-shot cycle if pointsOfInterest unsupported).
+ */
+export async function setFocusPoint(track, xNorm = 0.5, yNorm = 0.5) {
+  if (!track || typeof track.applyConstraints !== 'function') return false;
+  const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+  const modes = Array.isArray(caps.focusMode) ? caps.focusMode : [];
+  const x = Math.max(0, Math.min(1, xNorm));
+  const y = Math.max(0, Math.min(1, yNorm));
+  try {
+    if (caps.pointsOfInterest && modes.includes('single-shot')) {
+      await track.applyConstraints({ advanced: [{ pointsOfInterest: [{ x, y }], focusMode: 'single-shot' }] });
+    } else if (modes.includes('single-shot')) {
+      await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] });
+    }
+    setTimeout(() => { setFocusContinuous(track); }, 1500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * C3: Close-range manual focus lock (e.g. 0.20 m for 8 in wall slide; A53 supports 0.1–3.6 m).
+ */
+export async function setManualFocusDistance(track, meters = 0.20) {
+  if (!track || typeof track.applyConstraints !== 'function') return { ok: false, distanceM: null };
+  const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+  const modes = Array.isArray(caps.focusMode) ? caps.focusMode : [];
+  const fd = caps && caps.focusDistance && typeof caps.focusDistance === 'object' ? caps.focusDistance : null;
+  if (!modes.includes('manual') || !fd || typeof fd.min !== 'number' || typeof fd.max !== 'number') {
+    return { ok: false, distanceM: null };
+  }
+  const step = fd.step || 0.01;
+  const clamped = Math.min(fd.max, Math.max(fd.min, fd.min + Math.round((meters - fd.min) / step) * step));
+  const rounded = Math.round(clamped * 100) / 100;
+  try {
+    await track.applyConstraints({ advanced: [{ focusMode: 'manual' }] });
+    await track.applyConstraints({ advanced: [{ focusDistance: rounded }] });
+    return { ok: true, distanceM: rounded };
+  } catch {
+    return { ok: false, distanceM: null };
+  }
+}
+
+/**
+ * C3: Filters enumerated video devices to rear cameras, preferring `camera 0` over aux/ultrawide
+ * (`camera 2` appears before `camera 0` on Samsung Galaxy A53 5G).
+ */
+export function pickBackCameras(devices) {
+  const rear = (devices || []).filter((d) => /back|rear|environment/i.test(d.label || ''));
+  rear.sort((a, b) => {
+    const aMain = /\bcamera2?\s*0\b/i.test(a.label || '') ? 0 : 1;
+    const bMain = /\bcamera2?\s*0\b/i.test(b.label || '') ? 0 : 1;
+    return aMain - bMain;
+  });
+  return rear;
+}
+
+/**
  * Toggles rear camera torch/flash when supported by the device.
  * @param {MediaStreamTrack | null} track
  * @param {boolean} enabled
