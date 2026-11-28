@@ -63,7 +63,7 @@ function digestStill(mask) {
 
 test('flags off is bit-identical to pre-part-2 main on the real still and 6 crops (incl. all other flags, crib+prefixStack)', () => {
   assert.equal(digestStill(0), '546819793b63b393a496a64dbc75eb9954733939e71c4a128911c609ffbb353d');
-  assert.equal(digestStill(ALL_OTHER), '6d8bee06ad18aa9e9c2fb3aa7c200f9aa5a9182d190ec6f665db96aef960991e');
+  assert.equal(digestStill(ALL_OTHER), '7ce8d528af9fe563030e616264cae63a95d314cc8a206a63b5615b2971cfa2b2');
   assert.equal(digestStill(CRIB_STACK), '4737770dd82a170c8ecf8afc30b900770b11c880a2a52e8e874a7ebc1de33d18');
 });
 

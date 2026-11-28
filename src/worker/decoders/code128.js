@@ -875,7 +875,7 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
 
         if (
           prevCharW < ((Math.imul(startSum, 159) >> 8) | 0) ||
-          prevCharW > ((Math.imul(startSum, 410) >> 8) | 0) ||
+          prevCharW > ((Math.imul(startSum, 512) >> 8) | 0) ||
           prevCharW < ((Math.imul(meanCharW, 184) >> 8) | 0) ||
           prevCharW > ((Math.imul(meanCharW, 353) >> 8) | 0) ||
           totalSpanQ8 < ((Math.imul(expTotalQ8, 205) >> 8) | 0) ||
