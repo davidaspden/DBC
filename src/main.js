@@ -13,11 +13,27 @@
  *    and returned back on every result message so buffers are recycled across frames.
  */
 
-import { startCamera, setTorch, stopCamera, listVideoDevices, getExposureInfo } from './camera.js';
+import {
+  startCamera,
+  setTorch,
+  stopCamera,
+  listVideoDevices,
+  getExposureInfo,
+  setExposure,
+  setZoom,
+  setFocusPoint,
+  setManualFocusDistance,
+  setFocusContinuous,
+  pickBackCameras,
+} from './camera.js';
 import { ROI_CONFIDENCE_THRESHOLD } from './worker/roi.js';
 import { isOn, toWorkerMask } from './flags.js';
 import { formatExposureLabel } from './capture/exposure.js';
+import { computeEvenCropRect, offsetDetectionByCrop } from './capture/crop.js';
+import { runLensProbe } from './capture/lensprobe.js';
 import { initOverlayDim } from './ui/overlay-dim.js';
+import { createPauseController } from './ui/pause.js';
+import { createTapeRecorder } from './tape/record.js';
 
 const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 const RGB_PACKED_FORMATS = new Set(['RGBA', 'RGBX', 'BGRA', 'BGRX']);
@@ -30,6 +46,16 @@ const els = {
   btnStart: document.getElementById('btn-start'),
   btnRes: document.getElementById('btn-res'),
   btnSwitchCam: document.getElementById('btn-switch-cam'),
+  btnVertical: document.getElementById('btn-vertical'),
+  btnShutter: document.getElementById('btn-shutter'),
+  btnFocusClose: document.getElementById('btn-focus-close'),
+  btnPause: document.getElementById('btn-pause'),
+  btnLensProbe: document.getElementById('btn-lens-probe'),
+  btnTape: document.getElementById('btn-tape'),
+  zoomBar: document.getElementById('zoom-bar'),
+  zoomSlider: document.getElementById('zoom-slider'),
+  zoomVal: document.getElementById('zoom-val'),
+  focusRing: document.getElementById('focus-ring'),
   btnSound: document.getElementById('btn-sound'),
   btnDebug: document.getElementById('btn-debug'),
   btnInventbar: document.getElementById('btn-inventbar'),
@@ -114,7 +140,26 @@ const app = {
   // U2 overlay dim controller (null when `overlayDim` flag is OFF)
   overlayDim: isOn('overlayDim') ? initOverlayDim(document.getElementById('app')) : null,
 
-  // Active frame geometry & target resolution preset ('720p' | '1080p')
+  // Wave 2/3/4 flagged capture, pause & tape controllers (all default OFF)
+  camProfilesEnabled: isOn('camProfiles'),
+  focusCtlEnabled: isOn('focusCtl'),
+  fastShutterEnabled: isOn('fastShutter'),
+  cropAtSourceEnabled: isOn('cropAtSource'),
+  lensProbeEnabled: isOn('lensProbe'),
+  pauseCtlEnabled: isOn('pauseCtl'),
+  tapeRecordEnabled: isOn('tapeRecord'),
+  verticalMode: isOn('verticalMode'),
+  fastShutterOn: false,
+  closeFocusOn: false,
+  pauseCtl: isOn('pauseCtl') ? createPauseController() : null,
+  tapeRecorder: isOn('tapeRecord') ? createTapeRecorder({ maxFrames: 180, everyNth: 1, meta: { page: 'index' } }) : null,
+  tapeRecording: false,
+  lastCropX: 0,
+  lastCropY: 0,
+  lastSendW: 1280,
+  lastSendH: 720,
+
+  // Active frame geometry & target resolution preset ('720p' | '1080p' | '4K')
   targetPreset: '720p',
   frameWidth: 1280,
   frameHeight: 720,
@@ -367,6 +412,15 @@ async function extractLumaFrame(videoEl) {
   let width = (videoEl.videoWidth | 0) || app.frameWidth;
   let height = (videoEl.videoHeight | 0) || app.frameHeight;
 
+  // C5 (`cropAtSource`): compute even-aligned crop rect around the framing guide when enabled
+  const cropRect = app.cropAtSourceEnabled
+    ? computeEvenCropRect(width, height, { widthFrac: 0.56, heightFrac: 0.66, cxFrac: 0.5, cyFrac: 0.5 })
+    : null;
+  const outW = cropRect ? cropRect.width : width;
+  const outH = cropRect ? cropRect.height : height;
+  const cropX = cropRect ? cropRect.x : 0;
+  const cropY = cropRect ? cropRect.y : 0;
+
   if (app.useWebCodecs) {
     let frame = null;
     try {
@@ -385,21 +439,55 @@ async function extractLumaFrame(videoEl) {
         app.frameWidth = width;
         app.frameHeight = height;
 
-        const allocSize = frame.allocationSize();
-        if (!app.webcodecsBuf || app.webcodecsBufSize < allocSize) {
-          app.webcodecsBuf = new Uint8Array(allocSize);
-          app.webcodecsBufSize = allocSize;
+        let copyOpts = undefined;
+        let usedCropCopy = false;
+        let effW = width;
+        let effH = height;
+        let effCropX = 0;
+        let effCropY = 0;
+        if (cropRect) {
+          const r = computeEvenCropRect(width, height, { widthFrac: 0.56, heightFrac: 0.66, cxFrac: 0.5, cyFrac: 0.5 });
+          copyOpts = { rect: { x: visX + r.x, y: visY + r.y, width: r.width, height: r.height } };
+          effW = r.width;
+          effH = r.height;
+          effCropX = r.x;
+          effCropY = r.y;
+          usedCropCopy = true;
         }
 
-        const layouts = await frame.copyTo(app.webcodecsBuf);
+        let layouts = null;
+        let allocSize = 0;
+        try {
+          allocSize = copyOpts ? frame.allocationSize(copyOpts) : frame.allocationSize();
+          if (!app.webcodecsBuf || app.webcodecsBufSize < allocSize) {
+            app.webcodecsBuf = new Uint8Array(allocSize);
+            app.webcodecsBufSize = allocSize;
+          }
+          layouts = copyOpts ? await frame.copyTo(app.webcodecsBuf, copyOpts) : await frame.copyTo(app.webcodecsBuf);
+        } catch {
+          // Alignment fallback: full-frame copyTo if browser rejects rect
+          usedCropCopy = false;
+          effW = width;
+          effH = height;
+          effCropX = 0;
+          effCropY = 0;
+          allocSize = frame.allocationSize();
+          if (!app.webcodecsBuf || app.webcodecsBufSize < allocSize) {
+            app.webcodecsBuf = new Uint8Array(allocSize);
+            app.webcodecsBufSize = allocSize;
+          }
+          layouts = await frame.copyTo(app.webcodecsBuf);
+        }
         const yLayout = layouts && layouts[0];
 
         if (YUV_Y_FIRST_FORMATS.has(format) && yLayout) {
-          app.capturePathLabel = `WebCodecs (${format})`;
+          app.capturePathLabel = usedCropCopy ? `CropCopy (${format})` : `WebCodecs (${format})`;
           const stride = yLayout.stride | 0;
-          const yOffset = (yLayout.offset + Math.imul(visY, stride) + visX) | 0;
+          const yOffset = usedCropCopy
+            ? (yLayout.offset | 0)
+            : ((yLayout.offset + Math.imul(visY, stride) + visX) | 0);
 
-          if (stride === width && yOffset === 0 && Math.imul(width, height) <= app.webcodecsBuf.byteLength) {
+          if (stride === effW && yOffset === 0 && Math.imul(effW, effH) <= app.webcodecsBuf.byteLength) {
             // Zero-copy transfer directly from Plane 0
             const buf = app.webcodecsBuf.buffer;
             app.webcodecsBuf = null;
@@ -407,49 +495,55 @@ async function extractLumaFrame(videoEl) {
             return {
               buffer: buf,
               byteOffset: 0,
-              width,
-              height,
+              width: effW,
+              height: effH,
+              cropX: effCropX,
+              cropY: effCropY,
               tCaptureMs: performance.now() - t0,
               isWebCodecsScratch: true,
             };
           }
 
           // Compact strided / cropped Y plane into pre-allocated lumaBuffer
-          ensureLumaBuffer(width, height);
+          ensureLumaBuffer(effW, effH);
           const src = app.webcodecsBuf;
           const dst = app.lumaBuffer;
-          for (let y = 0; y < height; y++) {
+          for (let y = 0; y < effH; y++) {
             const sRow = (yOffset + Math.imul(y, stride)) | 0;
-            const dRow = Math.imul(y, width);
-            dst.set(src.subarray(sRow, sRow + width), dRow);
+            const dRow = Math.imul(y, effW);
+            dst.set(src.subarray(sRow, sRow + effW), dRow);
           }
           const buf = dst.buffer;
           app.lumaBuffer = null;
           return {
             buffer: buf,
             byteOffset: 0,
-            width,
-            height,
+            width: effW,
+            height: effH,
+            cropX: effCropX,
+            cropY: effCropY,
             tCaptureMs: performance.now() - t0,
             isWebCodecsScratch: false,
           };
         }
 
         if (RGB_PACKED_FORMATS.has(format)) {
-          app.capturePathLabel = `WebCodecs (${format})`;
-          ensureLumaBuffer(width, height);
+          app.capturePathLabel = usedCropCopy ? `CropCopy (${format})` : `WebCodecs (${format})`;
+          ensureLumaBuffer(effW, effH);
           const src = app.webcodecsBuf;
           const dst = app.lumaBuffer;
-          const stride = (yLayout && yLayout.stride) ? (yLayout.stride | 0) : (width << 2);
-          const baseOff = ((yLayout ? yLayout.offset : 0) + Math.imul(visY, stride) + (visX << 2)) | 0;
+          const stride = (yLayout && yLayout.stride) ? (yLayout.stride | 0) : (effW << 2);
+          const baseOff = usedCropCopy
+            ? ((yLayout ? yLayout.offset : 0) | 0)
+            : (((yLayout ? yLayout.offset : 0) + Math.imul(visY, stride) + (visX << 2)) | 0);
           const isBgr = format === 'BGRA' || format === 'BGRX';
           const rOff = isBgr ? 2 : 0;
           const bOff = isBgr ? 0 : 2;
 
           let dIdx = 0;
-          for (let y = 0; y < height; y++) {
+          for (let y = 0; y < effH; y++) {
             let sIdx = (baseOff + Math.imul(y, stride)) | 0;
-            for (let x = 0; x < width; x++) {
+            for (let x = 0; x < effW; x++) {
               const r = src[(sIdx + rOff) | 0];
               const g = src[(sIdx + 1) | 0];
               const b = src[(sIdx + bOff) | 0];
@@ -462,8 +556,10 @@ async function extractLumaFrame(videoEl) {
           return {
             buffer: buf,
             byteOffset: 0,
-            width,
-            height,
+            width: effW,
+            height: effH,
+            cropX: effCropX,
+            cropY: effCropY,
             tCaptureMs: performance.now() - t0,
             isWebCodecsScratch: false,
           };
@@ -477,16 +573,22 @@ async function extractLumaFrame(videoEl) {
     }
   }
 
-  // Fallback path: OffscreenCanvas / 2D Canvas getImageData()
+  // Fallback path: OffscreenCanvas / 2D Canvas getImageData() (supports C5 crop at source)
   app.frameWidth = width;
   app.frameHeight = height;
-  app.capturePathLabel = typeof OffscreenCanvas !== 'undefined' ? 'OffscreenCanvas' : 'Canvas2D';
-  ensureFallbackCanvas(width, height);
-  ensureLumaBuffer(width, height);
-  app.fallbackCtx.drawImage(videoEl, 0, 0, width, height);
-  const rgba = app.fallbackCtx.getImageData(0, 0, width, height).data;
+  app.capturePathLabel = cropRect
+    ? 'Canvas crop'
+    : (typeof OffscreenCanvas !== 'undefined' ? 'OffscreenCanvas' : 'Canvas2D');
+  ensureFallbackCanvas(outW, outH);
+  ensureLumaBuffer(outW, outH);
+  if (cropRect) {
+    app.fallbackCtx.drawImage(videoEl, cropX, cropY, outW, outH, 0, 0, outW, outH);
+  } else {
+    app.fallbackCtx.drawImage(videoEl, 0, 0, outW, outH);
+  }
+  const rgba = app.fallbackCtx.getImageData(0, 0, outW, outH).data;
   const dst = app.lumaBuffer;
-  const count = Math.imul(width, height);
+  const count = Math.imul(outW, outH);
   for (let i = 0, j = 0; i < count; i++, j = (j + 4) | 0) {
     dst[i] = (Math.imul(77, rgba[j]) + Math.imul(150, rgba[j + 1]) + Math.imul(29, rgba[j + 2])) >> 8;
   }
@@ -495,8 +597,10 @@ async function extractLumaFrame(videoEl) {
   return {
     buffer: buf,
     byteOffset: 0,
-    width,
-    height,
+    width: outW,
+    height: outH,
+    cropX,
+    cropY,
     tCaptureMs: performance.now() - t0,
     isWebCodecsScratch: false,
   };
@@ -531,13 +635,44 @@ function handleWorkerMessage(event) {
     const returnedView = new Uint8Array(msg.buffer);
     if (app.pendingPgmCapture) {
       app.pendingPgmCapture = false;
-      downloadLumaAsPGM(returnedView, app.frameWidth, app.frameHeight);
+      downloadLumaAsPGM(returnedView, msg.frameW || app.frameWidth, msg.frameH || app.frameHeight);
+    }
+    // GR3 (`tapeRecord`): capture raw Y-plane frame + golden payloads when recording
+    if (app.tapeRecorder && app.tapeRecording) {
+      const detPayloads = Array.isArray(msg.detections) && msg.detections.length > 0
+        ? msg.detections.map((d) => d.payload).filter(Boolean)
+        : (msg.payload ? [msg.payload] : []);
+      app.tapeRecorder.pushFrame({
+        frameId: msg.frameId || 0,
+        tFrameMs: msg.tFrameMs || performance.now(),
+        width: msg.frameW || app.frameWidth,
+        height: msg.frameH || app.frameHeight,
+        cropX: msg.cropX || 0,
+        cropY: msg.cropY || 0,
+        luma: returnedView,
+        expectedPayloads: detPayloads,
+      });
+      const st = app.tapeRecorder.getStats();
+      if (els.btnTape) els.btnTape.textContent = `Save .dbct (${st.frameCount})`;
     }
     if (lastTransferredWasWebCodecs) {
       app.webcodecsBuf = returnedView;
       app.webcodecsBufSize = returnedView.byteLength;
     } else {
       app.lumaBuffer = returnedView;
+    }
+  }
+
+  // C5 (`cropAtSource`): back-project cropped detection & RoI coordinates into full-frame space
+  const cX = msg.cropX | 0;
+  const cY = msg.cropY | 0;
+  if (cX !== 0 || cY !== 0) {
+    msg.roiX = (msg.roiX || 0) + cX;
+    msg.roiY = (msg.roiY || 0) + cY;
+    msg.roiCenterX = (msg.roiCenterX || 0) + cX;
+    msg.roiCenterY = (msg.roiCenterY || 0) + cY;
+    if (Array.isArray(msg.detections)) {
+      msg.detections = msg.detections.map((d) => offsetDetectionByCrop(d, cX, cY));
     }
   }
 
@@ -1048,6 +1183,14 @@ async function pumpVideoFrame() {
   // Schedule next camera tick BEFORE awaiting VideoFrame.copyTo() so we never miss a tick
   scheduleNextFrame();
 
+  // U4 (`pauseCtl`): hold-to-pause or face-down gravity pause skips decoding cleanly
+  if (app.pauseCtl && app.pauseCtl.isPaused()) {
+    els.statusDot.dataset.state = 'paused';
+    return;
+  } else if (app.pauseCtl) {
+    els.statusDot.dataset.state = 'scanning';
+  }
+
   if (!app.workerBusy && els.video.readyState >= 2) {
     app.workerBusy = true;
     try {
@@ -1063,6 +1206,10 @@ async function pumpVideoFrame() {
         return;
       }
       lastTransferredWasWebCodecs = cap.isWebCodecsScratch;
+      app.lastCropX = cap.cropX || 0;
+      app.lastCropY = cap.cropY || 0;
+      app.lastSendW = cap.width;
+      app.lastSendH = cap.height;
       const frameId = ++app.frameId;
       app.worker.postMessage(
         {
@@ -1070,6 +1217,9 @@ async function pumpVideoFrame() {
           frameId,
           tFrameMs: app.lastFrameTs || performance.now(),
           flags: toWorkerMask(),
+          vertical: app.verticalMode ? 1 : 0,
+          cropX: cap.cropX || 0,
+          cropY: cap.cropY || 0,
           width: cap.width,
           height: cap.height,
           byteOffset: cap.byteOffset,
@@ -1114,26 +1264,48 @@ async function startScanning(deviceId = null) {
   app.useWebCodecs = typeof VideoFrame !== 'undefined';
   clearHudCanvas();
 
-  const reqW = app.targetPreset === '1080p' ? 1920 : 1280;
-  const reqH = app.targetPreset === '1080p' ? 1080 : 720;
+  const reqW = app.targetPreset === '4K' ? 3840 : (app.targetPreset === '1080p' ? 1920 : 1280);
+  const reqH = app.targetPreset === '4K' ? 2160 : (app.targetPreset === '1080p' ? 1080 : 720);
   setStatus('STARTING', `Requesting ${reqW}×${reqH} camera...`);
   els.btnStart.disabled = true;
 
   try {
-    const cam = await startCamera(els.video, { deviceId, width: reqW, height: reqH });
+    // C3 (`focusCtl`): prefer persisted lens or main camera 0 over ultrawide camera 2
+    let chosenDeviceId = deviceId;
+    if (!chosenDeviceId && app.focusCtlEnabled) {
+      try {
+        chosenDeviceId = localStorage.getItem('dbc.lensId') || null;
+      } catch {}
+    }
+    const cam = await startCamera(els.video, { deviceId: chosenDeviceId, width: reqW, height: reqH });
     app.camera = cam;
     app.frameWidth = cam.width;
     app.frameHeight = cam.height;
     app.torchOn = false;
 
-    // Populate camera switcher if multiple cameras exist
-    app.videoDevices = await listVideoDevices();
+    // Populate camera switcher (C3 prioritizes main rear camera 0 first)
+    const rawDevs = await listVideoDevices();
+    app.videoDevices = (app.focusCtlEnabled || app.camProfilesEnabled) ? pickBackCameras(rawDevs) : rawDevs;
     if (app.videoDevices.length > 1) {
       const curId = cam.settings.deviceId;
       app.activeDeviceIdx = Math.max(0, app.videoDevices.findIndex((d) => d.deviceId === curId));
       els.btnSwitchCam.hidden = false;
     } else {
       els.btnSwitchCam.hidden = true;
+    }
+
+    // C2 (`camProfiles`): configure zoom slider if capabilities.zoom exists
+    if (app.camProfilesEnabled && els.zoomBar && cam.capabilities && cam.capabilities.zoom) {
+      const zc = cam.capabilities.zoom;
+      els.zoomSlider.min = String(zc.min ?? 1);
+      els.zoomSlider.max = String(Math.min(8, zc.max ?? 4));
+      els.zoomSlider.step = String(zc.step ?? 0.1);
+      const curZ = cam.settings && cam.settings.zoom ? cam.settings.zoom : (zc.min ?? 1);
+      els.zoomSlider.value = String(curZ);
+      els.zoomVal.textContent = `${Number(curZ).toFixed(1)}×`;
+      els.zoomBar.hidden = false;
+    } else if (els.zoomBar) {
+      els.zoomBar.hidden = true;
     }
 
     els.hudRes.textContent = `${cam.width}×${cam.height}`;
@@ -1425,9 +1597,16 @@ els.btnStart.addEventListener('click', () => {
 });
 
 els.btnRes.addEventListener('click', () => {
-  app.targetPreset = app.targetPreset === '720p' ? '1080p' : '720p';
+  if (app.camProfilesEnabled) {
+    app.targetPreset = app.targetPreset === '720p' ? '1080p' : (app.targetPreset === '1080p' ? '4K' : '720p');
+    if (app.targetPreset === '4K' && !app.cropAtSourceEnabled) {
+      setStatus(app.state, '4K works best with cropAtSource flag enabled (to stay <= 33 ms)');
+    }
+  } else {
+    app.targetPreset = app.targetPreset === '720p' ? '1080p' : '720p';
+  }
   els.btnRes.textContent = app.targetPreset;
-  els.btnRes.classList.toggle('active', app.targetPreset === '1080p');
+  els.btnRes.classList.toggle('active', app.targetPreset !== '720p');
   if (app.state === 'SCANNING') {
     const curId = app.camera && app.camera.settings ? app.camera.settings.deviceId : null;
     stopScanning();
@@ -1439,9 +1618,177 @@ els.btnSwitchCam.addEventListener('click', () => {
   if (app.videoDevices.length < 2) return;
   const nextIdx = (app.activeDeviceIdx + 1) % app.videoDevices.length;
   const nextId = app.videoDevices[nextIdx].deviceId;
+  if (app.focusCtlEnabled) {
+    try { localStorage.setItem('dbc.lensId', nextId); } catch {}
+  }
   stopScanning();
   startScanning(nextId);
 });
+
+// Reveal & wire flagged Wave 2/3/4 controls (all hidden & inert when flags are OFF)
+if (isOn('verticalMode') || isOn('tallGuide')) {
+  els.btnVertical.hidden = false;
+  els.btnVertical.classList.toggle('active', app.verticalMode);
+  els.btnVertical.textContent = app.verticalMode ? 'Vertical ON' : 'Vertical';
+  els.btnVertical.addEventListener('click', () => {
+    app.verticalMode = !app.verticalMode;
+    els.btnVertical.classList.toggle('active', app.verticalMode);
+    els.btnVertical.textContent = app.verticalMode ? 'Vertical ON' : 'Vertical';
+  });
+}
+
+if (app.fastShutterEnabled && els.btnShutter) {
+  els.btnShutter.hidden = false;
+  els.btnShutter.addEventListener('click', async () => {
+    if (!app.camera || !app.camera.track) return;
+    app.fastShutterOn = !app.fastShutterOn;
+    const res = await setExposure(app.camera.track, { targetSec: 1 / 500, enableManual: app.fastShutterOn });
+    els.btnShutter.classList.toggle('active', app.fastShutterOn && res.ok);
+    els.btnShutter.textContent = app.fastShutterOn && res.ok ? formatExposureLabel(res.info) : 'Fast 1/500s';
+    if (els.hudExp) els.hudExp.textContent = formatExposureLabel(res.info);
+  });
+}
+
+if (app.focusCtlEnabled && els.btnFocusClose) {
+  els.btnFocusClose.hidden = false;
+  els.btnFocusClose.addEventListener('click', async () => {
+    if (!app.camera || !app.camera.track) return;
+    app.closeFocusOn = !app.closeFocusOn;
+    if (app.closeFocusOn) {
+      const r = await setManualFocusDistance(app.camera.track, 0.2);
+      els.btnFocusClose.classList.toggle('active', r.ok);
+      els.btnFocusClose.textContent = r.ok ? `Focus ${r.distance}m` : 'Focus n/a';
+    } else {
+      await setFocusContinuous(app.camera.track);
+      els.btnFocusClose.classList.remove('active');
+      els.btnFocusClose.textContent = 'Focus 20cm';
+    }
+  });
+
+  // Tap-to-focus on live camera view
+  let focusRingTimer = 0;
+  document.getElementById('app').addEventListener('pointerdown', async (e) => {
+    if (app.state !== 'SCANNING' || !app.camera || !app.camera.track) return;
+    if (e.target.closest('button, a, input, select, .hud-bottom, .hud-top, #debug-drawer')) return;
+    const rect = els.canvas.getBoundingClientRect();
+    const nx = Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    const ny = Math.max(0.05, Math.min(0.95, (e.clientY - rect.top) / Math.max(1, rect.height)));
+    if (els.focusRing) {
+      els.focusRing.style.left = `${e.clientX}px`;
+      els.focusRing.style.top = `${e.clientY}px`;
+      els.focusRing.classList.add('show');
+      clearTimeout(focusRingTimer);
+      focusRingTimer = setTimeout(() => els.focusRing.classList.remove('show'), 750);
+    }
+    await setFocusPoint(app.camera.track, nx, ny);
+  });
+}
+
+if (app.camProfilesEnabled && els.zoomSlider) {
+  let lastZoomTs = 0;
+  els.zoomSlider.addEventListener('input', () => {
+    const z = Number(els.zoomSlider.value);
+    els.zoomVal.textContent = `${z.toFixed(1)}×`;
+    const now = performance.now();
+    if (app.camera && app.camera.track && now - lastZoomTs >= 100) {
+      lastZoomTs = now;
+      setZoom(app.camera.track, z);
+    }
+  });
+  // Two-finger pinch-to-zoom on video area (rate-limited 100 ms)
+  const activePtrs = new Map();
+  let pinchBaseDist = 0;
+  let pinchBaseZoom = 1;
+  const appEl = document.getElementById('app');
+  appEl.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button, input, select, .hud-bottom, .hud-top')) return;
+    activePtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePtrs.size === 2) {
+      const [p1, p2] = Array.from(activePtrs.values());
+      pinchBaseDist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+      pinchBaseZoom = Number(els.zoomSlider.value) || 1;
+    }
+  });
+  appEl.addEventListener('pointermove', (e) => {
+    if (!activePtrs.has(e.pointerId)) return;
+    activePtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePtrs.size === 2 && app.camera && app.camera.track && !els.zoomBar.hidden) {
+      const [p1, p2] = Array.from(activePtrs.values());
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const maxZ = Number(els.zoomSlider.max) || 4;
+      const minZ = Number(els.zoomSlider.min) || 1;
+      const z = Math.max(minZ, Math.min(maxZ, pinchBaseZoom * (dist / pinchBaseDist)));
+      els.zoomSlider.value = String(z);
+      els.zoomVal.textContent = `${z.toFixed(1)}×`;
+      const now = performance.now();
+      if (now - lastZoomTs >= 100) {
+        lastZoomTs = now;
+        setZoom(app.camera.track, z);
+      }
+    }
+  });
+  const dropPtr = (e) => activePtrs.delete(e.pointerId);
+  appEl.addEventListener('pointerup', dropPtr);
+  appEl.addEventListener('pointercancel', dropPtr);
+}
+
+if (app.pauseCtlEnabled && els.btnPause && app.pauseCtl) {
+  els.btnPause.hidden = false;
+  els.btnPause.addEventListener('pointerdown', () => {
+    app.pauseCtl.setManualHold(true);
+    els.btnPause.classList.add('active');
+    els.btnPause.textContent = 'Paused';
+  });
+  const releasePause = () => {
+    app.pauseCtl.setManualHold(false);
+    els.btnPause.classList.remove('active');
+    els.btnPause.textContent = 'Hold Pause';
+  };
+  els.btnPause.addEventListener('pointerup', releasePause);
+  els.btnPause.addEventListener('pointercancel', releasePause);
+  els.btnPause.addEventListener('pointerleave', releasePause);
+  window.addEventListener('devicemotion', (ev) => {
+    const ag = ev.accelerationIncludingGravity;
+    if (ag && typeof ag.z === 'number') {
+      app.pauseCtl.ingestAccel(ag.x || 0, ag.y || 0, ag.z || 0, performance.now());
+    }
+  });
+}
+
+if (app.lensProbeEnabled && els.btnLensProbe) {
+  els.btnLensProbe.hidden = false;
+  els.btnLensProbe.addEventListener('click', async () => {
+    if (app.state === 'SCANNING') stopScanning();
+    setStatus('STARTING', 'Probing rear lenses...');
+    try {
+      const res = await runLensProbe(els.video);
+      setStatus('IDLE', `${res.hasTele ? 'Tele found' : 'No tele (1x main)'}: ${res.selectedCamera ? res.selectedCamera.label : res.reason}`);
+    } catch (err) {
+      setStatus('ERROR', `Lens probe failed: ${err.message}`);
+    }
+  });
+}
+
+if (app.tapeRecordEnabled && els.btnTape && app.tapeRecorder) {
+  els.btnTape.hidden = false;
+  els.btnTape.addEventListener('click', () => {
+    if (!app.tapeRecording) {
+      app.tapeRecorder.start();
+      app.tapeRecording = true;
+      els.btnTape.classList.add('active');
+      els.btnTape.textContent = 'Save .dbct (0)';
+    } else {
+      app.tapeRecording = false;
+      app.tapeRecorder.stop();
+      els.btnTape.classList.remove('active');
+      const st = app.tapeRecorder.getStats();
+      if (st.frameCount > 0) {
+        app.tapeRecorder.triggerDownload(`dbc-index-${Date.now()}.dbct`);
+      }
+      els.btnTape.textContent = 'Rec Tape';
+    }
+  });
+}
 
 els.btnSound.addEventListener('click', () => {
   app.soundEnabled = !app.soundEnabled;
