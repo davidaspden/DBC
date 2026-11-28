@@ -435,24 +435,60 @@
         </div>
       </div>
 
+      <div class="field-grid">
+        <div class="field">
+          <div class="field-top"><label for="sel-tote-orient">Tote orientation (OQ1)</label></div>
+          <select id="sel-tote-orient">
+            <option value="14Wx16H">14″ wide × 16″ high</option>
+            <option value="16Wx14H">16″ wide × 14″ high (FC)</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="field-top"><label for="sel-label-orient">Label orientation (OQ2)</label></div>
+          <select id="sel-label-orient">
+            <option value="ladder" selected>Ladder (horizontal bars)</option>
+            <option value="picket">Picket fence (vertical bars)</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="field-top"><label for="num-label-len">Label length (in)</label></div>
+          <input id="num-label-len" type="number" min="1.5" max="10" step="0.5" value="6">
+        </div>
+        <div class="field">
+          <div class="field-top"><label for="num-payload-chars">Payload chars</label></div>
+          <input id="num-payload-chars" type="number" min="4" max="32" step="1" value="16">
+        </div>
+      </div>
+
       <div class="check-row">
         <label><input id="chk-inv-pan" type="checkbox"> Invert Pan (L/R)</label>
         <label><input id="chk-inv-tilt" type="checkbox"> Invert Tilt (U/D)</label>
         <label><input id="chk-blur-gate" type="checkbox" checked> Pitch-shake blur guard</label>
       </div>
+
+      <details id="labs-panel" style="margin-top: 6px; border-top: 1px solid rgba(148,163,184,0.2); padding-top: 8px;">
+        <summary style="cursor: pointer; font-size: 12px; font-weight: 700; color: #7dd3fc;">
+          Labs — Feature Flags <span id="labs-mask" class="mono" style="color: #94a3b8; font-weight: 400;">(mask 0x0)</span>
+        </summary>
+        <div style="display:flex; gap:8px; align-items:center; margin: 8px 0;">
+          <button id="btn-labs-reset" type="button" style="flex:0 0 auto; min-height:28px; font-size:11px;">Reset All Flags OFF</button>
+          <span class="hint" style="margin:0;">Worker bits apply live; page-layout flags apply after reload.</span>
+        </div>
+        <div id="labs-flags-list" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; margin-top: 6px;"></div>
+      </details>
     </section>
   </main>
 
   <script type="module">
-    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo, setExposure, pickBackCameras } from './src/camera.js?v=4';
-    import { isOn, toWorkerMask } from './src/flags.js?v=4';
-    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=4';
-    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=4';
-    import { computeBlurModules } from './src/array/blur.js?v=4';
-    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=4';
-    import { pxPerModule } from './src/array/optics.js?v=4';
-    import { classifyHold } from './src/array/setup.js?v=4';
-    import { formatExposureLabel } from './src/capture/exposure.js?v=4';
+    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo, setExposure, pickBackCameras } from './src/camera.js?v=5';
+    import { isOn, setFlag, describe, toWorkerMask, STORAGE_KEY } from './src/flags.js?v=5';
+    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=5';
+    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=5';
+    import { computeBlurModules } from './src/array/blur.js?v=5';
+    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=5';
+    import { pxPerModule } from './src/array/optics.js?v=5';
+    import { classifyHold } from './src/array/setup.js?v=5';
+    import { formatExposureLabel } from './src/capture/exposure.js?v=5';
 
     const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 
@@ -497,11 +533,18 @@
     const toastEl = document.getElementById('toast');
 
     const selLayout = document.getElementById('sel-layout');
+    const selToteOrient = document.getElementById('sel-tote-orient');
+    const selLabelOrient = document.getElementById('sel-label-orient');
+    const numLabelLen = document.getElementById('num-label-len');
+    const numPayloadChars = document.getElementById('num-payload-chars');
     const rngStandoff = document.getElementById('rng-standoff');
     const lblStandoff = document.getElementById('lbl-standoff');
     const chkInvPan = document.getElementById('chk-inv-pan');
     const chkInvTilt = document.getElementById('chk-inv-tilt');
     const chkBlurGate = document.getElementById('chk-blur-gate');
+    const labsMaskEl = document.getElementById('labs-mask');
+    const labsFlagsList = document.getElementById('labs-flags-list');
+    const btnLabsReset = document.getElementById('btn-labs-reset');
 
     // Audio beep feedback (unlocks on Start tap)
     let audioCtx = null;
@@ -524,7 +567,7 @@
       } catch {}
     }
 
-    // Core modules (all new Wave 1 & Wave 2 features strictly behind flags, default OFF)
+    // Core modules (all new Wave 1/2/3 features strictly behind flags, default OFF)
     const flagCamAlign = isOn('camAlign');
     const flagBlurGateV2 = isOn('blurGateV2');
     const flagFcDefaults = isOn('fcLabelDefaults');
@@ -533,6 +576,9 @@
     const flagArrayDim = isOn('arrayDim');
     const flagOrientPreflight = isOn('orientPreflight');
     const flagOrientLock = isOn('orientLock');
+    const flagRowGuide = isOn('rowGuide');
+    const flagPanKalman = isOn('panKalman');
+    const flagAllocCleanup = isOn('allocCleanup');
 
     const orient = createOrientationTracker({ gravityZero: flagGravityZero });
     const mapper = createPanArrayMapper({
@@ -546,13 +592,20 @@
       dupCheck: isOn('dupCheck'),
       nudgeDamp: isOn('nudgeDamp'),
       driftFromLabel: isOn('driftFromLabel'),
+      panKalman: flagPanKalman,
+      allocCleanup: flagAllocCleanup,
     });
+    // Sync B6 config inputs with active mapper config
+    selToteOrient.value = mapper.cfg.toteOrientation;
+    selLabelOrient.value = mapper.cfg.labelOrientation;
+    numLabelLen.value = String(mapper.cfg.labelLenIn);
+    numPayloadChars.value = String(mapper.cfg.payloadChars);
     if (flagFcDefaults) {
       selLayout.value = '4x4-fc-16x14';
       rngStandoff.value = String(mapper.cfg.distanceIn);
       lblStandoff.textContent = `${mapper.cfg.distanceIn} in (FC)`;
     }
-    if (flagFastShutter) btnShutter.hidden = false;
+    if (flagFastShutter || flagRowGuide) btnShutter.hidden = false;
     if (flagArrayDim) btnDim.hidden = false;
     let arrayOverlayLevel = 'normal'; // 'normal' | 'dim' | 'min' (B3)
     let fastShutterOn = false;
@@ -599,6 +652,7 @@
 
     const qFrame = new Float64Array(4);
     const anglesTmp = { panDeg: 0, tiltDeg: 0, rollDeg: 0 };
+    const cellStateSnap = new Uint8Array(64); // B6/A9 zero-allocation cell snapshot scratch
     const pendingFrameTimes = new Map(); // frameId -> tFrameMs
 
     function setBanner(msg, state = 'idle', tone = '') {
@@ -698,7 +752,7 @@
       let gotNewCell = false;
       for (const d of dets) {
         if (!d.payload) continue;
-        const prevStateMap = mapper.getCells().map((c) => c.state);
+        mapper.getCellStateSnapshot(cellStateSnap);
         const res = mapper.addObservation(
           {
             payload: d.payload,
@@ -706,13 +760,14 @@
             cy: d.roiCenterY,
             lenPx: d.roiMajorLen,
             consensus: d.consensusCount,
+            prefixOk: d.prefixOk,
             tFrameMs,
           },
           qFrame,
           app.frameW,
           app.frameH
         );
-        if (res.placed && prevStateMap[res.cell.index] === 'EMPTY') {
+        if (res.placed && cellStateSnap[res.cell.index] === 0) {
           gotNewCell = true;
         }
       }
@@ -812,10 +867,28 @@
         }
       }
 
-      // Along-scan motion-blur warning tint on border
+      // B5 (`rowGuide`): sideways row-sweep guidance cue for ladder labels (or vertical for picket)
+      if (flagRowGuide && arrayOverlayLevel !== 'min') {
+        const curRow = footprint.targetCell ? footprint.targetCell.row : 0;
+        const rowDir = (curRow % 2 === 0)
+          ? (app.startCorner === 'top-right' ? -1 : 1)
+          : (app.startCorner === 'top-right' ? 1 : -1);
+        const arrow = mapper.cfg.labelOrientation === 'picket'
+          ? '↕ Sweep along column'
+          : (rowDir > 0 ? '→ Sweep right along row, step down' : '← Sweep left along row, step down');
+        const fsCue = Math.max(11, Math.round(w / 42));
+        camHudCtx.font = `700 ${fsCue}px system-ui, -apple-system, sans-serif`;
+        const cueW = camHudCtx.measureText(arrow).width;
+        camHudCtx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+        camHudCtx.fillRect(w * 0.5 - cueW * 0.5 - 8, h - fsCue - 16, cueW + 16, fsCue + 10);
+        camHudCtx.fillStyle = '#38bdf8';
+        camHudCtx.fillText(arrow, w * 0.5 - cueW * 0.5, h - 10);
+      }
+
+      // Along-scan motion-blur warning tint on border (B5 uses crisp red tint when rowGuide is ON)
       const blurMods = computeCurrentBlurModules(status);
       if (app.blurGate && blurMods > 0.8) {
-        camHudCtx.strokeStyle = 'rgba(245, 158, 11, 0.85)';
+        camHudCtx.strokeStyle = flagRowGuide ? 'rgba(239, 68, 68, 0.85)' : 'rgba(245, 158, 11, 0.85)';
         camHudCtx.lineWidth = Math.max(5, w / 160);
         camHudCtx.strokeRect(3, 3, w - 6, h - 6);
       }
@@ -1004,6 +1077,7 @@
           frameId: app.frameId,
           tFrameMs,
           flags: toWorkerMask(),
+          vertical: isOn('verticalMode') ? 1 : 0,
           width: w,
           height: h,
           byteOffset: 0,
@@ -1443,9 +1517,64 @@
       mapper.updateConfig({ distanceIn: d });
     });
 
+    selToteOrient.addEventListener('change', () => {
+      mapper.updateConfig({ toteOrientation: selToteOrient.value });
+      updateStartCornerButtons();
+      updateSummaryUi();
+    });
+    selLabelOrient.addEventListener('change', () => {
+      mapper.updateConfig({ labelOrientation: selLabelOrient.value });
+    });
+    numLabelLen.addEventListener('change', () => {
+      const v = Math.max(1.5, Math.min(10, Number(numLabelLen.value) || 3.5));
+      mapper.updateConfig({ labelLenIn: v });
+    });
+    numPayloadChars.addEventListener('change', () => {
+      const v = Math.max(4, Math.min(32, Math.round(Number(numPayloadChars.value) || 12)));
+      mapper.updateConfig({ payloadChars: v });
+    });
+
     chkInvPan.addEventListener('change', () => mapper.updateConfig({ invertPan: chkInvPan.checked }));
     chkInvTilt.addEventListener('change', () => mapper.updateConfig({ invertTilt: chkInvTilt.checked }));
     chkBlurGate.addEventListener('change', () => { app.blurGate = chkBlurGate.checked; });
+
+    // B6: Render live Labs feature-flag toggles from `src/flags.js`
+    function renderLabsFlags() {
+      const mask = toWorkerMask();
+      labsMaskEl.textContent = `(mask 0x${mask.toString(16)})`;
+      labsFlagsList.innerHTML = '';
+      for (const f of describe()) {
+        const lbl = document.createElement('label');
+        lbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;cursor:pointer;';
+        lbl.title = `${f.item}: ${f.desc}`;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = f.enabled;
+        cb.addEventListener('change', () => {
+          setFlag(f.name, cb.checked, true);
+          const nextMask = toWorkerMask();
+          labsMaskEl.textContent = `(mask 0x${nextMask.toString(16)})`;
+          if (f.name === 'conflictHysteresis') mapper.updateConfig({ conflictHysteresis: cb.checked });
+          else if (f.name === 'dupCheck') mapper.updateConfig({ dupCheck: cb.checked });
+          else if (f.name === 'nudgeDamp') mapper.updateConfig({ nudgeDamp: cb.checked });
+          else if (f.name === 'driftFromLabel') mapper.updateConfig({ driftFromLabel: cb.checked });
+          else if (f.name === 'panKalman') mapper.updateConfig({ panKalman: cb.checked });
+          else if (f.name === 'allocCleanup') mapper.updateConfig({ allocCleanup: cb.checked });
+          showToast(`${f.name} = ${cb.checked ? 'ON' : 'OFF'}`);
+        });
+        const span = document.createElement('span');
+        span.textContent = `${f.name} (${f.item})`;
+        lbl.append(cb, span);
+        labsFlagsList.appendChild(lbl);
+      }
+    }
+    btnLabsReset.addEventListener('click', () => {
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      for (const f of describe()) setFlag(f.name, false, false);
+      renderLabsFlags();
+      showToast('All Labs flags reset OFF.');
+    });
+    renderLabsFlags();
 
     // Desktop drag-to-pan fallback when no live gyro is active
     let dragging = false;

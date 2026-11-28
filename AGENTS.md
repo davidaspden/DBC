@@ -95,9 +95,11 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 │   ├── camera.js               # getUserMedia setup, track constraints, focus lock, C4 exposure API
 │   ├── flags.js                # Central feature-flag registry & worker bitmask (GR1; all default OFF)
 │   ├── scanner.js              # Headless drop-in Code 128 scanner API (cross-origin Blob worker support)
-│   ├── capture/                # Exposure & crop helpers (C4/C5)
+│   ├── wallmap.js              # Part 2 close-range slide-mode wall mapper (A10 `slideMap`)
+│   ├── capture/                # Exposure, lens probe & crop helpers (C4/C5/C6/C7)
 │   │   ├── exposure.js         # Max safe along-scan speed & exposure HUD formatter
-│   │   └── crop.js             # Even-aligned VideoFrame rect crop & coordinate offset (C5)
+│   │   ├── crop.js             # Even-aligned VideoFrame rect crop & predicted 4K label crop (C5/C7)
+│   │   └── lensprobe.js        # Rear lens capability probe & standback profile selector (C6)
 │   ├── ui/                     # Main-page UI helpers (U2/U4)
 │   │   ├── overlay-dim.js      # Flagged Normal/Dim/Min overlay & auto-fade controller
 │   │   └── pause.js            # Hold-to-pause & face-down gravity pause controller (U4)
@@ -105,7 +107,8 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 │   │   └── record.js           # Gzip CompressionStream tape recorder for Node replay
 │   ├── array/                  # Stand-back Tilt & Pan Array Scanner modules (zero dependencies)
 │   │   ├── orient.js           # Fused RelOrient/60Hz Gyro+Accel tracker, gravity-zero & ring buffer
-│   │   ├── pan-mapper.js       # Ray-plane projection, 2-corner cal, A2-A5 hysteresis/dup/nudge/label-anchor
+│   │   ├── pan-mapper.js       # Ray-plane projection, 2-corner cal, A2–A5/A8/A9 & C7 pixel projection
+│   │   ├── kalman.js           # A8 angle-compensated D, 2-read Gauss-Newton f/D & 3-state Kalman filter
 │   │   ├── autozero.js         # Auto tote-zero state machine from first square centred label (A6)
 │   │   ├── config.js           # FC 2×3.5 in & confirmed 16×14 in tote orientation config profiles (A1)
 │   │   ├── optics.js           # Pixels-per-module (PPM) evaluator (A1)
@@ -115,22 +118,23 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 │   ├── sim/                    # WebGL 4×4 tote wall simulator modules (zero dependencies)
 │   │   ├── paths.js            # Exact 14×16 in wall geometry, optics/PPM, camera paths & mat4 math
 │   │   └── webgl-wall.js       # WebGL2/1 analytical Code 128 shader, shutter blur & GPU luma pack
-│   ├── diag/                   # Standalone device diagnostics modules (D0/D1; zero network calls)
+│   ├── diag/                   # Standalone device diagnostics modules (D0/D1/D3; zero network calls)
 │   │   ├── probe.js            # Environment, screen orientation & full diagnostics orchestration
 │   │   ├── cameras.js          # Exclusive per-device probing, zoom sweep & lens heuristics
 │   │   ├── capture.js          # rVFC/rAF fps, VideoFrame copyTo & worker transferability check
 │   │   ├── sensors.js          # Generic Sensor / DeviceMotion / gravity & referenceFrame probes
-│   │   ├── decode-test.js      # Optional live Code 128 decode test
+│   │   ├── decode-test.js      # Optional live Code 128 decode test & D3 3.5 in label PPM summary
 │   │   ├── recommend.js        # Deterministic mode recommendation engine
 │   │   ├── report.js           # Plain-text + JSON (v1) report formatter, copy & share helpers
 │   │   └── hash.js             # 12-char SHA-256 deviceId hashing (no raw deviceIds in reports)
 │   └── worker/
-│       ├── scanner.worker.js   # Pipeline orchestrator, flags bitmask & pre-allocated TypedArray pool
-│       ├── roi.js              # Downscaler, Gx/Gy pass, Structure Tensor theta estimator
-│       ├── scanline.js         # Oriented luma sampler, vertical fallback (W1) & derivative edge detector
-│       ├── consensus.js        # Multi-scanline character voting & validation engine
+│       ├── scanner.worker.js   # Pipeline orchestrator, flags bitmask, W9/W10/W13 & TypedArray pool
+│       ├── roi.js              # Downscaler, Gx/Gy pass, Structure Tensor & W9 small-code 2x pass
+│       ├── scanline.js         # Oriented luma sampler, W1/W6/W7/W8/W12 & derivative edge detector
+│       ├── consensus.js        # Multi-scanline voting, W4 prefix gate & W5 prefix-aligned stacking
+│       ├── flow.js             # W13 downsampled 3×3 tile block-matching optical flow (`flowOn`)
 │       └── decoders/
-│           ├── code128.js      # Code 128 guard pattern anchor & Mod 103 checksum
+│           ├── code128.js      # Code 128 guard pattern anchor, W3 tsX crib & Mod 103 checksum
 │           └── ean13.js        # EAN-13/UPC-A guard anchor & Mod 10 checksum
 ├── baseline/                   # Recorded clean d917944 baseline metrics & sim templates (GR0)
 ├── diag/                       # Real device hardware notes (D2: Galaxy A53 5G SM-A536B)
@@ -141,14 +145,18 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 └── tests/
     ├── harness.js              # Offline runner & synthetic/real test image generator
     ├── array.test.js           # Unit tests for A1–A7/B1/B2 array orientation, mapping & blur
-    ├── capture-ui.test.js      # Unit tests for C2/C3/C5 zoom/focus/crop & U4 pause controller
-    ├── diag.test.js            # Unit tests for D0/D1/D2 diagnostics & real A53 fixture
+    ├── capture-ui.test.js      # Unit tests for C2/C3/C5/C6/C7 zoom/focus/crop/lensProbe & U4 pause
+    ├── diag.test.js            # Unit tests for D0/D1/D2/D3 diagnostics & real A53 fixture
     ├── exposure.test.js        # Unit tests for C4 exposure info, two-step setter & speed budget
     ├── flags.test.js           # Unit tests for GR1 feature flags & worker bitmask
+    ├── flow.test.js            # Unit tests for W13 downsampled optical flow (accuracy & <=3 ms)
+    ├── panmodel.test.js        # Unit & 200-run Monte-Carlo tests for A8 panKalman & A9 allocCleanup
     ├── sim.test.js             # Unit tests for WebGL simulator geometry, F1 FC realism & F2 paths
     ├── tape.test.js            # Unit tests for GR3 `.dbct` gzip record & Node replay
     ├── w1-vertical.test.js     # Unit tests for W11 geometry/flags & W1 vertical fallback scanlines
-    └── w2-decoder.test.js      # Unit tests for W2/W3/W4/W6/W7/W10 flagged decoder upgrades
+    ├── w2-decoder.test.js      # Unit tests for W2/W3/W4/W6/W7/W10 flagged decoder upgrades
+    ├── w3-worker.test.js       # Unit tests for W5/W8/W9/W12/W13 Wave 3 worker upgrades
+    └── wallmap.test.js         # Unit & 200-run Monte-Carlo tests for A10 slide-mode wall mapper
 ```
 
 ---
