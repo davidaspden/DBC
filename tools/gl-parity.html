@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DBC GL to CPU parity (R6)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
+  button { font: inherit; padding: 8px 14px; margin-right: 8px; }
+  table { border-collapse: collapse; margin-top: 12px; }
+  td, th { border: 1px solid #444; padding: 4px 8px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .pass { color: #6f6; } .fail { color: #f66; }
+  .mono { font-family: ui-monospace, monospace; }
+  canvas { background: #000; margin: 4px; max-width: 320px; }
+</style>
+</head>
+<body>
+<h1>GL to CPU parity (R6)</h1>
+<p>Renders six fixed poses with the WebGL renderer (the one <code>sim.html</code> shows), reads the luma back,
+renders the same poses with the CPU renderer and compares: mean absolute luma difference
+&le; 6/255 inside label rectangles, &le; 10/255 elsewhere, and the same decoded payloads.</p>
+<p>
+  <button id="run">1. Run parity</button>
+  <button id="dl" disabled>2. Download results (PGMs + manifest)</button>
+</p>
+<div id="env" class="mono"></div>
+<div id="verdict" style="font-size:18px;margin:8px 0"></div>
+<table id="tbl" hidden>
+  <thead><tr><th>case</th><th>mean diff in labels</th><th>mean diff elsewhere</th><th>max diff</th><th>decoded (CPU / GL)</th><th>result</th></tr></thead>
+  <tbody></tbody>
+</table>
+<div id="shots"></div>
+<script type="module">
+  import {
+    PARITY_CASES, PARITY_FORMAT, PARITY_VERSION, INSIDE_LABEL_TOL, OUTSIDE_LABEL_TOL,
+    buildParityCase, glCellsFor, judgeCase, encodePgm,
+  } from '../src/sim/gl-parity.js';
+  import { createWebGLWallRenderer } from '../src/sim/webgl-wall.js';
+  import { renderFrame } from '../src/sim/cpu-render.js';
+
+  const $ = (id) => document.getElementById(id);
+  let results = null;
+
+  async function gzip(bytes) {
+    const cs = new CompressionStream('gzip');
+    const w = cs.writable.getWriter();
+    w.write(bytes); w.close();
+    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  }
+  function save(name, bytes, type) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([bytes], { type }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  function show(luma, w, h, label) {
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h; cv.title = label;
+    const ctx = cv.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) { img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = luma[i]; img.data[i * 4 + 3] = 255; }
+    ctx.putImageData(img, 0, 0);
+    $('shots').appendChild(cv);
+  }
+
+  async function run() {
+    $('run').disabled = true;
+    $('shots').textContent = '';
+    $('tbl').hidden = false;
+    const tb = $('tbl').querySelector('tbody');
+    tb.textContent = '';
+    results = [];
+    const glCanvas = document.createElement('canvas');
+    let renderer;
+    try {
+      renderer = createWebGLWallRenderer(glCanvas, glCellsFor(false));
+    } catch (e) {
+      $('verdict').textContent = `WebGL is not available here: ${e.message}`;
+      $('run').disabled = false;
+      return;
+    }
+    const gl = glCanvas.getContext('webgl2') || glCanvas.getContext('webgl');
+    const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown (extension hidden)';
+    $('env').textContent = `GPU: ${gpu} | WebGL${renderer.isWebGL2 ? '2' : '1'} | ${navigator.userAgent}`;
+    const swRender = /swiftshader|llvmpipe|software/i.test(gpu);
+
+    let allPass = true;
+    for (const c of PARITY_CASES) {
+      const built = buildParityCase(c);
+      renderer.setCells(glCellsFor(built.fcMode));
+      const glLuma = new Uint8Array(c.width * c.height);
+      // two renders: the first uploads textures / compiles, the second is the one we keep
+      renderer.renderFrame([built.pose], built.opts, glLuma);
+      renderer.renderFrame([built.pose], built.opts, glLuma);
+      const cpuLuma = renderFrame(built.scene, built.pose, built.opts);
+      const j = judgeCase(built, cpuLuma, glLuma);
+      results.push({ built, glLuma, cpuLuma, verdict: j });
+      allPass = allPass && j.pass;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${c.id}</td><td>${j.meanInside.toFixed(2)}</td><td>${j.meanOutside.toFixed(2)}</td><td>${j.maxAbs}</td>` +
+        `<td>${j.cpuDecoded.length} / ${j.otherDecoded.length}${j.decodeParity ? '' : ' (differ)'}</td>` +
+        `<td class="${j.pass ? 'pass' : 'fail'}">${j.pass ? 'PASS' : 'FAIL'}${j.flippedWouldPass ? ' (image is upside down: read-back order)' : ''}</td>`;
+      tb.appendChild(tr);
+      show(cpuLuma, c.width, c.height, `${c.id} CPU`);
+      show(glLuma, c.width, c.height, `${c.id} GL`);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    $('verdict').innerHTML = allPass
+      ? `<span class="pass">ALL ${PARITY_CASES.length} CASES PASS</span> (labels &le; ${INSIDE_LABEL_TOL}, elsewhere &le; ${OUTSIDE_LABEL_TOL}, same decodes)` +
+        (swRender ? ' &mdash; but this is a SOFTWARE renderer, not a real GPU; run on a machine with a GPU for the status upgrade' : '')
+      : '<span class="fail">PARITY FAILED</span> &mdash; download the results and send them over so the difference can be diagnosed';
+    $('dl').disabled = false;
+    $('run').disabled = false;
+    window.__parity = { allPass, gpu, swRender };
+  }
+
+  async function download() {
+    const manifest = {
+      format: PARITY_FORMAT,
+      version: PARITY_VERSION,
+      createdUtc: new Date().toISOString(),
+      gpu: window.__parity.gpu,
+      softwareRenderer: window.__parity.swRender,
+      userAgent: navigator.userAgent,
+      thresholds: { insideLabel: INSIDE_LABEL_TOL, outsideLabel: OUTSIDE_LABEL_TOL },
+      cases: results.map((r) => ({
+        id: r.built.id,
+        width: r.built.camera.width,
+        height: r.built.camera.height,
+        file: `${r.built.id}.pgm.gz`,
+        pageVerdict: { ...r.verdict, pass: r.verdict.pass },
+      })),
+    };
+    for (const r of results) {
+      const pgm = encodePgm(r.glLuma, r.built.camera.width, r.built.camera.height);
+      save(`${r.built.id}.pgm.gz`, await gzip(pgm), 'application/gzip');
+      await new Promise((res) => setTimeout(res, 250)); // browsers throttle rapid multi-downloads
+    }
+    save('manifest.json', JSON.stringify(manifest, null, 2), 'application/json');
+  }
+
+  $('run').addEventListener('click', run);
+  $('dl').addEventListener('click', download);
+  if (new URLSearchParams(location.search).get('auto') === '1') run();
+</script>
+</body>
+</html>
