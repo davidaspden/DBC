@@ -381,6 +381,8 @@
         <button id="btn-switch-cam" type="button" hidden>Switch Lens</button>
         <button id="btn-res" type="button">1080p</button>
         <button id="btn-torch" type="button" disabled>Torch</button>
+        <button id="btn-shutter" type="button" hidden>Fast 1/500s</button>
+        <button id="btn-dim" type="button" hidden>Dim</button>
         <button id="btn-sound" class="active" type="button">Beep ON</button>
       </div>
       <div id="zoom-row" class="field" hidden>
@@ -416,6 +418,7 @@
           <div class="field-top"><label for="sel-layout">Array preset</label></div>
           <select id="sel-layout">
             <option value="4x4-tote" selected>4×4 Totes (14″ × 16″)</option>
+            <option value="4x4-fc-16x14">4×4 FC Totes (16″ × 14″)</option>
             <option value="3x3-tote">3×3 Totes (14″ × 16″)</option>
             <option value="2x2-tote">2×2 Totes (14″ × 16″)</option>
             <option value="2x2-desk">2×2 Desk Test (6″ × 8″)</option>
@@ -441,13 +444,15 @@
   </main>
 
   <script type="module">
-    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo } from './src/camera.js';
-    import { isOn, toWorkerMask } from './src/flags.js';
-    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=3';
-    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=3';
-    import { computeBlurModules } from './src/array/blur.js?v=3';
-    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=3';
-    import { pxPerModule } from './src/array/optics.js?v=3';
+    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo, setExposure, pickBackCameras } from './src/camera.js?v=4';
+    import { isOn, toWorkerMask } from './src/flags.js?v=4';
+    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=4';
+    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=4';
+    import { computeBlurModules } from './src/array/blur.js?v=4';
+    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=4';
+    import { pxPerModule } from './src/array/optics.js?v=4';
+    import { classifyHold } from './src/array/setup.js?v=4';
+    import { formatExposureLabel } from './src/capture/exposure.js?v=4';
 
     const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 
@@ -476,6 +481,8 @@
     const btnSwitchCam = document.getElementById('btn-switch-cam');
     const btnRes = document.getElementById('btn-res');
     const btnTorch = document.getElementById('btn-torch');
+    const btnShutter = document.getElementById('btn-shutter');
+    const btnDim = document.getElementById('btn-dim');
     const btnSound = document.getElementById('btn-sound');
     const zoomRow = document.getElementById('zoom-row');
     const rngZoom = document.getElementById('rng-zoom');
@@ -517,26 +524,38 @@
       } catch {}
     }
 
-    // Core modules (all new Wave 1 features strictly behind flags, default OFF)
+    // Core modules (all new Wave 1 & Wave 2 features strictly behind flags, default OFF)
     const flagCamAlign = isOn('camAlign');
     const flagBlurGateV2 = isOn('blurGateV2');
     const flagFcDefaults = isOn('fcLabelDefaults');
     const flagGravityZero = isOn('orientGravityZero');
+    const flagFastShutter = isOn('fastShutter');
+    const flagArrayDim = isOn('arrayDim');
+    const flagOrientPreflight = isOn('orientPreflight');
+    const flagOrientLock = isOn('orientLock');
 
     const orient = createOrientationTracker({ gravityZero: flagGravityZero });
     const mapper = createPanArrayMapper({
       cols: 4,
       rows: 4,
-      pitchXIn: 14,
-      pitchYIn: 16,
+      toteOrientation: flagFcDefaults ? '16Wx14H' : '14Wx16H',
       distanceIn: flagFcDefaults ? 12 : 30,
       hfovDeg: 70.7,
       fcLabelDefaults: flagFcDefaults,
+      conflictHysteresis: isOn('conflictHysteresis'),
+      dupCheck: isOn('dupCheck'),
+      nudgeDamp: isOn('nudgeDamp'),
+      driftFromLabel: isOn('driftFromLabel'),
     });
     if (flagFcDefaults) {
+      selLayout.value = '4x4-fc-16x14';
       rngStandoff.value = String(mapper.cfg.distanceIn);
       lblStandoff.textContent = `${mapper.cfg.distanceIn} in (FC)`;
     }
+    if (flagFastShutter) btnShutter.hidden = false;
+    if (flagArrayDim) btnDim.hidden = false;
+    let arrayOverlayLevel = 'normal'; // 'normal' | 'dim' | 'min' (B3)
+    let fastShutterOn = false;
     if (flagCamAlign) {
       videoEl.style.objectFit = 'contain';
       camStage.style.maxHeight = '62dvh';
@@ -1096,15 +1115,23 @@
 
       ensureBuffers(cam.width, cam.height);
 
-      // Populate rear camera switcher
+      // Populate rear camera switcher (prefer camera 0 main AF+torch over ultrawide camera 2 on A53)
       const allDevs = await listVideoDevices();
-      const rear = allDevs.filter((d) => /back|rear|environment/i.test(d.label));
+      const rear = pickBackCameras(allDevs);
       app.devices = rear.length > 0 ? rear : allDevs;
       if (app.devices.length > 1) {
         btnSwitchCam.hidden = false;
         const curId = cam.settings && cam.settings.deviceId;
         const idx = app.devices.findIndex((d) => d.deviceId === curId);
         if (idx >= 0) app.deviceIndex = idx;
+      }
+      // If `fastShutter` flag is on and manual exposure is supported, enable button state
+      if (flagFastShutter) {
+        const expInfo = getExposureInfo(cam.track);
+        btnShutter.disabled = !expInfo.supported;
+        fastShutterOn = false;
+        btnShutter.classList.remove('active');
+        btnShutter.textContent = expInfo.manualSupported ? 'Fast 1/500s' : 'Auto Exp';
       }
     }
 
@@ -1176,6 +1203,13 @@
       setBanner('Requesting motion sensors & camera…', 'cal');
 
       try {
+        // B4 (`orientLock`): best-effort fullscreen + portrait lock inside Start gesture
+        if (flagOrientLock && document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+          if (screen.orientation && typeof screen.orientation.lock === 'function') {
+            await screen.orientation.lock('portrait').catch(() => {});
+          }
+        }
         // Must call orient.start() inside user gesture for iOS permission
         const sensRes = await orient.start();
         await openCameraStream(null);
@@ -1192,8 +1226,26 @@
 
         if (sensRes.ok) {
           setBanner(`Hold still ~1.8 s aimed at ${startLabel}…`, 'cal', 'warn');
-          const cal = await orient.calibrateZero(1800, aim.quat);
-          if (cal.ok) {
+          const cal = await orient.calibrateZero(1800, flagGravityZero ? null : aim.quat);
+          if (flagGravityZero) {
+            const setup = orient.getSetupInfo();
+            const row = app.startCorner === 'center' ? null : 0;
+            const col = app.startCorner === 'top-left' ? 0 : (app.startCorner === 'top-right' ? mapper.cfg.cols - 1 : null);
+            orient.zeroYawOnly(0);
+            mapper.setInFrontStanceForCell(row, col, setup.pitchDeg);
+            if (flagOrientPreflight) {
+              const pre = classifyHold({
+                rollDeg: setup.rollDeg,
+                pitchDeg: setup.pitchDeg,
+                frameW: app.frameW,
+                frameH: app.frameH,
+                labelOrientation: mapper.cfg.labelOrientation,
+              });
+              setBanner(`${startLabel} (${sensRes.source}) · ${pre.message}`, 'active', pre.tone);
+            } else {
+              setBanner(`Zeroed on ${startLabel} (${sensRes.source}) — tilt & pan`, 'active', 'good');
+            }
+          } else if (cal.ok) {
             setBanner(`Zeroed on ${startLabel} (${sensRes.source}) — tilt & pan`, 'active', 'good');
             showToast(`Gyro zeroed on ${startLabel} (RMS ${cal.rmsDps} °/s)`);
           } else {
@@ -1299,6 +1351,21 @@
       btnSound.textContent = soundEnabled ? 'Beep ON' : 'Beep OFF';
     });
 
+    btnShutter.addEventListener('click', async () => {
+      if (!app.cam || !app.cam.track) return;
+      fastShutterOn = !fastShutterOn;
+      const res = await setExposure(app.cam.track, { targetSec: 1 / 500, enableManual: fastShutterOn });
+      btnShutter.classList.toggle('active', fastShutterOn && res.ok);
+      btnShutter.textContent = fastShutterOn && res.ok ? formatExposureLabel(res.info) : 'Fast 1/500s';
+      showToast(`Exposure: ${formatExposureLabel(res.info)} (${res.mode})`);
+    });
+
+    btnDim.addEventListener('click', () => {
+      arrayOverlayLevel = arrayOverlayLevel === 'normal' ? 'dim' : (arrayOverlayLevel === 'dim' ? 'min' : 'normal');
+      btnDim.textContent = arrayOverlayLevel === 'normal' ? 'Dim' : (arrayOverlayLevel === 'dim' ? 'Min' : 'Full');
+      camBanner.style.opacity = arrayOverlayLevel === 'dim' ? '0.35' : (arrayOverlayLevel === 'min' ? '0.15' : '1');
+    });
+
     let lastZoomApply = 0;
     rngZoom.addEventListener('input', () => {
       const z = Number(rngZoom.value);
@@ -1353,6 +1420,7 @@
     selLayout.addEventListener('change', () => {
       const v = selLayout.value;
       if (v === '4x4-tote') mapper.updateConfig({ cols: 4, rows: 4, pitchXIn: 14, pitchYIn: 16 });
+      else if (v === '4x4-fc-16x14') mapper.updateConfig({ cols: 4, rows: 4, toteOrientation: '16Wx14H' });
       else if (v === '3x3-tote') mapper.updateConfig({ cols: 3, rows: 3, pitchXIn: 14, pitchYIn: 16 });
       else if (v === '2x2-tote') mapper.updateConfig({ cols: 2, rows: 2, pitchXIn: 14, pitchYIn: 16 });
       else if (v === '2x2-desk') {

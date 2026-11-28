@@ -95,16 +95,19 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 │   ├── camera.js               # getUserMedia setup, track constraints, focus lock, C4 exposure API
 │   ├── flags.js                # Central feature-flag registry & worker bitmask (GR1; all default OFF)
 │   ├── scanner.js              # Headless drop-in Code 128 scanner API (cross-origin Blob worker support)
-│   ├── capture/                # Exposure & capture helpers (C4)
-│   │   └── exposure.js         # Max safe along-scan speed & exposure HUD formatter
-│   ├── ui/                     # Main-page UI helpers (U2)
-│   │   └── overlay-dim.js      # Flagged Normal/Dim/Min overlay & auto-fade controller
+│   ├── capture/                # Exposure & crop helpers (C4/C5)
+│   │   ├── exposure.js         # Max safe along-scan speed & exposure HUD formatter
+│   │   └── crop.js             # Even-aligned VideoFrame rect crop & coordinate offset (C5)
+│   ├── ui/                     # Main-page UI helpers (U2/U4)
+│   │   ├── overlay-dim.js      # Flagged Normal/Dim/Min overlay & auto-fade controller
+│   │   └── pause.js            # Hold-to-pause & face-down gravity pause controller (U4)
 │   ├── tape/                   # Frame/sensor `.dbct` recorder (GR3)
 │   │   └── record.js           # Gzip CompressionStream tape recorder for Node replay
 │   ├── array/                  # Stand-back Tilt & Pan Array Scanner modules (zero dependencies)
-│   │   ├── orient.js           # Fused RelativeOrientation/Gyro tracker, gravity-zero & ring buffer
-│   │   ├── pan-mapper.js       # Ray-plane projection, 2-corner calibration, lattice snap & conflict guard
-│   │   ├── config.js           # FC 2×3.5 in & tote orientation config profiles (A1)
+│   │   ├── orient.js           # Fused RelOrient/60Hz Gyro+Accel tracker, gravity-zero & ring buffer
+│   │   ├── pan-mapper.js       # Ray-plane projection, 2-corner cal, A2-A5 hysteresis/dup/nudge/label-anchor
+│   │   ├── autozero.js         # Auto tote-zero state machine from first square centred label (A6)
+│   │   ├── config.js           # FC 2×3.5 in & confirmed 16×14 in tote orientation config profiles (A1)
 │   │   ├── optics.js           # Pixels-per-module (PPM) evaluator (A1)
 │   │   ├── setup.js            # Hold attitude preflight classifier & 8-way D4 axis remap solver (A7)
 │   │   ├── blur.js             # Scan-angle-aware shutter blur-modules gate (B1)
@@ -130,19 +133,22 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 │           ├── code128.js      # Code 128 guard pattern anchor & Mod 103 checksum
 │           └── ean13.js        # EAN-13/UPC-A guard anchor & Mod 10 checksum
 ├── baseline/                   # Recorded clean d917944 baseline metrics & sim templates (GR0)
+├── diag/                       # Real device hardware notes (D2: Galaxy A53 5G SM-A536B)
 ├── tools/
 │   ├── verify.mjs              # Automated regression verification gate against baseline (GR2)
 │   ├── replay.mjs              # Node.js `.dbct` frame/sensor tape replay runner (GR3)
 │   └── tape-format.md          # Binary `.dbct` v1 tape specification
 └── tests/
     ├── harness.js              # Offline runner & synthetic/real test image generator
-    ├── array.test.js           # Unit tests for A1/A7/B1/B2 array orientation, mapping & blur
-    ├── diag.test.js            # Unit tests for D0/D1 diagnostics hashing, orientation & recommendations
+    ├── array.test.js           # Unit tests for A1–A7/B1/B2 array orientation, mapping & blur
+    ├── capture-ui.test.js      # Unit tests for C2/C3/C5 zoom/focus/crop & U4 pause controller
+    ├── diag.test.js            # Unit tests for D0/D1/D2 diagnostics & real A53 fixture
     ├── exposure.test.js        # Unit tests for C4 exposure info, two-step setter & speed budget
     ├── flags.test.js           # Unit tests for GR1 feature flags & worker bitmask
     ├── sim.test.js             # Unit tests for WebGL simulator geometry, F1 FC realism & F2 paths
     ├── tape.test.js            # Unit tests for GR3 `.dbct` gzip record & Node replay
-    └── w1-vertical.test.js     # Unit tests for W11 geometry/flags & W1 vertical fallback scanlines
+    ├── w1-vertical.test.js     # Unit tests for W11 geometry/flags & W1 vertical fallback scanlines
+    └── w2-decoder.test.js      # Unit tests for W2/W3/W4/W6/W7/W10 flagged decoder upgrades
 ```
 
 ---
