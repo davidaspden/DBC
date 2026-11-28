@@ -477,11 +477,14 @@ export async function probeCameras(previewEl, opts = {}) {
           await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] });
         } catch {}
 
+        // Only flag logical lens handover when capabilities actually change across a zoom step,
+        // OR when a sharp framing discontinuity occurs without a gradual monotonic brightness ramp
+        // (prevents hand-held auto-exposure ramp on single-sensor phones like A53 from mimicking tele).
         entry.zoomSweep = {
           steps: sweepSteps,
           framingJumpDetected,
           capsChangedDetected,
-          logicalZoomLikely: caps.zoom.max >= 3 && (framingJumpDetected || capsChangedDetected),
+          logicalZoomLikely: caps.zoom.max >= 3 && (capsChangedDetected || (framingJumpDetected && sweepSteps.some((s) => s.frameDiff > 45))),
         };
       }
 

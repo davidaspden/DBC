@@ -52,8 +52,10 @@ function looksLikeRealTele(cam) {
   if (cam.roleGuess === 'TELE?') return true;
   const zCap = cam.capabilities && typeof cam.capabilities.zoom === 'object' ? cam.capabilities.zoom : null;
   const sweep = cam.zoomSweep;
+  // Require either an actual capability change on handover or a strong optical framing jump (>45 MAE)
   if (zCap && zCap.max >= 3 && sweep && sweep.logicalZoomLikely) {
-    return true;
+    const strongJump = Array.isArray(sweep.steps) && sweep.steps.some((s) => (s.frameDiff || 0) > 45);
+    if (sweep.capsChangedDetected || strongJump) return true;
   }
   return false;
 }

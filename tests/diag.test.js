@@ -207,6 +207,7 @@ await test('recommend returns part2-slide on Galaxy A53 5G fixture (no tele, 108
 await test('recommend returns part3-tele when logical 3x zoom lens switch + gyro exist', async () => {
   const report = a53Fixture();
   report.cameras[0].zoomSweep.framingJumpDetected = true;
+  report.cameras[0].zoomSweep.capsChangedDetected = true;
   report.cameras[0].zoomSweep.logicalZoomLikely = true;
   report.cameras[0].capabilities.exposureMode = ['continuous', 'manual'];
   report.cameras[0].capabilities.exposureTime = { min: 1, max: 1000 };
@@ -214,6 +215,68 @@ await test('recommend returns part3-tele when logical 3x zoom lens switch + gyro
   assert.equal(rec.mode, 'part3-tele');
   assert.equal(rec.secondaryOption, 'part2-slide');
   assert.match(rec.blurb, /Part 3/i);
+});
+
+await test('D2 real Galaxy A53 5G (SM-A536B) report recommends part2-slide and picks camera 0 (AF + torch)', async () => {
+  const report = a53Fixture({
+    cameras: classifyCameras([
+      {
+        index: 0,
+        label: 'camera 2, facing back',
+        idHash: '52a24ec8dac6',
+        facing: 'environment',
+        capabilities: {
+          width: { min: 1, max: 4000 },
+          height: { min: 1, max: 3000 },
+          zoom: { min: 1, max: 8, step: 0.1 },
+          focusMode: ['manual'],
+          focusDistance: { min: 0, max: 3.6, step: 0.01 },
+          exposureMode: ['continuous', 'manual'],
+          exposureTime: { min: 0.6, max: 1000, step: 0.1 },
+          iso: { min: 50, max: 3200, step: 1 },
+          torch: 'n/a',
+        },
+        settings: { width: 1080, height: 1920, frameRate: 30, zoom: 1 },
+        resolutions: { '1080p': { ok: true, width: 1080, height: 1920, frameRate: 30 } },
+        zoomSweep: {
+          steps: [{ requested: 1, achieved: 1, frameDiff: 0 }, { requested: 4.5, achieved: 4.505, frameDiff: 30.15 }],
+          framingJumpDetected: true,
+          capsChangedDetected: false,
+          logicalZoomLikely: true,
+        },
+        error: null,
+      },
+      {
+        index: 1,
+        label: 'camera 0, facing back',
+        idHash: '004839289298',
+        facing: 'environment',
+        capabilities: {
+          width: { min: 1, max: 4624 },
+          height: { min: 1, max: 3468 },
+          zoom: { min: 1, max: 8, step: 0.1 },
+          focusMode: ['manual', 'single-shot', 'continuous'],
+          focusDistance: { min: 0.1, max: 3.6, step: 0.01 },
+          exposureMode: ['continuous', 'manual'],
+          exposureTime: { min: 0.42, max: 1000, step: 0.1 },
+          iso: { min: 50, max: 3200, step: 1 },
+          torch: true,
+        },
+        settings: { width: 1080, height: 1920, frameRate: 30, zoom: 1 },
+        resolutions: { '1080p': { ok: true, width: 1080, height: 1920, frameRate: 30 } },
+        zoomSweep: {
+          steps: [{ requested: 1, achieved: 1, frameDiff: 0 }, { requested: 4.5, achieved: 4.498, frameDiff: 35.35 }],
+          framingJumpDetected: true,
+          capsChangedDetected: false,
+          logicalZoomLikely: true,
+        },
+        error: null,
+      },
+    ]),
+  });
+  const rec = recommend(report);
+  assert.equal(rec.mode, 'part2-slide');
+  assert.equal(rec.recommendedCameraHash, '004839289298');
 });
 
 await test('recommend returns part3-tele when a discrete TELE? lens + gyro exist', async () => {
