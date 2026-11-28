@@ -20,6 +20,7 @@ export const FLAG_VERTICAL_MODE = 1 << 10;         // W10
 export const FLAG_DEBLUR_1D = 1 << 11;             // W12
 export const FLAG_FLOW_ON = 1 << 12;               // W13
 export const FLAG_STOP_GUARD = 1 << 13;            // F1
+export const FLAG_DECODE_ANCHOR = 1 << 14;         // B8
 
 export const WORKER_FLAG_BITS = Object.freeze({
   vertFallback:        FLAG_VERT_FALLBACK,
@@ -36,4 +37,5 @@ export const WORKER_FLAG_BITS = Object.freeze({
   deblur1d:            FLAG_DEBLUR_1D,
   flowOn:              FLAG_FLOW_ON,
   stopGuard:           FLAG_STOP_GUARD,
+  decodeAnchor:        FLAG_DECODE_ANCHOR,
 });

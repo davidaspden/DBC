@@ -36,6 +36,7 @@ export const FLAG_DEFS = Object.freeze([
   { name: 'verticalMode',        bit: WORKER_FLAG_BITS.verticalMode,         default: false, item: 'W10',  desc: 'Fast vertical scanline pass before ROI (S4 worker)' },
   { name: 'deblur1d',            bit: WORKER_FLAG_BITS.deblur1d,             default: false, item: 'W12',  desc: 'Optional 1D along-scan deblur kernel' },
   { name: 'flowOn',              bit: WORKER_FLAG_BITS.flowOn,               default: false, item: 'W13',  desc: 'Downsampled block-matching optical flow stage' },
+  { name: 'decodeAnchor',        bit: WORKER_FLAG_BITS.decodeAnchor,         default: false, item: 'B8',   desc: 'Anchor reported label centre/overlay to the decoded start-stop span on the winning scanlines (fixes ROI-centre offset along the scan axis)' },
   { name: 'stopGuard',           bit: WORKER_FLAG_BITS.stopGuard,            default: false, item: 'F1',   desc: 'Stop width, trailing quiet-zone, span and tail-quality guard against oblique-tail false Code 128 decodes' },
 
   // Stream C — Camera / Capture

@@ -31,6 +31,7 @@ import {
   FLAG_ILLUM_NORM,
   FLAG_SUBPIX_EDGES,
   FLAG_DEBLUR_1D,
+  FLAG_DECODE_ANCHOR,
 } from './flagbits.js';
 import {
   MAX_SCANLINES,
@@ -78,6 +79,10 @@ export function createConsensusState() {
     slotMaxX: new Float32Array(MAX_EXACT_SLOTS),
     slotMaxY: new Float32Array(MAX_EXACT_SLOTS),
     slotSpanSum: new Float32Array(MAX_EXACT_SLOTS),
+    // B8 (`decodeAnchor`): running sum of decoded-span midpoints (full-frame px) and its hit count per slot
+    slotMidSumX: new Float64Array(MAX_EXACT_SLOTS),
+    slotMidSumY: new Float64Array(MAX_EXACT_SLOTS),
+    slotMidN: new Int32Array(MAX_EXACT_SLOTS),
 
     // Tier B soft candidate bank (integer Q10 confidences)
     softCount: 0,
@@ -570,8 +575,12 @@ function recordMultiLineHit(cState, scanState, lineIdx, hitIdx) {
   const sy0 = scanState.lineStartYQ16[lineIdx] / 65536.0;
   const ux = scanState.lineStepXQ16[lineIdx] / 65536.0;
   const uy = scanState.lineStepYQ16[lineIdx] / 65536.0;
-  const p0 = c128.hitStartPx[hitIdx];
-  const p1 = c128.hitEndPx[hitIdx];
+  // B8 (`decodeAnchor`): hit positions are relative to run 0, which may start after sample 0 of the
+  // scanline; add the run origin so the span lands on the real symbol start/stop.
+  const anchorOn = (scanState.flags & FLAG_DECODE_ANCHOR) !== 0;
+  const originPx = anchorOn ? scanState.runOriginQ8 / 256.0 : 0;
+  const p0 = c128.hitStartPx[hitIdx] + originPx;
+  const p1 = c128.hitEndPx[hitIdx] + originPx;
   const ax = sx0 + ux * p0;
   const ay = sy0 + uy * p0;
   const bx = sx0 + ux * p1;
@@ -581,6 +590,8 @@ function recordMultiLineHit(cState, scanState, lineIdx, hitIdx) {
   const loY = ay < by ? ay : by;
   const hiY = ay > by ? ay : by;
   const spanPx = p1 > p0 ? (p1 - p0) : (p0 - p1);
+  const midX = (ax + bx) * 0.5;
+  const midY = (ay + by) * 0.5;
 
   for (let s = 0; s < slotCount; s++) {
     if (slotLens[s] !== pLen) continue;
@@ -602,6 +613,11 @@ function recordMultiLineHit(cState, scanState, lineIdx, hitIdx) {
       if (hiX > cState.slotMaxX[s]) cState.slotMaxX[s] = hiX;
       if (hiY > cState.slotMaxY[s]) cState.slotMaxY[s] = hiY;
       cState.slotSpanSum[s] += spanPx;
+      if (anchorOn) {
+        cState.slotMidSumX[s] += midX;
+        cState.slotMidSumY[s] += midY;
+        cState.slotMidN[s] = (cState.slotMidN[s] + 1) | 0;
+      }
       return;
     }
   }
@@ -626,6 +642,9 @@ function recordMultiLineHit(cState, scanState, lineIdx, hitIdx) {
     cState.slotMaxX[slotCount] = hiX;
     cState.slotMaxY[slotCount] = hiY;
     cState.slotSpanSum[slotCount] = spanPx;
+    cState.slotMidSumX[slotCount] = anchorOn ? midX : 0;
+    cState.slotMidSumY[slotCount] = anchorOn ? midY : 0;
+    cState.slotMidN[slotCount] = anchorOn ? 1 : 0;
     cState.slotCount = (slotCount + 1) | 0;
   }
 }
@@ -735,6 +754,7 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
       cState.slotMaxX[0] = result.roiX + result.roiW;
       cState.slotMaxY[0] = result.roiY + result.roiH;
       cState.slotSpanSum[0] = result.roiMajorLen * result.consensusCount;
+      cState.slotMidN[0] = 0; // Tier C: no per-line decoded span, keep the RoI-box centre
       cState.slotCount = 1;
       return 1;
     }

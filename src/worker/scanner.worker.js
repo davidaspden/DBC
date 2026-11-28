@@ -18,6 +18,7 @@ import {
   FLAG_VERT_FALLBACK,
   FLAG_VERTICAL_MODE,
   FLAG_FLOW_ON,
+  FLAG_DECODE_ANCHOR,
 } from './flagbits.js';
 import {
   createScanlineState,
@@ -290,6 +291,12 @@ function collectMultiConsensusSlots(state, result, width, height) {
     result.roiCenterX = (x0 + x1) * 0.5;
     result.roiCenterY = (y0 + y1) * 0.5;
     result.roiMajorLen = cState.slotSpanSum[s] / votes;
+    // B8 (`decodeAnchor`): report the mean midpoint of the decoded start-stop spans as the label centre
+    const midN = cState.slotMidN[s] | 0;
+    if ((state.flags & FLAG_DECODE_ANCHOR) !== 0 && midN > 0) {
+      result.roiCenterX = cState.slotMidSumX[s] / midN;
+      result.roiCenterY = cState.slotMidSumY[s] / midN;
+    }
 
     storeUniqueFrameDetection(state, result);
   }

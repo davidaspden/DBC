@@ -107,6 +107,9 @@ export function createScanlineState() {
     edgeMag: new Int16Array(MAX_RUNS + 2),
 
     runWidthsQ8: new Int32Array(MAX_RUNS),  // Q8 fixed-point sub-pixel widths (256 = 1.0 px)
+    // B8: scanline sample position (Q8) where run 0 starts. 0 when the runs tile the line from sample 0,
+    // else the first edge (the deriv extractor drops a leading bar->space edge's run). Write-only unless `decodeAnchor`.
+    runOriginQ8: 0,
     runIsBar: new Uint8Array(MAX_RUNS),     // 1 = dark bar, 0 = light space
     runCount: 0,
   };
@@ -624,6 +627,7 @@ export function extractRunsFromScanline(lumaBuf, offset, len, state, relThreshQ8
 
   // Convert alternating Q8 edge positions into Q8 bar/space run widths (256 = 1.0 px)
   let rc = 0;
+  state.runOriginQ8 = edgePol[0] === -1 ? 0 : edgePosQ8[0];
   if (edgePol[0] === -1 && rc < MAX_RUNS) {
     runWidthsQ8[rc] = edgePosQ8[0] > 26 ? edgePosQ8[0] : 26;
     runIsBar[rc] = 0;
@@ -710,6 +714,7 @@ export function extractRunsLocalMidCrossing(lumaBuf, offset, len, state, minCont
   }
 
   // Pass 3: Sub-pixel Q8 linear zero-crossing of diff[i] = 2*s[i] - (localMax[i] + localMin[i])
+  state.runOriginQ8 = 0; // mid-crossing runs tile the scanline from sample 0
   const minC = minContrast | 0;
   let prevDiff = ((lumaBuf[base] << 1) - (localMax[0] + localMin[0])) | 0;
   let curBar = prevDiff < 0 ? 1 : 0;

@@ -19,3 +19,24 @@ worker, no flags, no baseline files touched.
 
 The "off" models describe the B2 defect from its description; confirming the exact offset on a real
 device is R9's job.
+
+## B8 — `decodeAnchor` (fix for the detector offset)
+
+R8 showed the worker's reported centre sat 4-25% of the label length off along the scan axis.
+Cause: decoded symbol positions are measured from run 0, but the derivative run extractor starts
+run 0 at the first *edge*, not sample 0, when a scanline begins on a bar->space edge (tote
+background -> label paper). Every start/stop span was therefore shifted by the lead-in distance.
+
+`?flags=decodeAnchor` (worker bit 14, default off) adds the run origin to the span and reports the
+mean midpoint of the decoded start-stop spans on the winning scanlines as the label centre (also
+corrects `roiX/Y/W/H`, `x0..y1`). Payloads, symbols, angle, confidence and span length are untouched.
+Compare: `node tools/overlay-truth.mjs` vs `node tools/overlay-truth.mjs --anchor`.
+
+| R8 matrix (24 cases) | off | `decodeAnchor` |
+|---|---|---|
+| worst centre error, % of label length | 24.7 | 3.0 |
+| worst end-to-end overlay error, CSS px | 104.6 | 13.8 |
+
+The remaining ~3% floor is perspective (the midpoint of a foreshortened span is not the projection
+of the 3D midpoint) plus the across-axis position, which comes from where the ROI cluster placed the
+scanlines.

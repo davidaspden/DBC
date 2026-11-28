@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
  * R8 CLI: prints the overlay ground-truth matrix (see src/sim/overlay-truth.js).
- *   node tools/overlay-truth.mjs [--preset fc-8-3p5] [--cell 5] [--json]
+ *   node tools/overlay-truth.mjs [--preset fc-8-3p5] [--cell 5] [--json] [--anchor]
  * Exit code 1 if the overlayAlign mapping error exceeds 3 CSS px in any case.
  */
 import { createSceneForPreset } from '../src/sim/presets.js';
 import { runOverlayMatrix, OVERLAY_MAPPING_TOL_CSS_PX } from '../src/sim/overlay-truth.js';
+import { FLAG_DECODE_ANCHOR } from '../src/worker/flagbits.js';
 
 const args = process.argv.slice(2);
 const opt = (name, def) => {
@@ -14,13 +15,15 @@ const opt = (name, def) => {
 };
 const preset = opt('--preset', 'fc-8-3p5');
 const cellIndex = Number(opt('--cell', '5'));
-const { rows, summary } = runOverlayMatrix({ scene: createSceneForPreset(preset), cellIndex });
+// `--anchor` turns on the B8 `decodeAnchor` worker flag to show the detector fix against the same truth.
+const workerMask = args.includes('--anchor') ? FLAG_DECODE_ANCHOR : 0;
+const { rows, summary } = runOverlayMatrix({ scene: createSceneForPreset(preset), cellIndex, workerMask });
 
 if (args.includes('--json')) {
   console.log(JSON.stringify({ preset, cellIndex, summary, rows }, null, 2));
 } else {
   const f = (v, n = 1) => (v == null ? '-' : v.toFixed(n));
-  console.log(`overlay ground truth: preset ${preset} cell ${cellIndex}`);
+  console.log(`overlay ground truth: preset ${preset} cell ${cellIndex}${workerMask ? ' (decodeAnchor on)' : ''}`);
   console.log('frame      pose          crop  ctrErr%lbl  iouBars  thErr  mapErr(max)  legacyStretch(max)  legacyAssumed(max)  e2e(max)');
   for (const r of rows) {
     if (!r.ok) {
