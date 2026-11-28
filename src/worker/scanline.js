@@ -43,6 +43,7 @@ import {
   FLAG_VERTICAL_MODE,
   FLAG_DEBLUR_1D,
   FLAG_FLOW_ON,
+  FLAG_STOP_GUARD,
 } from './flagbits.js';
 
 export {
@@ -59,6 +60,7 @@ export {
   FLAG_VERTICAL_MODE,
   FLAG_DEBLUR_1D,
   FLAG_FLOW_ON,
+  FLAG_STOP_GUARD,
 };
 
 const DEG_TO_RAD = Math.PI / 180;

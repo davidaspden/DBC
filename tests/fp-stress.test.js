@@ -35,6 +35,8 @@ import {
   FLAG_CRIB_MATCH,
   FLAG_REQUIRE_PREFIX,
   FLAG_REQUIRE_PREFIX_STRICT,
+  FLAG_SCAN_SMOOTH,
+  FLAG_STOP_GUARD,
 } from '../src/worker/flagbits.js';
 
 const W = 384;
@@ -439,6 +441,161 @@ test('H2 requirePrefixStrict rejects valid non-tsX labels while accepting valid 
   const detCount = processFrameMulti(frameBuf, W, H, state, result, false);
   assert.equal(detCount, 1);
   assert.equal(extractMultiDetections(state)[0].payload, 'tsX07wz7py1');
+});
+
+/**
+ * Renders a 1D binary module stream rotated by `angleDeg` into a pre-allocated `w x h`
+ * grayscale buffer, optionally clipping the trailing `clipRightMods` modules or applying
+ * 1D horizontal blur along the rotated barcode axis (zero external deps, pure deterministic RNG).
+ */
+function renderRotatedLabel(modules, modLen, angleDeg, modPx, barH, barLuma, spaceLuma, bgLuma, rng, opts, outBuf, w, h) {
+  const clipRightMods = opts.clipRightMods || 0;
+  const effectiveMods = Math.max(20, modLen - clipRightMods);
+  const rad = (angleDeg * Math.PI) / 180;
+  const cosA = Math.cos(rad);
+  const sinA = Math.sin(rad);
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const halfLen = (effectiveMods * modPx) * 0.5;
+  const halfH = barH * 0.5;
+  const invModPx = 1.0 / modPx;
+  const noiseAmp = opts.noiseAmp || 0;
+
+  let xorshift = (rng() * 0xffffffff) >>> 0 || 17;
+  for (let y = 0; y < h; y++) {
+    const dy = y - cy;
+    const rowOff = y * w;
+    for (let x = 0; x < w; x++) {
+      const dx = x - cx;
+      const u = dx * cosA + dy * sinA + halfLen;
+      const v = -dx * sinA + dy * cosA;
+      let val = bgLuma;
+      if (v >= -halfH && v <= halfH && u >= 0 && u < effectiveMods * modPx) {
+        const mPos = u * invModPx;
+        const m0 = mPos | 0;
+        const frac = mPos - m0;
+        // 2-tap linear anti-aliasing along module axis simulates finite sensor PSF / oblique sampling
+        const b0 = m0 < effectiveMods ? modules[m0] : 0;
+        const b1 = (m0 + 1) < effectiveMods ? modules[m0 + 1] : b0;
+        const cov = b0 + (b1 - b0) * (frac > 0.7 ? (frac - 0.7) * 3.33 : 0);
+        val = (spaceLuma + (barLuma - spaceLuma) * cov) | 0;
+      }
+      if (noiseAmp > 0) {
+        xorshift ^= xorshift << 13; xorshift ^= xorshift >>> 17; xorshift ^= xorshift << 5;
+        val += (((xorshift & 255) - 128) * noiseAmp) >> 7;
+        if (val < 0) val = 0; else if (val > 255) val = 255;
+      }
+      outBuf[rowOff + x] = val;
+    }
+  }
+}
+
+test('H2/F1 rotated 25-40 deg and clipped-tail stress batch (stopGuard) produces 0 FP', () => {
+  const RW = 480;
+  const RH = 320;
+  const rotBuf = new Uint8Array(RW * RH);
+  const state = createPipelineState(RW, RH);
+  const result = createPipelineResult();
+  const flagsRot = FLAGS_H2 | FLAG_SCAN_SMOOTH | FLAG_STOP_GUARD;
+  state.flags = flagsRot;
+
+  const ROT_FRAMES = Math.min(480, Math.max(120, Math.floor(TOTAL_FRAMES / 100)));
+  let wrongCount = 0;
+  let validRotTotal = 0;
+  let validRotDecoded = 0;
+  let firstWrong = null;
+
+  for (let i = 0; i < ROT_FRAMES; i++) {
+    const seed = (0xC2B2AE35 + Math.imul(i + 1, 0x165667B1)) >>> 0;
+    const rng = mulberry32(seed);
+    const angleDeg = 25 + rng() * 15; // [25, 40] deg
+    const modPx = 1.45 + rng() * 0.75; // low-to-medium PPM [1.45 .. 2.20]
+    const barLuma = 20 + ((rng() * 30) | 0);
+    const spaceLuma = 210 + ((rng() * 40) | 0);
+    const bgLuma = 140 + ((rng() * 55) | 0);
+    const mode = i % 4;
+
+    let expectedPayload = null;
+    let modeName = '';
+
+    if (mode === 0) {
+      // Valid rotated 25-40 deg tsX label (including tsX41A00013B)
+      modeName = 'rotated-valid-tsx';
+      const payload = (i % 8 === 0) ? 'tsX41A00013B' : randomStr(rng, 11, 'tsX');
+      const enc = encodeCode128(payload, { subset: 'B', quietZoneModules: 10 });
+      modBuf.set(enc.modules);
+      renderRotatedLabel(
+        modBuf, enc.totalModules, angleDeg, modPx, 68, barLuma, spaceLuma, bgLuma, rng,
+        { clipRightMods: 0, noiseAmp: 6 }, rotBuf, RW, RH
+      );
+      expectedPayload = payload;
+      validRotTotal++;
+    } else if (mode === 1) {
+      // Rotated 25-40 deg right-clipped tail (cuts off trailing quiet zone + >= 3 modules of Stop/check)
+      modeName = 'rotated-clipped-tail';
+      const payload = (i % 8 === 1) ? 'tsX41A00013B' : randomStr(rng, 11, 'tsX');
+      const enc = encodeCode128(payload, { subset: 'B', quietZoneModules: 10 });
+      modBuf.set(enc.modules);
+      const clipMods = 13 + ((rng() * 32) | 0); // removes trailing quiet zone + at least 3 modules of Stop
+      renderRotatedLabel(
+        modBuf, enc.totalModules, angleDeg, modPx, 68, barLuma, spaceLuma, bgLuma, rng,
+        { clipRightMods: clipMods, noiseAmp: 4 }, rotBuf, RW, RH
+      );
+    } else if (mode === 2) {
+      // Horizontal clipped-tail cutting into Stop / check symbols (no intact Stop exists)
+      modeName = 'horiz-clipped-tail';
+      const payload = randomStr(rng, 11, 'tsX');
+      const enc = encodeCode128(payload, { subset: 'B', quietZoneModules: 10 });
+      modBuf.set(enc.modules);
+      const clipMods = 13 + ((rng() * 28) | 0);
+      renderRotatedLabel(
+        modBuf, enc.totalModules, rng() * 4, modPx, 68, barLuma, spaceLuma, bgLuma, rng,
+        { clipRightMods: clipMods, noiseAmp: 4 }, rotBuf, RW, RH
+      );
+    } else {
+      // Rotated 25-40 deg tsX label with flipped Mod-103 check digit
+      modeName = 'rotated-flipped-check';
+      const payload = randomStr(rng, 11, 'tsX');
+      symBuf[0] = CODE128_START_B;
+      for (let k = 0; k < payload.length; k++) symBuf[1 + k] = payload.charCodeAt(k) - 32;
+      const checkIdx = 1 + payload.length;
+      symBuf[checkIdx] = (mod103Check(symBuf, checkIdx) + 1 + ((rng() * 102) | 0)) % 103;
+      const total = encodeSymbolsToModules(symBuf, checkIdx + 1, true, 10, modBuf);
+      renderRotatedLabel(
+        modBuf, total, angleDeg, modPx, 68, barLuma, spaceLuma, bgLuma, rng,
+        { clipRightMods: 0, noiseAmp: 6 }, rotBuf, RW, RH
+      );
+    }
+
+    const detCount = processFrameMulti(rotBuf, RW, RH, state, result, false);
+    if (detCount > 0) {
+      const dets = extractMultiDetections(state);
+      for (let d = 0; d < dets.length; d++) {
+        const got = dets[d].payload;
+        if (expectedPayload !== null && got === expectedPayload) {
+          validRotDecoded++;
+        } else {
+          wrongCount++;
+          if (!firstWrong) {
+            firstWrong = { frame: i, seed, modeName, angleDeg: Number(angleDeg.toFixed(1)), modPx: Number(modPx.toFixed(2)), expectedPayload, got };
+          }
+        }
+      }
+    }
+  }
+
+  console.log(
+    `  INFO  H2/F1 rotated(25-40deg)+clipped-tail: ${ROT_FRAMES} frames | wrongFP=${wrongCount} | ` +
+    `validRotated=${validRotDecoded}/${validRotTotal}`
+  );
+  if (wrongCount > 0) {
+    console.error('  FAIL  Rotated/clipped FP:', JSON.stringify(firstWrong));
+  }
+  assert.equal(wrongCount, 0, `expected 0 FP on rotated/clipped-tail batch, got ${wrongCount}; first=${JSON.stringify(firstWrong)}`);
+  assert.ok(
+    validRotDecoded >= Math.floor(validRotTotal * 0.70),
+    `valid rotated 25-40 deg decode rate too low: ${validRotDecoded}/${validRotTotal}`
+  );
 });
 
 console.log(`All ${passed} false-positive stress tests passed.`);

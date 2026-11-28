@@ -123,6 +123,15 @@ export const PRODUCT_FLAG_COVERAGE = Object.freeze({
     planned: 'S07/S18',
     reason: 'Exercised by SimGate W-all worker flag set and dedicated optical-flow unit suite.',
   },
+  stopGuard: {
+    registry: 'product',
+    scenarios: ['S02-a53-8-720', 'fc-tele-30-3p5'],
+    tests: [
+      { file: 'tests/fp-oblique-tail.test.js', testName: 'F1 stopGuard eliminates oblique-tail false read tsX41A00013!' },
+    ],
+    planned: 'S11/S18',
+    reason: 'Exercised by SimGate W-fc, strict, and W-all worker flag sets plus F1 oblique-tail regression test.',
+  },
 
   // Stream C — Camera / Capture (MediaStreamTrack APIs outside headless worker)
   camProfiles: {

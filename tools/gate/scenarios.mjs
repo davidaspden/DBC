@@ -31,6 +31,7 @@ export const W_FC_FLAGS = Object.freeze([
   'prefixStack',
   'illumNorm',
   'scanSmooth',
+  'stopGuard',
 ]);
 
 export const W_ALL_FLAGS = Object.freeze(

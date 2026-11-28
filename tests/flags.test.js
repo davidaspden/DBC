@@ -149,6 +149,7 @@ test('H3 WORKER_FLAG_BITS matches golden bit positions and has no duplicate decl
     verticalMode:        1 << 10,
     deblur1d:            1 << 11,
     flowOn:              1 << 12,
+    stopGuard:           1 << 13,
   };
   assert.deepEqual(WORKER_FLAG_BITS, GOLDEN_BITS);
   assert.deepEqual(flagBits.WORKER_FLAG_BITS, GOLDEN_BITS);

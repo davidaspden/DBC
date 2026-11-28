@@ -14,7 +14,7 @@
  *  Zero floats, zero helper calls taking float args, zero V8 HeapNumber allocations.
  */
 
-import { FLAG_CRIB_MATCH } from '../flagbits.js';
+import { FLAG_CRIB_MATCH, FLAG_STOP_GUARD } from '../flagbits.js';
 
 export const MAX_CODE128_SYMBOLS = 64;
 export const MAX_CODE128_PAYLOAD = 128;
@@ -267,6 +267,8 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
   const step = dir | 0;
   if (rc < 25) return 0;
 
+  const stopGuardOn = (state.flags & FLAG_STOP_GUARD) !== 0;
+
   const startIdx = step === 1 ? 0 : (rc - 1);
   const endLimit = step === 1 ? (rc - 25) : 24;
 
@@ -347,6 +349,8 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
     let symCount = 1;
     let confSum = workConfsQ10[0] | 0;
     let prevCharW = startSum;
+    let dataSpanQ8 = startSum;
+    let stopSpanQ8 = 0;
     let cursor = (i + Math.imul(6, step)) | 0;
     let stopped = 0;
 
@@ -416,6 +420,8 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
       let fSymCount = 4;
       let fConfSum = (confSum + 2880) | 0;
       let fCharW = cribTotal44 >> 2; // 11-module width seeded from 44-module crib
+      let fDataSpanQ8 = cribTotal44;
+      let fStopSpanQ8 = 0;
       let fCursor = (cursor + Math.imul(18, step)) | 0;
       let fStopped = 0;
       let fAborted = 0;
@@ -456,8 +462,11 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
           ) {
             const trailIdx = (fCursor + Math.imul(7, step)) | 0;
             const minTrailW = (Math.imul(fCharW, 82) >> 8) | 0; // ~3.52 modules
-            const trailOk = trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW;
+            const trailOk = stopGuardOn
+              ? (trailIdx >= 0 && trailIdx < rc && runIsBar[trailIdx] === 0 && runWidthsQ8[trailIdx] >= minTrailW)
+              : (trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW);
             if (trailOk) {
+              fStopSpanQ8 = stopSum;
               fStopped = 1;
               break;
             }
@@ -525,6 +534,7 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
         workConfsQ10[fSymCount] = 960;
         fConfSum = (fConfSum + 960) | 0;
         fSymCount = (fSymCount + 1) | 0;
+        if (stopGuardOn) fDataSpanQ8 = (fDataSpanQ8 + charSum) | 0;
         fCharW = ((Math.imul(fCharW, 128) + Math.imul(charSum, 128)) >> 8) | 0;
         fCursor = (fCursor + Math.imul(6, step)) | 0;
       }
@@ -532,6 +542,9 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
       if (fAborted === 0 && fStopped === 1 && fSymCount >= 5 && verifyCode128Checksum(workSymbols, fSymCount) === 1) {
         symCount = fSymCount;
         confSum = fConfSum;
+        prevCharW = fCharW;
+        dataSpanQ8 = fDataSpanQ8;
+        stopSpanQ8 = fStopSpanQ8;
         cursor = fCursor;
         stopped = 1;
         fastDecoded = 1;
@@ -557,10 +570,11 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
         const s6 = runWidthsQ8[(cursor + Math.imul(6, step)) | 0] | 0;
         const stopSum = (s0 + s1 + s2 + s3 + s4 + s5 + s6) | 0;
 
-        // Expected stop width = prevCharW * 13 / 11; allow [0.68x .. 1.42x]
+        // Expected stop width = prevCharW * 13 / 11; baseline allows [0.68x .. 1.42x],
+        // F1 (`stopGuard`) tightens local Stop width to [0.76x .. 1.32x] and verifies global mean scale.
         const expStopW = ((Math.imul(prevCharW, 303) >> 8) | 0); // 303/256 ≈ 13/11
-        const minStopW = (Math.imul(expStopW, 174) >> 8) | 0;
-        const maxStopW = (Math.imul(expStopW, 364) >> 8) | 0;
+        const minStopW = (Math.imul(expStopW, stopGuardOn ? 195 : 174) >> 8) | 0;
+        const maxStopW = (Math.imul(expStopW, stopGuardOn ? 338 : 364) >> 8) | 0;
 
         if (stopSum >= minStopW && stopSum <= maxStopW && stopSum > 256) {
           const hs = stopSum >> 1;
@@ -596,16 +610,31 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
           d = (sn6 - 512) | 0; sInd = (sInd + (d < 0 ? -d : d)) | 0;
 
           const totalStopErr = (sErr + ((Math.imul(sInd, 115) >> 8) | 0)) | 0;
-          if (totalStopErr <= MAX_STOP_ERR_Q8) {
+          const stopErrCap = stopGuardOn ? 640 : MAX_STOP_ERR_Q8;
+          if (totalStopErr <= stopErrCap) {
             const trailIdx = (cursor + Math.imul(7, step)) | 0;
-            // H2: When cribMatch is active, require >= ~3.52 modules trailing quiet zone (strictly > 3.0)
-            // so Stop's own 3-module internal space cannot validate a false early Stop on symbol 74 + Stop[0].
-            // Flags-off preserves the exact baseline `prevCharW >> 2` (2.75 modules) check.
-            const minTrailW = (state.flags & FLAG_CRIB_MATCH) !== 0
+            // H2/F1: When cribMatch or stopGuard is active, require >= ~3.52 modules trailing quiet zone
+            // (strictly > 3.0) so Stop's own 3-module internal space cannot validate a false early Stop.
+            // F1 (`stopGuard`) additionally requires an actually observed trailing light space (rejects
+            // clipped tails ending on a bar at scanline boundary) and mean-scale Stop width consistency.
+            const minTrailW = (stopGuardOn || cribFlagOn)
               ? ((Math.imul(prevCharW, 82) >> 8) | 0)
               : (prevCharW >> 2);
-            const trailOk = trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW;
+            let trailOk = stopGuardOn
+              ? (trailIdx >= 0 && trailIdx < rc && runIsBar[trailIdx] === 0 && runWidthsQ8[trailIdx] >= minTrailW)
+              : (trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW);
+            if (trailOk && stopGuardOn) {
+              const meanCharW = (dataSpanQ8 / symCount) | 0;
+              const expStopMean = (Math.imul(meanCharW, 303) >> 8) | 0;
+              if (
+                stopSum < ((Math.imul(expStopMean, 174) >> 8) | 0) ||
+                stopSum > ((Math.imul(expStopMean, 371) >> 8) | 0)
+              ) {
+                trailOk = false;
+              }
+            }
             if (trailOk) {
+              stopSpanQ8 = stopSum;
               stopped = 1;
               break;
             }
@@ -694,12 +723,67 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
       symCount = (symCount + 1) | 0;
 
       // Smooth integer tracking: prevCharW = (166 * prevCharW + 90 * charSum) >> 8
+      if (stopGuardOn) dataSpanQ8 = (dataSpanQ8 + charSum) | 0;
       prevCharW = ((Math.imul(prevCharW, 166) + Math.imul(charSum, 90)) >> 8) | 0;
       cursor = (cursor + Math.imul(6, step)) | 0;
     }
 
     if (stopped === 1 && symCount >= 3) {
       const avgConfQ10 = (confSum / symCount) | 0;
+
+      // F1 (`stopGuard`): Pure-integer span consistency & oblique-tail Mod-103 collision guard.
+      // Root cause on oblique low-PPM (~1.35 px/mod) tails (e.g. `fc-tele-30-3p5` cell R4C1
+      // `tsX41A00013B` -> `tsX41A00013!`): the 2-px central-difference kernel (`s[i+1]-s[i-1]`)
+      // pushes apart opposing edges of <1.5 px 1-module runs, severely distorting run ratios across
+      // the barcode (`avgConfQ10 ~ 385..442`) and flipping both the last data symbol ('B'=34 -> '!'=1,
+      // conf ~ 369..424) and Mod-103 check symbol (99 -> 12, conf ~ 261..332) into a Mod-103
+      // coincidence (`12*(1-34) ≡ 12-99 mod 103`) repeated across adjacent scanlines.
+      // Rejecting low-confidence/distorted or span-inconsistent candidates here lets consensus
+      // fall through to the blur/low-PPM-resilient mid-crossing extractor (which decodes the true
+      // label at `avgConfQ10 ~ 949`). Zero allocations, pure 32-bit integer arithmetic.
+      let guardOk = 1;
+      if (stopGuardOn) {
+        const meanCharW = (dataSpanQ8 / symCount) | 0;
+        const totalSpanQ8 = (dataSpanQ8 + stopSpanQ8) | 0;
+        const totalMods = (Math.imul(symCount, 11) + 13) | 0;
+        const avgEndCharW = (startSum + prevCharW) >> 1;
+        const expTotalQ8 = ((Math.imul(avgEndCharW, totalMods) + 5) / 11) | 0;
+
+        if (
+          prevCharW < ((Math.imul(startSum, 159) >> 8) | 0) ||
+          prevCharW > ((Math.imul(startSum, 410) >> 8) | 0) ||
+          prevCharW < ((Math.imul(meanCharW, 184) >> 8) | 0) ||
+          prevCharW > ((Math.imul(meanCharW, 353) >> 8) | 0) ||
+          totalSpanQ8 < ((Math.imul(expTotalQ8, 205) >> 8) | 0) ||
+          totalSpanQ8 > ((Math.imul(expTotalQ8, 318) >> 8) | 0)
+        ) {
+          guardOk = 0;
+        } else if (fastDecoded === 0) {
+          const checkConf = workConfsQ10[(symCount - 1) | 0] | 0;
+          const lastDataConf = workConfsQ10[(symCount - 2) | 0] | 0;
+          if (avgConfQ10 < 480 || checkConf < 380 || ((lastDataConf + checkConf) | 0) < 820) {
+            guardOk = 0;
+          } else {
+            // Mod-103 is prime: any aligned false decode requires >= 2 simultaneously misread symbols.
+            // Track the 2nd-lowest symbol confidence and reject if >= 2 symbols are weak (< 360).
+            let min1 = 1024;
+            let min2 = 1024;
+            for (let k = 0; k < symCount; k++) {
+              const ck = workConfsQ10[k] | 0;
+              if (ck < min1) {
+                min2 = min1;
+                min1 = ck;
+              } else if (ck < min2) {
+                min2 = ck;
+              }
+            }
+            if (min2 < 360) guardOk = 0;
+          }
+        }
+      }
+
+      if (guardOk === 0) continue;
+
       const modOk = verifyCode128Checksum(workSymbols, symCount);
 
       if (modOk === 1) {
