@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>DBC AR Wall Capture (Raw)</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --panel: #111827;
+      --border: #1f2937;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.4;
+    }
+    main { max-width: 960px; margin: 0 auto; padding: 12px; }
+    h1 { font-size: 1.15rem; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+    h2 { font-size: 0.95rem; margin: 0 0 8px; color: var(--accent); }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .disabled-box {
+      max-width: 540px;
+      margin: 48px auto;
+      text-align: center;
+      padding: 24px;
+    }
+    .disabled-box code { background: #1e293b; padding: 2px 6px; border-radius: 4px; }
+    .stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    #cam-video, #cam-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    #cam-overlay { pointer-events: none; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+    button, select, input, textarea {
+      background: #1e293b;
+      color: var(--text);
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 0.85rem;
+    }
+    button { cursor: pointer; font-weight: 600; }
+    button.primary { background: #0284c7; border-color: #0369a1; }
+    button.recording { background: var(--danger); border-color: #b91c1c; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .hud-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+    }
+    .hud-item {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .hud-item .lbl { color: var(--muted); display: block; font-size: 0.7rem; }
+    .status-bar {
+      padding: 7px 10px;
+      border-radius: 6px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+      margin-top: 8px;
+    }
+    .status-bar[data-level="ok"] { border-color: var(--ok); color: #bbf7d0; }
+    .status-bar[data-level="warn"] { border-color: var(--warn); color: #fde68a; }
+    .status-bar[data-level="error"] { border-color: var(--danger); color: #fecaca; }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 8px;
+    }
+    label.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--muted); }
+    label.field input, label.field select, label.field textarea { width: 100%; }
+    .schematic-wrap { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+    #layout-schematic {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      max-width: 100%;
+      height: auto;
+    }
+    .muted { color: var(--muted); font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <!-- Disabled gate when arWall sim flag is OFF -->
+    <section id="ar-disabled-view" class="card disabled-box">
+      <h1 id="ar-disabled-msg" style="justify-content:center;">AR wall mode is disabled</h1>
+      <p class="muted">
+        This page is gated behind the <code>arWall</code> sim flag (off by default).
+        To enable raw dotted-wall capture, reload with <code>?sim=arWall</code>.
+      </p>
+    </section>
+
+    <!-- Active Wave 1 raw capture app (shown only when arWall flag is ON) -->
+    <section id="ar-app-view" hidden>
+      <h1>
+        <span>AR Wall — Raw Capture (Wave 1)</span>
+        <span id="hud-flags" class="muted"></span>
+      </h1>
+
+      <div class="card">
+        <div class="stage">
+          <video id="cam-video" playsinline muted></video>
+          <canvas id="cam-overlay"></canvas>
+        </div>
+
+        <div class="row">
+          <button id="btn-camera" class="primary" type="button">Start Camera &amp; Sensors</button>
+          <button id="btn-record" type="button" disabled>Record Raw Tape (.dbct)</button>
+          <button id="btn-download-sidecar" type="button">Download Layout Sidecar</button>
+          <button id="btn-fast-shutter" type="button" disabled>Shutter: Auto</button>
+          <button id="btn-torch" type="button" disabled>Torch: OFF</button>
+        </div>
+
+        <div class="row">
+          <select id="sel-camera" title="Camera lens">
+            <option value="">Auto (Rear Main)</option>
+          </select>
+          <select id="sel-res" title="Capture resolution">
+            <option value="1280x720" selected>720p (1280×720 — long sessions)</option>
+            <option value="1920x1080">1080p (1920×1080 — 60s max)</option>
+          </select>
+          <select id="sel-crop" title="Frame crop">
+            <option value="full" selected>Full Frame</option>
+            <option value="centre60">Centre Band 60% Crop</option>
+          </select>
+          <select id="sel-everynth" title="Frame stride">
+            <option value="1" selected>Every frame (1x)</option>
+            <option value="2">Every 2nd frame (15 fps)</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <input id="inp-lighting" type="text" placeholder="Lighting note (e.g. normal, dim, torch)" style="flex:1; min-width:160px;">
+          <input id="inp-notes" type="text" placeholder="Session notes (distance, sweep style)" style="flex:2; min-width:200px;">
+        </div>
+
+        <div id="hud-status" class="status-bar" data-level="info">Idle</div>
+        <div id="hud-budget" class="muted" style="margin-top:6px;"></div>
+
+        <div class="hud-grid">
+          <div class="hud-item"><span class="lbl">Resolution</span><span id="hud-res">—</span></div>
+          <div class="hud-item"><span class="lbl">Measured FPS</span><span id="hud-fps">0.0 fps</span></div>
+          <div class="hud-item"><span class="lbl">Exposure / ISO</span><span id="hud-exp">—</span></div>
+          <div class="hud-item"><span class="lbl">Gyro / Accel</span><span id="hud-sensor">inactive</span></div>
+          <div class="hud-item"><span class="lbl">Raw Tape</span><span id="hud-rec">0 frames</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Wall Marker Layout Editor (M0 — saved to localStorage)</h2>
+        <div class="schematic-wrap">
+          <canvas id="layout-schematic" width="280" height="240"></canvas>
+          <div style="flex:1; min-width:260px;">
+            <div class="form-grid">
+              <label class="field">Tier
+                <select id="ed-tier">
+                  <option value="A">Tier A (hand-drawn)</option>
+                  <option value="B">Tier B (printed lattice)</option>
+                </select>
+              </label>
+              <label class="field">Cols
+                <input id="ed-cols" type="number" min="1" max="20" step="1" value="4">
+              </label>
+              <label class="field">Rows
+                <input id="ed-rows" type="number" min="1" max="20" step="1" value="4">
+              </label>
+              <label class="field">Pitch X (in, OQ1)
+                <input id="ed-pitchx" type="number" min="1" step="0.1" value="16">
+              </label>
+              <label class="field">Pitch Y (in, OQ1)
+                <input id="ed-pitchy" type="number" min="1" step="0.1" value="14">
+              </label>
+              <label class="field">Tier B spacing s (in)
+                <input id="ed-spacing" type="number" min="0.5" step="0.1" placeholder="auto (pitch/4)">
+              </label>
+              <label class="field">Dot Dia (in)
+                <input id="ed-dia" type="number" min="0.25" max="3" step="0.05" value="1.0">
+              </label>
+              <label class="field">Polarity
+                <select id="ed-polarity">
+                  <option value="dark-on-light">dark-on-light</option>
+                  <option value="light-on-dark">light-on-dark</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="row" style="margin-top:8px;">
+              <label class="field" style="flex:1; min-width:220px;">Measured Column Xs (in, comma-separated)
+                <input id="ed-meas-xs" type="text" placeholder="e.g. 0, 16.05, 32.1, 48.0, 64.15">
+              </label>
+              <label class="field" style="flex:1; min-width:220px;">Measured Row Ys (in, comma-separated)
+                <input id="ed-meas-ys" type="text" placeholder="e.g. 0, 14.0, 28.05, 42.1, 56.0">
+              </label>
+            </div>
+
+            <div class="row" style="margin-top:8px;">
+              <label class="field" style="flex:1;">Per-Dot Overrides JSON (optional)
+                <textarea id="ed-dot-overrides" rows="2" placeholder='[{"id":"label-r0-c0","x":5.6,"y":7.1}]'></textarea>
+              </label>
+            </div>
+
+            <div class="row">
+              <button id="btn-apply-layout" class="primary" type="button">Apply &amp; Save Layout</button>
+              <button id="btn-reset-layout" type="button">Reset Defaults</button>
+              <button id="btn-export-layout" type="button">Export JSON</button>
+              <label class="muted" style="cursor:pointer;">
+                Import JSON <input id="inp-import-layout" type="file" accept=".json,application/json" style="width:170px;">
+              </label>
+            </div>
+
+            <div id="ed-summary" class="muted" style="margin-top:8px;"></div>
+            <div id="ed-warnings" class="status-bar" data-level="ok">No layout tolerance warnings.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { bootArPage } from './src/ar/app.js';
+    bootArPage();
+  </script>
+</body>
+</html>
