@@ -14,7 +14,7 @@
  *  Zero floats, zero helper calls taking float args, zero V8 HeapNumber allocations.
  */
 
-import { FLAG_CRIB_MATCH, FLAG_STOP_GUARD } from '../flagbits.js';
+import { FLAG_CRIB_MATCH, FLAG_STOP_GUARD, FLAG_MATCH_FILTER } from '../flagbits.js';
 
 export const MAX_CODE128_SYMBOLS = 64;
 export const MAX_CODE128_PAYLOAD = 128;
@@ -144,6 +144,20 @@ export function createCode128State() {
     // B8 part 2: run indices (start pattern .. end of Stop) of the last single-hit decode, write-only
     spanRunA: 0,
     spanRunB: 0,
+
+    // BL3 (`matchFilter`): shared matched-filter seed & Stop correlation quality (zero-alloc)
+    mfValid: 0,
+    mfStartPosQ8: 0,
+    mfStopPosQ8: 0,
+    mfStartScore: 0,
+    mfStopScore: 0,
+    mfTsxScore: 0,
+    mfDir: 0,
+    mfScaleQ8: 0,
+    mfRunOriginQ8: 0,
+    mfLineLen: 0,
+    mfStopCorr: null,
+    lastStopCorrQ10: 0,
   };
 }
 
@@ -271,6 +285,11 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
   if (rc < 25) return 0;
 
   const stopGuardOn = (state.flags & FLAG_STOP_GUARD) !== 0;
+  const mfOn = (state.flags & FLAG_MATCH_FILTER) !== 0 && state.mfValid === 1;
+  const mfStopCorr = mfOn ? state.mfStopCorr : null;
+  const mfLineLen = mfOn ? (state.mfLineLen | 0) : 0;
+  const mfOriginQ8 = mfOn ? (state.mfRunOriginQ8 | 0) : 0;
+  const mfScaleQ8 = mfOn ? (state.mfScaleQ8 | 0) : 0;
 
   const startIdx = step === 1 ? 0 : (rc - 1);
   const endLimit = step === 1 ? (rc - 25) : 24;
@@ -343,7 +362,28 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
         bestStart = code;
       }
     }
-    if (bestStartErr > MAX_START_ERR_Q8) continue;
+
+    // BL3 (`matchFilter`): compute Start bar-0 pixel offset (Q8) when mfOn; if a strong
+    // matched-filter Start B hit aligns right here, allow modest blur/print-gain tolerance.
+    let startRunPxQ8 = 0;
+    let mfSeededStart = 0;
+    if (mfOn) {
+      if (multiHit === 1) {
+        startRunPxQ8 = step === 1 ? state.prefixPosQ8[i] : state.prefixPosQ8[(i + 1) | 0];
+      } else {
+        const endR = step === 1 ? i : ((i + 1) | 0);
+        for (let r = 0; r < endR; r++) startRunPxQ8 = (startRunPxQ8 + runWidthsQ8[r]) | 0;
+      }
+      if (bestStart === CODE128_START_B && state.mfStartScore >= 640 && state.mfDir === step && mfScaleQ8 >= 256) {
+        let posDiff = (((mfOriginQ8 + startRunPxQ8) | 0) - state.mfStartPosQ8) | 0;
+        if (posDiff < 0) posDiff = -posDiff;
+        if (posDiff <= Math.imul(mfScaleQ8, 4)) {
+          mfSeededStart = 1;
+        }
+      }
+    }
+    const startErrCap = mfSeededStart === 1 ? 720 : MAX_START_ERR_Q8;
+    if (bestStartErr > startErrCap) continue;
 
     // Anchor accepted -> traverse character by character
     workSymbols[0] = bestStart;
@@ -352,6 +392,13 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
     let symCount = 1;
     let confSum = workConfsQ10[0] | 0;
     let prevCharW = startSum;
+    if (mfSeededStart === 1 && mfScaleQ8 >= 256) {
+      // Blend distorted Start width with matched-filter scale seed so symbol #1 window stays centered
+      const mfCharW = Math.imul(mfScaleQ8, 11);
+      if (startSum >= ((Math.imul(mfCharW, 179) >> 8) | 0) && startSum <= ((Math.imul(mfCharW, 333) >> 8) | 0)) {
+        prevCharW = ((Math.imul(startSum, 160) + Math.imul(mfCharW, 96)) >> 8) | 0;
+      }
+    }
     let dataSpanQ8 = startSum;
     let stopSpanQ8 = 0;
     let cursor = (i + Math.imul(6, step)) | 0;
@@ -465,9 +512,46 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
           ) {
             const trailIdx = (fCursor + Math.imul(7, step)) | 0;
             const minTrailW = (Math.imul(fCharW, 82) >> 8) | 0; // ~3.52 modules
-            const trailOk = stopGuardOn
+            let trailOk = stopGuardOn
               ? (trailIdx >= 0 && trailIdx < rc && runIsBar[trailIdx] === 0 && runWidthsQ8[trailIdx] >= minTrailW)
               : (trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW);
+            if (trailOk && mfOn) {
+              // BL3 (`matchFilter`) + F1 (`stopGuard`): verify Stop correlation & scale agreement
+              let localStopScore = state.mfStopScore | 0;
+              if (mfStopCorr !== null && mfLineLen > 0) {
+                let stopCenterPx = 0;
+                if (multiHit === 1) {
+                  const runLo = step === 1 ? fCursor : ((fCursor - 6) | 0);
+                  stopCenterPx = (mfOriginQ8 + state.prefixPosQ8[runLo] + (stopSum >> 1)) >> 8;
+                } else if (step === 1) {
+                  stopCenterPx = (mfOriginQ8 + startRunPxQ8 + fDataSpanQ8 + (stopSum >> 1)) >> 8;
+                } else {
+                  stopCenterPx = (mfOriginQ8 + startRunPxQ8 - fDataSpanQ8 - (stopSum >> 1)) >> 8;
+                }
+                let loP = (stopCenterPx - 5) | 0;
+                if (loP < 0) loP = 0;
+                let hiP = (stopCenterPx + 5) | 0;
+                if (hiP >= mfLineLen) hiP = (mfLineLen - 1) | 0;
+                localStopScore = 0;
+                for (let p = loP; p <= hiP; p++) {
+                  const sc = mfStopCorr[p] | 0;
+                  if (sc > localStopScore) localStopScore = sc;
+                }
+              }
+              state.lastStopCorrQ10 = localStopScore;
+              const minStopCorr = stopGuardOn ? 380 : 300;
+              if (localStopScore < minStopCorr) {
+                trailOk = false;
+              } else if (stopGuardOn && multiHit === 0 && mfScaleQ8 >= 256) {
+                const expStopMF = Math.imul(mfScaleQ8, 13);
+                if (
+                  stopSum < ((Math.imul(expStopMF, 154) >> 8) | 0) ||
+                  stopSum > ((Math.imul(expStopMF, 435) >> 8) | 0)
+                ) {
+                  trailOk = false;
+                }
+              }
+            }
             if (trailOk) {
               fStopSpanQ8 = stopSum;
               fStopped = 1;
@@ -537,7 +621,7 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
         workConfsQ10[fSymCount] = 960;
         fConfSum = (fConfSum + 960) | 0;
         fSymCount = (fSymCount + 1) | 0;
-        if (stopGuardOn) fDataSpanQ8 = (fDataSpanQ8 + charSum) | 0;
+        if (stopGuardOn || mfOn) fDataSpanQ8 = (fDataSpanQ8 + charSum) | 0;
         fCharW = ((Math.imul(fCharW, 128) + Math.imul(charSum, 128)) >> 8) | 0;
         fCursor = (fCursor + Math.imul(6, step)) | 0;
       }
@@ -636,6 +720,43 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
                 trailOk = false;
               }
             }
+            if (trailOk && mfOn) {
+              // BL3 (`matchFilter`) + F1 (`stopGuard`): share Stop correlation & scale at Stop end
+              let localStopScore = state.mfStopScore | 0;
+              if (mfStopCorr !== null && mfLineLen > 0) {
+                let stopCenterPx = 0;
+                if (multiHit === 1) {
+                  const runLo = step === 1 ? cursor : ((cursor - 6) | 0);
+                  stopCenterPx = (mfOriginQ8 + state.prefixPosQ8[runLo] + (stopSum >> 1)) >> 8;
+                } else if (step === 1) {
+                  stopCenterPx = (mfOriginQ8 + startRunPxQ8 + dataSpanQ8 + (stopSum >> 1)) >> 8;
+                } else {
+                  stopCenterPx = (mfOriginQ8 + startRunPxQ8 - dataSpanQ8 - (stopSum >> 1)) >> 8;
+                }
+                let loP = (stopCenterPx - 5) | 0;
+                if (loP < 0) loP = 0;
+                let hiP = (stopCenterPx + 5) | 0;
+                if (hiP >= mfLineLen) hiP = (mfLineLen - 1) | 0;
+                localStopScore = 0;
+                for (let p = loP; p <= hiP; p++) {
+                  const sc = mfStopCorr[p] | 0;
+                  if (sc > localStopScore) localStopScore = sc;
+                }
+              }
+              state.lastStopCorrQ10 = localStopScore;
+              const minStopCorr = stopGuardOn ? 380 : 300;
+              if (localStopScore < minStopCorr) {
+                trailOk = false;
+              } else if (stopGuardOn && multiHit === 0 && mfScaleQ8 >= 256) {
+                const expStopMF = Math.imul(mfScaleQ8, 13);
+                if (
+                  stopSum < ((Math.imul(expStopMF, 154) >> 8) | 0) ||
+                  stopSum > ((Math.imul(expStopMF, 435) >> 8) | 0)
+                ) {
+                  trailOk = false;
+                }
+              }
+            }
             if (trailOk) {
               stopSpanQ8 = stopSum;
               stopped = 1;
@@ -726,7 +847,7 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
       symCount = (symCount + 1) | 0;
 
       // Smooth integer tracking: prevCharW = (166 * prevCharW + 90 * charSum) >> 8
-      if (stopGuardOn) dataSpanQ8 = (dataSpanQ8 + charSum) | 0;
+      if (stopGuardOn || mfOn) dataSpanQ8 = (dataSpanQ8 + charSum) | 0;
       prevCharW = ((Math.imul(prevCharW, 166) + Math.imul(charSum, 90)) >> 8) | 0;
       cursor = (cursor + Math.imul(6, step)) | 0;
     }
@@ -870,11 +991,12 @@ export function decodeCode128FromRuns(runWidthsQ8, runIsBar, runCount, state) {
   state.avgConfidenceQ10 = 0;
   state.payloadLen = 0;
 
-  const fwd = tryDecodeDirection(runWidthsQ8, runIsBar, runCount, 1, state, 0);
-  if (fwd === 2) return 2;
+  const firstDir = ((state.flags & FLAG_MATCH_FILTER) !== 0 && state.mfValid === 1 && state.mfDir === -1) ? -1 : 1;
+  const first = tryDecodeDirection(runWidthsQ8, runIsBar, runCount, firstDir, state, 0);
+  if (first === 2) return 2;
 
-  const rev = tryDecodeDirection(runWidthsQ8, runIsBar, runCount, -1, state, 0);
-  if (rev === 2) return 2;
+  const second = tryDecodeDirection(runWidthsQ8, runIsBar, runCount, -firstDir, state, 0);
+  if (second === 2) return 2;
 
   return state.stopFound;
 }

@@ -34,6 +34,7 @@ import {
   FLAG_DECODE_ANCHOR,
   FLAG_MODULE_EST,
   FLAG_BLUR_EDGES,
+  FLAG_MATCH_FILTER,
 } from './flagbits.js';
 import {
   MAX_SCANLINES,
@@ -48,6 +49,7 @@ import {
   extractRunsBlurResilient,
   fuseEdgeBanksToRuns,
   estimateModuleWidthQ8,
+  matchFilterScanline,
 } from './scanline.js';
 import {
   MAX_CODE128_SYMBOLS,
@@ -374,11 +376,17 @@ function tryPrefixAlignedStacking(scanState, cState, result) {
 
   const c128 = cState.c128;
   const useBlurEdges = (scanState.flags & FLAG_BLUR_EDGES) !== 0;
+  const useMatchFilter = (scanState.flags & FLAG_MATCH_FILTER) !== 0;
+  c128.mfValid = 0;
   for (let pass = 0; pass < 2; pass++) {
     const runCount = pass === 0
       ? extractRunsLocalMidCrossing(avgBuf, 0, span, scanState, 20)
       : extractRunsFromScanline(avgBuf, 0, span, scanState, 66, 15);
     if (runCount < 25) continue;
+    if (useMatchFilter && pass === 0) {
+      matchFilterScanline(avgBuf, 0, span, scanState, c128, 0);
+    }
+    if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
     const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
     if (status === 2) {
       if ((c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen)) {
@@ -400,6 +408,7 @@ function tryPrefixAlignedStacking(scanState, cState, result) {
         rcBlur = fuseEdgeBanksToRuns(span, scanState, 0, scanState.edgeCountB, 320);
       }
       if (rcBlur < 25) continue;
+      if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
       const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
       if (status === 2) {
         if ((c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen)) {
@@ -420,7 +429,7 @@ function tryPrefixAlignedStacking(scanState, cState, result) {
  * + 1D unsharp sharpening (`2*s[i] - (s[i-2] + s[i+2])/2`) to cancel noise and 4–5 px blur.
  */
 function tryTierCProfileAveraging(scanState, cState, result) {
-  if ((scanState.flags & FLAG_PREFIX_STACK) !== 0) {
+  if ((scanState.flags & (FLAG_PREFIX_STACK | FLAG_MATCH_FILTER)) !== 0) {
     if (tryPrefixAlignedStacking(scanState, cState, result) === 1) return 1;
   }
   const lineCount = scanState.lineCount | 0;
@@ -429,6 +438,7 @@ function tryTierCProfileAveraging(scanState, cState, result) {
   const lumaBank = scanState.lumaBank;
   const avgBuf = scanState.avgLumaBuf;
   const c128 = cState.c128;
+  const useMatchFilter = (scanState.flags & FLAG_MATCH_FILTER) !== 0;
 
   // Step direction in Q8 (stepXQ16 >> 8, max 256) for integer alignment dot-product
   const uxQ8 = scanState.lineStepXQ16[0] >> 8;
@@ -486,11 +496,16 @@ function tryTierCProfileAveraging(scanState, cState, result) {
     // Pass 0: local adaptive envelope zero-crossing on denoised profile (immune to blur width bloat)
     // Pass 1: derivative peaks on denoised profile
     let groupDecoded = 0;
+    c128.mfValid = 0;
     for (let pass = 0; pass < 2; pass++) {
       const runCount = pass === 0
         ? extractRunsLocalMidCrossing(avgBuf, 0, span, scanState, 24)
         : extractRunsFromScanline(avgBuf, 0, span, scanState, 66, 15);
       if (runCount < 25) continue;
+      if (useMatchFilter && pass === 0) {
+        matchFilterScanline(avgBuf, 0, span, scanState, c128, 0);
+      }
+      if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
 
       const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
       if (status === 2) {
@@ -519,6 +534,7 @@ function tryTierCProfileAveraging(scanState, cState, result) {
           rcBlur = fuseEdgeBanksToRuns(span, scanState, 0, scanState.edgeCountB, 320);
         }
         if (rcBlur < 25) continue;
+        if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
         const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
         if (status === 2) {
           if ((c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen)) {
@@ -564,7 +580,8 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
   const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
   const useModuleEst = (flags & FLAG_MODULE_EST) !== 0;
   const useBlurEdges = (flags & FLAG_BLUR_EDGES) !== 0;
-  if (useModuleEst) {
+  const useMatchFilter = (flags & FLAG_MATCH_FILTER) !== 0;
+  if (useModuleEst || useMatchFilter) {
     scanState.roiMajorLen = hasRoi === 1 ? (result.roiMajorLen | 0) : 0;
   }
 
@@ -575,6 +592,7 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
   const c128 = cState.c128;
   c128.flags = flags;
   c128.cribMatched = 0;
+  c128.mfValid = 0;
 
   // Tier A: Sample & decode scanlines center-outward with immediate early-exit on consensus >= 2
   for (let i = 0; i < lineCount; i++) {
@@ -589,6 +607,7 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
     }
 
     c128.cribMatched = 0;
+    c128.mfValid = 0;
     const runCount = useSubpixFirst
       ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
       : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
@@ -612,6 +631,14 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
         blurEstHint = 1;
       }
     }
+    if (useMatchFilter) {
+      scanState.matchLinesEvaluated = (scanState.matchLinesEvaluated + 1) | 0;
+      if (matchFilterScanline(lumaBank, lumaOffset, len, scanState, c128, 0) === 0) {
+        scanState.matchLinesRejected = (scanState.matchLinesRejected + 1) | 0;
+        continue;
+      }
+      c128.mfRunOriginQ8 = scanState.runOriginQ8;
+    }
     let status = 0;
     if (runCount >= 25) {
       status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
@@ -624,6 +651,7 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
         ? extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18)
         : extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
       if (runCount2 >= 25) {
+        if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
         const status2 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
         if (status2 > status) status = status2;
       }
@@ -640,12 +668,14 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
         scanState.blurFallbackTriggered = (scanState.blurFallbackTriggered + 1) | 0;
         let rcBlur = extractRunsBlurResilient(lumaBank, lumaOffset, len, scanState, 1, 0);
         if (rcBlur >= 25) {
+          if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
           const status3 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
           if (status3 > status) status = status3;
         }
         if (status < 2 && (scanState.edgeCountB | 0) >= 24) {
           rcBlur = fuseEdgeBanksToRuns(len, scanState, 0, scanState.edgeCountB, 320);
           if (rcBlur >= 25) {
+            if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
             const status4 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
             if (status4 > status) status = status4;
           }
@@ -658,6 +688,13 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
       cState.lineCribStartPxQ8[i] = c128.cribStartPxQ8;
       cState.lineCribErrQ8[i] = c128.cribErrQ8;
       cState.lineCribDir[i] = c128.cribDir;
+    } else if (useMatchFilter && c128.mfValid === 1 && (c128.mfTsxScore >= 600 || c128.mfStartScore >= 620)) {
+      // BL3 extends cribMatch / prefixStack with sub-pixel matched-filter Start B / tsX anchor
+      const anchorScore = c128.mfTsxScore >= 600 ? c128.mfTsxScore : c128.mfStartScore;
+      cState.lineCribMatched[i] = 1;
+      cState.lineCribStartPxQ8[i] = c128.mfStartPosQ8;
+      cState.lineCribErrQ8[i] = ((1024 - anchorScore) << 1) | 0;
+      cState.lineCribDir[i] = c128.mfDir;
     }
 
     if (status === 2) {
@@ -811,7 +848,8 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
   const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
   const useModuleEst = (flags & FLAG_MODULE_EST) !== 0;
   const useBlurEdges = (flags & FLAG_BLUR_EDGES) !== 0;
-  if (useModuleEst) {
+  const useMatchFilter = (flags & FLAG_MATCH_FILTER) !== 0;
+  if (useModuleEst || useMatchFilter) {
     scanState.roiMajorLen = hasRoi === 1 ? (result.roiMajorLen | 0) : 0;
   }
 
@@ -824,6 +862,7 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
   const lumaBank = scanState.lumaBank;
   const c128 = cState.c128;
   c128.flags = flags;
+  c128.mfValid = 0;
 
   for (let i = 0; i < lineCount; i++) {
     cState.lineCribMatched[i] = 0;
@@ -836,6 +875,8 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
       deblurScanlineLuma(lumaBank, lumaOffset, len, scanState.blurPx, scanState);
     }
 
+    c128.cribMatched = 0;
+    c128.mfValid = 0;
     const runCount1 = useSubpixFirst
       ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
       : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
@@ -852,6 +893,14 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
           continue;
         }
       }
+    }
+    if (useMatchFilter) {
+      scanState.matchLinesEvaluated = (scanState.matchLinesEvaluated + 1) | 0;
+      if (matchFilterScanline(lumaBank, lumaOffset, len, scanState, c128, isMergedCluster ? 1 : 0) === 0) {
+        scanState.matchLinesRejected = (scanState.matchLinesRejected + 1) | 0;
+        continue;
+      }
+      c128.mfRunOriginQ8 = scanState.runOriginQ8;
     }
     let hits1 = 0;
     if (runCount1 >= 25) {
@@ -870,6 +919,7 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
         ? extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18)
         : extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
       if (runCount2 >= 25) {
+        if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
         hits2 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
         for (let h = 0; h < hits2; h++) {
           if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
@@ -884,6 +934,7 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
       let rcBlur = extractRunsBlurResilient(lumaBank, lumaOffset, len, scanState, 1, 0);
       let hits3 = 0;
       if (rcBlur >= 25) {
+        if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
         hits3 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
         for (let h = 0; h < hits3; h++) {
           if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
@@ -893,6 +944,7 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
       if (hits3 === 0 && (scanState.edgeCountB | 0) >= 24) {
         rcBlur = fuseEdgeBanksToRuns(len, scanState, 0, scanState.edgeCountB, 320);
         if (rcBlur >= 25) {
+          if (useMatchFilter) c128.mfRunOriginQ8 = scanState.runOriginQ8;
           const hits4 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
           for (let h = 0; h < hits4; h++) {
             if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
@@ -900,6 +952,19 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
           }
         }
       }
+    }
+
+    if (c128.cribMatched === 1) {
+      cState.lineCribMatched[i] = 1;
+      cState.lineCribStartPxQ8[i] = c128.cribStartPxQ8;
+      cState.lineCribErrQ8[i] = c128.cribErrQ8;
+      cState.lineCribDir[i] = c128.cribDir;
+    } else if (useMatchFilter && c128.mfValid === 1 && (c128.mfTsxScore >= 600 || c128.mfStartScore >= 620)) {
+      const anchorScore = c128.mfTsxScore >= 600 ? c128.mfTsxScore : c128.mfStartScore;
+      cState.lineCribMatched[i] = 1;
+      cState.lineCribStartPxQ8[i] = c128.mfStartPosQ8;
+      cState.lineCribErrQ8[i] = ((1024 - anchorScore) << 1) | 0;
+      cState.lineCribDir[i] = c128.mfDir;
     }
 
     // Fast early exit for normal single-barcode clusters once a payload reaches >= 2 votes

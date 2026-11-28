@@ -46,6 +46,7 @@ import {
   FLAG_STOP_GUARD,
   FLAG_MODULE_EST,
   FLAG_BLUR_EDGES,
+  FLAG_MATCH_FILTER,
 } from './flagbits.js';
 import { computeCode128Modules } from '../array/config.js';
 import { findTsxCribModuleWidthQ8 } from './decoders/code128.js';
@@ -67,7 +68,109 @@ export {
   FLAG_STOP_GUARD,
   FLAG_MODULE_EST,
   FLAG_BLUR_EDGES,
+  FLAG_MATCH_FILTER,
 };
+
+// ============================================================================
+// BL3 (`matchFilter`): Pre-computed Q8 Scale-Bucketed Matched-Filter Templates
+// ============================================================================
+// 12 geometrically-spaced module-width buckets covering 1.25 .. 5.83 px/mod at stride 1;
+// larger module widths (> 5.83 px/mod) decimate with integer stride >= 2 into the same bank.
+// Slot layout (36 templates, fixed stride 168 Int16 samples each):
+//   0..11  : Start B (2 quiet + 11 Start B = 13 modules)
+//   12..23 : Stop    (13 Stop + 2 trailing quiet = 15 modules)
+//   24..35 : Start B + tsX (2 quiet + 44 modules = 46 modules; baseStride=2 for buckets >= 8)
+export const MF_NUM_BUCKETS = 12;
+export const MF_TPL_STRIDE = 168;
+export const MF_TPL_COUNT = MF_NUM_BUCKETS * 3;
+export const MF_SCALE_BUCKETS_Q8 = new Int32Array([
+  320, 368, 422, 486, 560, 644, 740, 852, 980, 1126, 1296, 1492,
+]);
+
+// Ideal module bitstreams (1 = dark bar, 0 = light space)
+const MF_BITS_START_B = new Uint8Array([
+  0, 0,
+  1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+]);
+const MF_BITS_STOP = new Uint8Array([
+  1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1,
+  0, 0,
+]);
+const MF_BITS_START_TSX = new Uint8Array([
+  0, 0,
+  1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, // Start B (104): 2,1,1,2,1,4
+  1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, // 't' (84):      1,2,4,1,1,2
+  1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, // 's' (83):      1,1,4,2,1,2
+  1, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, // 'X' (56):      3,3,1,1,2,1
+]);
+
+function isqrt32(n) {
+  const x = n | 0;
+  if (x <= 0) return 0;
+  if (x < 4) return 1;
+  let r = 1 << ((32 - Math.clz32(x)) >> 1);
+  r = (r + ((x / r) | 0)) >> 1;
+  r = (r + ((x / r) | 0)) >> 1;
+  r = (r + ((x / r) | 0)) >> 1;
+  r = (r + ((x / r) | 0)) >> 1;
+  if (Math.imul(r, r) > x) r = (r - 1) | 0;
+  return r;
+}
+
+const MF_INIT_BANK = new Int16Array(MF_TPL_COUNT * MF_TPL_STRIDE);
+const MF_INIT_LENS = new Uint8Array(MF_TPL_COUNT);
+const MF_INIT_NORMS = new Int32Array(MF_TPL_COUNT);
+const MF_INIT_BASE_STRIDE = new Uint8Array(MF_TPL_COUNT);
+
+function buildZeroMeanTemplate(bits, modQ8, baseStride, dstBank, slot) {
+  const effModPx = (modQ8 / 256.0) / baseStride;
+  let len = Math.round(bits.length * effModPx) | 0;
+  if (len < 8) len = 8;
+  if (len > MF_TPL_STRIDE) len = MF_TPL_STRIDE;
+
+  const off = Math.imul(slot, MF_TPL_STRIDE);
+  let sum = 0;
+  for (let k = 0; k < len; k++) {
+    // Exact box integration over pixel [k, k+1] in module coordinates
+    const m0 = k / effModPx;
+    const m1 = (k + 1) / effModPx;
+    const i0 = Math.floor(m0);
+    const i1 = Math.floor(m1);
+    let barFrac = 0;
+    for (let m = i0; m <= i1; m++) {
+      const a = m > m0 ? m : m0;
+      const b = (m + 1) < m1 ? (m + 1) : m1;
+      if (b > a && m >= 0 && m < bits.length && bits[m] === 1) {
+        barFrac += (b - a);
+      }
+    }
+    const frac = barFrac / (m1 - m0);
+    // Dark bar -> -128, light space -> +128
+    const val = Math.round(128 - 256 * frac) | 0;
+    dstBank[(off + k) | 0] = val;
+    sum = (sum + val) | 0;
+  }
+
+  // Zero-mean adjustment so dot product is strictly DC-offset invariant
+  const mean = Math.round(sum / len) | 0;
+  let normSq = 0;
+  for (let k = 0; k < len; k++) {
+    const v = (dstBank[(off + k) | 0] - mean) | 0;
+    dstBank[(off + k) | 0] = v;
+    normSq = (normSq + Math.imul(v, v)) | 0;
+  }
+
+  MF_INIT_LENS[slot] = len;
+  MF_INIT_NORMS[slot] = isqrt32(normSq);
+  MF_INIT_BASE_STRIDE[slot] = baseStride;
+}
+
+for (let b = 0; b < MF_NUM_BUCKETS; b++) {
+  const mQ8 = MF_SCALE_BUCKETS_Q8[b];
+  buildZeroMeanTemplate(MF_BITS_START_B, mQ8, 1, MF_INIT_BANK, b);
+  buildZeroMeanTemplate(MF_BITS_STOP, mQ8, 1, MF_INIT_BANK, MF_NUM_BUCKETS + b);
+  buildZeroMeanTemplate(MF_BITS_START_TSX, mQ8, b >= 8 ? 2 : 1, MF_INIT_BANK, (MF_NUM_BUCKETS << 1) + b);
+}
 
 const DEFAULT_EXPECTED_MODULES = computeCode128Modules(11);   // 176 (FC 11-char + 2x10 quiet)
 const MIN_CODE128_BAR_MODULES = computeCode128Modules(4, 0);  // 79 (4-char bar span, no quiet)
@@ -142,6 +245,23 @@ export function createScanlineState() {
     derivedMaxModQ8: 0,
     linesEvaluated: 0,
     linesRejectedEarly: 0,
+
+    // BL3 (`matchFilter`): pre-allocated template bank, correlation scratch & scalar hits
+    templateBank: new Int16Array(MF_INIT_BANK),
+    templateLens: new Uint8Array(MF_INIT_LENS),
+    templateNorms: new Int32Array(MF_INIT_NORMS),
+    templateBaseStride: new Uint8Array(MF_INIT_BASE_STRIDE),
+    templateCount: MF_TPL_COUNT,
+    corrScratch: new Int32Array(MAX_SCANLINE_LEN),
+    startPosQ8: 0,
+    stopPosQ8: 0,
+    startScore: 0,
+    stopScore: 0,
+    tsxScore: 0,
+    matchDir: 0,
+    matchScaleQ8: 0,
+    matchLinesEvaluated: 0,
+    matchLinesRejected: 0,
   };
 }
 
@@ -1412,4 +1532,529 @@ export function estimateModuleWidthQ8(lumaBuf, offset, len, state, hasAbsDeriv =
   state.modulePeakStrength = strengthQ10;
 
   return (fitOk === 1 && strengthQ10 >= MODULE_STRENGTH_FLOOR_Q10 && chosenModQ8 >= minModQ8 && chosenModQ8 <= maxModQ8) ? 1 : 0;
+}
+
+// ============================================================================
+// BL3 (`matchFilter`): Scale-Bucketed Matched Filter (Start B / Stop / tsX)
+// ============================================================================
+
+/**
+ * Selects the nearest pre-allocated Q8 scale bucket index `0..11` for an effective
+ * module width `effModQ8` (after any integer decimation stride). Pure int32, zero alloc.
+ */
+export function selectMatchFilterBucket(effModQ8) {
+  const m = effModQ8 | 0;
+  let bestB = 0;
+  let bestDiff = 0x7fffffff;
+  for (let b = 0; b < MF_NUM_BUCKETS; b++) {
+    let d = (m - MF_SCALE_BUCKETS_Q8[b]) | 0;
+    if (d < 0) d = -d;
+    if (d < bestDiff) {
+      bestDiff = d;
+      bestB = b;
+    }
+  }
+  return bestB;
+}
+
+/**
+ * Pure-integer sliding-window zero-mean NCC correlation of a single pre-allocated template
+ * against `lumaBuf[offset .. offset+len-1]`.
+ *
+ * When `writeCorr !== 0`, writes `max(corrScratch[c], scoreQ10)` at the pattern's bar-span
+ * center `c = x + centerOff` so downstream `stopGuard` can query local Stop correlation in O(1).
+ * Returns packed `(bestScoreQ10 << 12) | (bestX & 0xfff)` (zero object allocations!).
+ */
+function correlateTemplate1D(
+  lumaBuf,
+  offset,
+  len,
+  tplBank,
+  tplOff,
+  tplLen,
+  tplNorm,
+  stride,
+  reversed,
+  centerOff,
+  corrScratch,
+  writeCorr
+) {
+  const n = len | 0;
+  const L = tplLen | 0;
+  const st = stride | 0;
+  const span = (Math.imul(L - 1, st) + 1) | 0;
+  if (L < 8 || span > n || tplNorm <= 0) return 0;
+
+  const base = offset | 0;
+  const maxX = (n - span) | 0;
+  // Minimum local variance: std dev >= 6 luma levels -> varS >= 36 * L (rejects flat/blank lines)
+  const minVarS = Math.imul(36, L);
+  const tLast = (tplOff + L - 1) | 0;
+
+  let bestScore = 0;
+  let bestX = 0;
+
+  if (st === 1) {
+    // Fast stride-1 path with O(1) sliding winSum & winSqSum
+    let winSum = 0;
+    let winSqSum = 0;
+    for (let k = 0; k < L; k++) {
+      const v = lumaBuf[(base + k) | 0];
+      winSum = (winSum + v) | 0;
+      winSqSum = (winSqSum + Math.imul(v, v)) | 0;
+    }
+
+    for (let x = 0; x <= maxX; x++) {
+      const meanSq = (Math.imul(winSum, winSum) / L) | 0;
+      const varS = (winSqSum - meanSq) | 0;
+      if (varS >= minVarS) {
+        let dot = 0;
+        const p = (base + x) | 0;
+        if (reversed === 0) {
+          for (let k = 0; k < L; k++) {
+            dot = (dot + Math.imul(lumaBuf[(p + k) | 0], tplBank[(tplOff + k) | 0])) | 0;
+          }
+        } else {
+          for (let k = 0; k < L; k++) {
+            dot = (dot + Math.imul(lumaBuf[(p + k) | 0], tplBank[(tLast - k) | 0])) | 0;
+          }
+        }
+        if (dot > 0) {
+          const sNorm = isqrt32(varS);
+          const denom = Math.imul(sNorm, tplNorm);
+          if (denom > 15) {
+            let score = (((dot >> 4) << 10) / (denom >> 4)) | 0;
+            if (score > 1024) score = 1024;
+            if (score > bestScore) {
+              bestScore = score;
+              bestX = x;
+            }
+            if (writeCorr !== 0) {
+              const cx = (x + centerOff) | 0;
+              if (cx >= 0 && cx < n && score > corrScratch[cx]) {
+                corrScratch[cx] = score;
+              }
+            }
+          }
+        }
+      }
+      if (x < maxX) {
+        const vOut = lumaBuf[(base + x) | 0];
+        const vIn = lumaBuf[(base + x + L) | 0];
+        winSum = (winSum - vOut + vIn) | 0;
+        winSqSum = (winSqSum - Math.imul(vOut, vOut) + Math.imul(vIn, vIn)) | 0;
+      }
+    }
+  } else {
+    // Decimated stride >= 2 path (close-range barcodes > 5.83 px/mod)
+    for (let x = 0; x <= maxX; x = (x + st) | 0) {
+      let winSum = 0;
+      let winSqSum = 0;
+      const p = (base + x) | 0;
+      for (let k = 0; k < L; k++) {
+        const v = lumaBuf[(p + Math.imul(k, st)) | 0];
+        winSum = (winSum + v) | 0;
+        winSqSum = (winSqSum + Math.imul(v, v)) | 0;
+      }
+      const meanSq = (Math.imul(winSum, winSum) / L) | 0;
+      const varS = (winSqSum - meanSq) | 0;
+      if (varS >= minVarS) {
+        let dot = 0;
+        if (reversed === 0) {
+          for (let k = 0; k < L; k++) {
+            dot = (dot + Math.imul(lumaBuf[(p + Math.imul(k, st)) | 0], tplBank[(tplOff + k) | 0])) | 0;
+          }
+        } else {
+          for (let k = 0; k < L; k++) {
+            dot = (dot + Math.imul(lumaBuf[(p + Math.imul(k, st)) | 0], tplBank[(tLast - k) | 0])) | 0;
+          }
+        }
+        if (dot > 0) {
+          const sNorm = isqrt32(varS);
+          const denom = Math.imul(sNorm, tplNorm);
+          if (denom > 15) {
+            let score = (((dot >> 4) << 10) / (denom >> 4)) | 0;
+            if (score > 1024) score = 1024;
+            if (score > bestScore) {
+              bestScore = score;
+              bestX = x;
+            }
+            if (writeCorr !== 0) {
+              const cx = (x + centerOff) | 0;
+              const lo = cx >= 0 ? cx : 0;
+              const hi = (cx + st) < n ? (cx + st) : n;
+              for (let j = lo; j < hi; j++) {
+                if (score > corrScratch[j]) corrScratch[j] = score;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return ((bestScore & 0x7ff) << 12) | (bestX & 0xfff);
+}
+
+/**
+ * Evaluates a single template at a narrow local window `[xMin .. xMax]` (used for the
+ * combined `Start B + tsX` template right at the Start B peak, zero full-line overhead).
+ */
+function correlateTemplateLocal(
+  lumaBuf,
+  offset,
+  len,
+  tplBank,
+  tplOff,
+  tplLen,
+  tplNorm,
+  stride,
+  reversed,
+  xMin,
+  xMax
+) {
+  const n = len | 0;
+  const L = tplLen | 0;
+  const st = stride | 0;
+  const span = (Math.imul(L - 1, st) + 1) | 0;
+  if (L < 8 || span > n || tplNorm <= 0) return 0;
+
+  let lo = xMin | 0;
+  if (lo < 0) lo = 0;
+  let hi = xMax | 0;
+  const maxValid = (n - span) | 0;
+  if (hi > maxValid) hi = maxValid;
+  if (lo > hi) return 0;
+
+  const base = offset | 0;
+  const minVarS = Math.imul(36, L);
+  const tLast = (tplOff + L - 1) | 0;
+  let bestScore = 0;
+
+  for (let x = lo; x <= hi; x++) {
+    let winSum = 0;
+    let winSqSum = 0;
+    let dot = 0;
+    const p = (base + x) | 0;
+    if (st === 1) {
+      if (reversed === 0) {
+        for (let k = 0; k < L; k++) {
+          const v = lumaBuf[(p + k) | 0];
+          winSum = (winSum + v) | 0;
+          winSqSum = (winSqSum + Math.imul(v, v)) | 0;
+          dot = (dot + Math.imul(v, tplBank[(tplOff + k) | 0])) | 0;
+        }
+      } else {
+        for (let k = 0; k < L; k++) {
+          const v = lumaBuf[(p + k) | 0];
+          winSum = (winSum + v) | 0;
+          winSqSum = (winSqSum + Math.imul(v, v)) | 0;
+          dot = (dot + Math.imul(v, tplBank[(tLast - k) | 0])) | 0;
+        }
+      }
+    } else {
+      if (reversed === 0) {
+        for (let k = 0; k < L; k++) {
+          const v = lumaBuf[(p + Math.imul(k, st)) | 0];
+          winSum = (winSum + v) | 0;
+          winSqSum = (winSqSum + Math.imul(v, v)) | 0;
+          dot = (dot + Math.imul(v, tplBank[(tplOff + k) | 0])) | 0;
+        }
+      } else {
+        for (let k = 0; k < L; k++) {
+          const v = lumaBuf[(p + Math.imul(k, st)) | 0];
+          winSum = (winSum + v) | 0;
+          winSqSum = (winSqSum + Math.imul(v, v)) | 0;
+          dot = (dot + Math.imul(v, tplBank[(tLast - k) | 0])) | 0;
+        }
+      }
+    }
+    if (dot > 0) {
+      const meanSq = (Math.imul(winSum, winSum) / L) | 0;
+      const varS = (winSqSum - meanSq) | 0;
+      if (varS >= minVarS) {
+        const sNorm = isqrt32(varS);
+        const denom = Math.imul(sNorm, tplNorm);
+        if (denom > 3) {
+          let score = (Math.imul(dot >> 2, 1024) / (denom >> 2)) | 0;
+          if (score > 1024) score = 1024;
+          if (score > bestScore) bestScore = score;
+        }
+      }
+    }
+  }
+
+  return bestScore;
+}
+
+/**
+ * Fallback module-width estimate (Q8) used by BL3 when BL1 (`moduleEst`) is OFF.
+ * Uses Code 128's edge-shift-invariant `6 runs = 11 modules` ratio on non-quiet runs,
+ * falling back to `roiMajorLen / 176` or 2.2 px/mod. Pure int32, zero alloc.
+ */
+function fallbackModuleWidthQ8(state) {
+  const rc = state.runCount | 0;
+  if (rc >= 16) {
+    const rw = state.runWidthsQ8;
+    const isBar = state.runIsBar;
+    const rEnd = (rc - 1) | 0;
+    // First pass: mean of dark bars (never quiet zones; Code 128 mean bar = 11/6 = 1.833 mod)
+    let barSum = 0;
+    let barCnt = 0;
+    for (let r = 1; r < rEnd; r++) {
+      if (isBar[r] === 1) {
+        barSum = (barSum + rw[r]) | 0;
+        barCnt = (barCnt + 1) | 0;
+      }
+    }
+    if (barCnt >= 6) {
+      const roughModQ8 = ((Math.imul(barSum, 6) + Math.imul(barCnt, 5)) / Math.imul(barCnt, 11)) | 0;
+      const quietCap = Math.imul(roughModQ8, 6);
+      let sum = 0;
+      let used = 0;
+      for (let r = 1; r < rEnd; r++) {
+        const w = rw[r] | 0;
+        if (isBar[r] === 0 && w >= quietCap) continue;
+        sum = (sum + w) | 0;
+        used = (used + 1) | 0;
+      }
+      if (used >= 12) {
+        const den = Math.imul(used, 11);
+        let modQ8 = ((Math.imul(sum, 6) + (den >> 1)) / den) | 0;
+        if (modQ8 < 256) modQ8 = 256;
+        else if (modQ8 > 10240) modQ8 = 10240;
+        return modQ8;
+      }
+    }
+  }
+  const roiLen = state.roiMajorLen | 0;
+  if (roiLen > 64) {
+    let modQ8 = ((roiLen << 8) / DEFAULT_EXPECTED_MODULES) | 0;
+    if (modQ8 < 256) modQ8 = 256;
+    else if (modQ8 > 10240) modQ8 = 10240;
+    return modQ8;
+  }
+  return 560; // 2.19 px/mod default
+}
+
+/**
+ * BL3 (`matchFilter`): Pre-allocated Start B / Stop / combined Start B+tsX matched filter.
+ *
+ * 1. Selects pre-allocated Q8 scale-bucketed templates using BL1's `moduleWidthQ8` (or
+ *    fallback scale estimate if BL1 is off). No per-frame template building or allocation.
+ * 2. Correlates Start B (fwd + rev) and Stop (fwd + rev) into `state.corrScratch` (which
+ *    retains the per-pixel Stop correlation profile for `stopGuard` O(1) lookup).
+ * 3. Evaluates the combined `Start B + tsX` template locally at the Start B peak to extend
+ *    `FLAG_CRIB_MATCH` / `prefixStack`.
+ * 4. Populates scalar hit fields on `state` and `c128`, and returns `1` (pass -> decode) or
+ *    `0` (early-reject gate -> skip decode on this scanline).
+ *
+ * Strictly zero heap allocations and pure 32-bit integer arithmetic.
+ */
+export function matchFilterScanline(lumaBuf, offset, len, state, c128 = null, isMergedCluster = 0) {
+  const n = len | 0;
+  state.startPosQ8 = 0;
+  state.stopPosQ8 = 0;
+  state.startScore = 0;
+  state.stopScore = 0;
+  state.tsxScore = 0;
+  state.matchDir = 0;
+  state.matchScaleQ8 = 0;
+
+  if (c128 !== null) {
+    c128.mfValid = 0;
+    c128.mfStartPosQ8 = 0;
+    c128.mfStopPosQ8 = 0;
+    c128.mfStartScore = 0;
+    c128.mfStopScore = 0;
+    c128.mfTsxScore = 0;
+    c128.mfDir = 0;
+    c128.mfScaleQ8 = 0;
+    c128.mfLineLen = n;
+    c128.mfStopCorr = null;
+    c128.lastStopCorrQ10 = 0;
+  }
+
+  if (n < 48) return 0;
+
+  // 1. Determine module width Q8 (from BL1 if available, else fallback estimate)
+  const bl1ModQ8 = (state.flags & FLAG_MODULE_EST) !== 0 ? (state.moduleWidthQ8 | 0) : 0;
+  const modQ8 = bl1ModQ8 >= 256 ? bl1ModQ8 : fallbackModuleWidthQ8(state);
+
+  let stride = 1;
+  let effModQ8 = modQ8;
+  if (modQ8 > 1600) {
+    stride = ((modQ8 + 384) / 768) | 0;
+    if (stride < 2) stride = 2;
+    effModQ8 = ((modQ8 + (stride >> 1)) / stride) | 0;
+  }
+
+  const baseBucket = selectMatchFilterBucket(effModQ8);
+  const bank = state.templateBank;
+  const lens = state.templateLens;
+  const norms = state.templateNorms;
+  const baseStrides = state.templateBaseStride;
+  const corrScratch = state.corrScratch;
+
+  // 2. Correlate Start B (fwd + rev) on baseBucket; check adjacent buckets if score < 620
+  let bestStartScore = 0;
+  let bestStartX = 0;
+  let bestStartDir = 1;
+  let bestBucket = baseBucket;
+
+  for (let pass = 0; pass < 3; pass++) {
+    let b = baseBucket;
+    if (pass === 1) {
+      if (bestStartScore >= 620 || baseBucket <= 0) continue;
+      b = (baseBucket - 1) | 0;
+    } else if (pass === 2) {
+      if (bestStartScore >= 620 || baseBucket >= (MF_NUM_BUCKETS - 1)) continue;
+      b = (baseBucket + 1) | 0;
+    }
+    const slot = b;
+    const tOff = Math.imul(slot, MF_TPL_STRIDE);
+    const tLen = lens[slot] | 0;
+    const tNorm = norms[slot] | 0;
+
+    const pFwd = correlateTemplate1D(lumaBuf, offset, n, bank, tOff, tLen, tNorm, stride, 0, 0, corrScratch, 0);
+    const sFwd = pFwd >> 12;
+    if (sFwd > bestStartScore) {
+      bestStartScore = sFwd;
+      bestStartX = pFwd & 0xfff;
+      bestStartDir = 1;
+      bestBucket = b;
+    }
+
+    const pRev = correlateTemplate1D(lumaBuf, offset, n, bank, tOff, tLen, tNorm, stride, 1, 0, corrScratch, 0);
+    const sRev = pRev >> 12;
+    if (sRev > bestStartScore) {
+      bestStartScore = sRev;
+      bestStartX = pRev & 0xfff;
+      bestStartDir = -1;
+      bestBucket = b;
+    }
+  }
+
+  // 3. Correlate Stop (fwd + rev) into corrScratch (aligned to Stop 13-module bar center)
+  for (let i = 0; i < n; i++) corrScratch[i] = 0;
+
+  let bestStopScore = 0;
+  let bestStopCenter = 0;
+  let bestStopDir = 0;
+  let stopBucket = bestStartScore >= 460 ? bestBucket : baseBucket;
+
+  for (let pass = 0; pass < 3; pass++) {
+    let b = stopBucket;
+    if (pass === 1) {
+      if (bestStopScore >= 600 || stopBucket <= 0) continue;
+      b = (stopBucket - 1) | 0;
+    } else if (pass === 2) {
+      if (bestStopScore >= 600 || stopBucket >= (MF_NUM_BUCKETS - 1)) continue;
+      b = (stopBucket + 1) | 0;
+    }
+    const slot = (MF_NUM_BUCKETS + b) | 0;
+    const tOff = Math.imul(slot, MF_TPL_STRIDE);
+    const tLen = lens[slot] | 0;
+    const tNorm = norms[slot] | 0;
+    const spanPx = (Math.imul(tLen - 1, stride) + 1) | 0;
+    // Stop is [13 bars, 2 quiet] -> fwd bar center is 6.5/15 of span, rev bar center is 8.5/15
+    const fwdCenterOff = (Math.imul(spanPx, 111) >> 8) | 0; // 111/256 ≈ 6.5/15
+    const revCenterOff = (Math.imul(spanPx, 145) >> 8) | 0; // 145/256 ≈ 8.5/15
+
+    const pFwd = correlateTemplate1D(lumaBuf, offset, n, bank, tOff, tLen, tNorm, stride, 0, fwdCenterOff, corrScratch, 1);
+    const sFwd = pFwd >> 12;
+    if (sFwd > bestStopScore) {
+      bestStopScore = sFwd;
+      bestStopCenter = ((pFwd & 0xfff) + fwdCenterOff) | 0;
+      bestStopDir = 1;
+      if (bestStartScore < 460) bestBucket = b;
+    }
+
+    const pRev = correlateTemplate1D(lumaBuf, offset, n, bank, tOff, tLen, tNorm, stride, 1, revCenterOff, corrScratch, 1);
+    const sRev = pRev >> 12;
+    if (sRev > bestStopScore) {
+      bestStopScore = sRev;
+      bestStopCenter = ((pRev & 0xfff) + revCenterOff) | 0;
+      bestStopDir = -1;
+      if (bestStartScore < 460) bestBucket = b;
+    }
+  }
+
+  // 4. Optional combined `Start B + tsX` template locally at the Start B peak
+  let tsxScore = 0;
+  const winScaleQ8 = Math.imul(MF_SCALE_BUCKETS_Q8[bestBucket], stride);
+  const startLen = lens[bestBucket] | 0;
+  const startSpan = (Math.imul(startLen - 1, stride) + 1) | 0;
+
+  if (bestStartScore >= 460) {
+    const tsxSlot = ((MF_NUM_BUCKETS << 1) + bestBucket) | 0;
+    const tsxOff = Math.imul(tsxSlot, MF_TPL_STRIDE);
+    const tsxLen = lens[tsxSlot] | 0;
+    const tsxNorm = norms[tsxSlot] | 0;
+    const tsxStride = Math.imul(stride, baseStrides[tsxSlot] | 0);
+    const tsxSpan = (Math.imul(tsxLen - 1, tsxStride) + 1) | 0;
+    const pad = Math.imul(4, stride);
+
+    if (bestStartDir === 1) {
+      tsxScore = correlateTemplateLocal(
+        lumaBuf, offset, n, bank, tsxOff, tsxLen, tsxNorm, tsxStride, 0,
+        (bestStartX - pad) | 0,
+        (bestStartX + pad) | 0
+      );
+    } else {
+      const revStart = (bestStartX + startSpan - tsxSpan) | 0;
+      tsxScore = correlateTemplateLocal(
+        lumaBuf, offset, n, bank, tsxOff, tsxLen, tsxNorm, tsxStride, 1,
+        (revStart - pad) | 0,
+        (revStart + pad) | 0
+      );
+    }
+  }
+
+  // Compute Start B bar-0 sub-pixel position (Q8) for cribMatch / prefixStack alignment
+  const quiet2Q8 = (winScaleQ8 << 1) | 0; // 2 quiet modules before Start B bar 0
+  let startPosQ8 = 0;
+  if (bestStartScore > 0) {
+    startPosQ8 = bestStartDir === 1
+      ? (((bestStartX << 8) + quiet2Q8) | 0)
+      : ((((bestStartX + startSpan) << 8) - quiet2Q8) | 0);
+  }
+  const stopPosQ8 = bestStopScore > 0 ? (bestStopCenter << 8) : 0;
+  const finalDir = bestStartScore >= bestStopScore ? bestStartDir : (bestStopDir !== 0 ? bestStopDir : bestStartDir);
+
+  state.startPosQ8 = startPosQ8;
+  state.stopPosQ8 = stopPosQ8;
+  state.startScore = bestStartScore;
+  state.stopScore = bestStopScore;
+  state.tsxScore = tsxScore;
+  state.matchDir = finalDir;
+  state.matchScaleQ8 = winScaleQ8;
+
+  if (c128 !== null) {
+    c128.mfValid = 1;
+    c128.mfStartPosQ8 = startPosQ8;
+    c128.mfStopPosQ8 = stopPosQ8;
+    c128.mfStartScore = bestStartScore;
+    c128.mfStopScore = bestStopScore;
+    c128.mfTsxScore = tsxScore;
+    c128.mfDir = finalDir;
+    c128.mfScaleQ8 = winScaleQ8;
+    c128.mfLineLen = n;
+    c128.mfStopCorr = corrScratch;
+  }
+
+  // 5. Early-reject gate: require geometrically consistent (Start B + Stop), or strong Stop (Start A/C), or strong tsX
+  const minSpanQ8 = Math.imul(winScaleQ8, 28);
+  const sameDirSpanOk = (bestStartDir === bestStopDir) && (
+    bestStartDir === 1
+      ? ((stopPosQ8 - startPosQ8) | 0) >= minSpanQ8
+      : ((startPosQ8 - stopPosQ8) | 0) >= minSpanQ8
+  );
+  const pass = (bestStopScore >= 580 && bestStartScore >= 540 && (isMergedCluster !== 0 || sameDirSpanOk)) ||
+    (bestStopScore >= 680 && bestStartScore >= 440) ||
+    (bestStopScore >= 740) ||
+    (tsxScore >= 620) ||
+    (isMergedCluster !== 0 && bestStopScore >= 600);
+
+  return pass ? 1 : 0;
 }
