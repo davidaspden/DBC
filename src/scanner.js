@@ -17,9 +17,52 @@
  *     },
  *   });
  *   await scanner.start();
+ *
+ * Optional worker feature flags (H7, default none = mask 0 = unchanged decode behaviour):
+ *
+ *   new Code128Scanner({
+ *     video,
+ *     flags: ['verticalMode', 'cribMatch', 'requirePrefix'], // names from WORKER_FLAG_BITS
+ *     // or a numeric 32-bit mask:  flags: 0b10000001100,
+ *   });
+ *
+ *   - `flags` is an array of worker flag names (see `src/worker/flagbits.js`
+ *     `WORKER_FLAG_BITS`) or a numeric mask. An unknown name throws a RangeError so a typo can
+ *     never silently decode with the wrong behaviour. Omitted/empty = mask 0 (all flags off).
+ *   - The resolved mask is posted to the worker on `init` and on EVERY `frame` message
+ *     (`flags: <int32>`), exactly like `src/main.js`. `scanner.flagsMask` reads it back;
+ *     `scanner.setFlags(namesOrMask)` changes it live (applies from the next frame).
+ *   - Every `frame` message also carries `tFrameMs` (capture timestamp, ms). Pass the constructor
+ *     option `tFrameMs` as a function `() => number` (or a constant number) to supply your own
+ *     clock; default is `performance.now()` when the frame is posted.
  */
 
 import { startCamera, setTorch, stopCamera, listVideoDevices } from './camera.js';
+import { WORKER_FLAG_BITS } from './worker/flagbits.js';
+
+/**
+ * Resolves a flags option (array of worker flag names, or a numeric mask) to an int32 mask.
+ * `undefined`/`null`/`[]` -> 0. Unknown names throw a RangeError.
+ * @param {string[]|number|null|undefined} flags
+ * @returns {number}
+ */
+export function resolveWorkerFlagMask(flags) {
+  if (flags === undefined || flags === null) return 0;
+  if (typeof flags === 'number') return flags | 0;
+  if (!Array.isArray(flags)) {
+    throw new TypeError('Code128Scanner `flags` must be an array of flag names or a numeric mask.');
+  }
+  let mask = 0;
+  for (let i = 0; i < flags.length; i++) {
+    const name = flags[i];
+    const bit = Object.prototype.hasOwnProperty.call(WORKER_FLAG_BITS, name) ? WORKER_FLAG_BITS[name] : undefined;
+    if (bit === undefined) {
+      throw new RangeError(`Code128Scanner: unknown worker flag "${String(name)}".`);
+    }
+    mask |= bit;
+  }
+  return mask | 0;
+}
 
 const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 const RGB_PACKED_FORMATS = new Set(['RGBA', 'RGBX', 'BGRA', 'BGRX']);
@@ -32,6 +75,8 @@ export class Code128Scanner {
    * @param {boolean} [options.multi=true]       Multi-barcode per-frame sweep mode
    * @param {string|null} [options.deviceId=null] Optional specific camera deviceId
    * @param {boolean} [options.debug=false]      Attach Stage 1-3 intermediate snapshots
+   * @param {string[]|number|null} [options.flags] Optional worker feature flags (names from WORKER_FLAG_BITS or int32 mask; default 0)
+   * @param {number|(() => number)|null} [options.tFrameMs] Optional capture timestamp source for frame messages (default performance.now())
    * @param {(detections: Array<object>, telemetry: object) => void} [options.onDetect]
    * @param {(telemetry: object) => void} [options.onFrame]
    * @param {(err: Error) => void} [options.onError]
@@ -45,6 +90,10 @@ export class Code128Scanner {
     this.onDetect = typeof options.onDetect === 'function' ? options.onDetect : null;
     this.onFrame = typeof options.onFrame === 'function' ? options.onFrame : null;
     this.onError = typeof options.onError === 'function' ? options.onError : null;
+    this._flagsMask = resolveWorkerFlagMask(options.flags);
+    this._tFrameSource = (typeof options.tFrameMs === 'function' || typeof options.tFrameMs === 'number')
+      ? options.tFrameMs
+      : null;
 
     this._running = false;
     this._camera = null;
@@ -95,6 +144,21 @@ export class Code128Scanner {
   get activeResolution() { return { width: this._frameWidth, height: this._frameHeight }; }
   get focusMode() { return this._camera ? this._camera.focusMode : 'inactive'; }
   get capturePath() { return this._capturePath; }
+  /** Active worker flag bitmask (0 = all flags off). */
+  get flagsMask() { return this._flagsMask; }
+
+  /** Changes the worker flags live (names array or numeric mask); applies from the next frame. */
+  setFlags(flags) {
+    this._flagsMask = resolveWorkerFlagMask(flags);
+    return this._flagsMask;
+  }
+
+  _frameTimestamp() {
+    const src = this._tFrameSource;
+    if (typeof src === 'function') return Number(src()) || 0;
+    if (typeof src === 'number') return src;
+    return performance.now();
+  }
 
   _ensureWorker() {
     if (this._worker) return this._worker;
@@ -176,7 +240,7 @@ export class Code128Scanner {
     this._activeDeviceIdx = Math.max(0, this._devices.findIndex((d) => d.deviceId === curId));
 
     const worker = this._ensureWorker();
-    worker.postMessage({ type: 'init', width: cam.width, height: cam.height });
+    worker.postMessage({ type: 'init', width: cam.width, height: cam.height, flags: this._flagsMask });
 
     this._fpsWindowStart = 0;
     this._fpsFrames = 0;
@@ -286,7 +350,7 @@ export class Code128Scanner {
     this._capturePath = 'StaticImage';
 
     const worker = this._ensureWorker();
-    worker.postMessage({ type: 'init', width, height });
+    worker.postMessage({ type: 'init', width, height, flags: this._flagsMask });
 
     return new Promise((resolve) => {
       this._pendingStaticResolve = resolve;
@@ -300,6 +364,8 @@ export class Code128Scanner {
           height,
           byteOffset: 0,
           tCaptureMs,
+          tFrameMs: this._frameTimestamp(),
+          flags: this._flagsMask,
           multi: this.multi,
           debug: this.debug,
           buffer: luma.buffer,
@@ -353,6 +419,8 @@ export class Code128Scanner {
           height: cap.height,
           byteOffset: cap.byteOffset,
           tCaptureMs: cap.tCaptureMs,
+          tFrameMs: this._frameTimestamp(),
+          flags: this._flagsMask,
           multi: this.multi,
           debug: this.debug,
           buffer: cap.buffer,
