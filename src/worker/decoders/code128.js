@@ -84,6 +84,22 @@ const TSX_CRIB_RUNS_Q8 = new Int16Array([
   3 << 8, 3 << 8, 1 << 8, 1 << 8, 2 << 8, 1 << 8, // 'X' (56)
 ]);
 
+// H6 (flagged `cribMatch`): pre-computed 4 KB O(1) LUT mapping 6 packed 2-bit run widths ((r-1) in 0..3)
+// directly to Code 128 symbol codes 0..102 (-1 = invalid). Allocated once at module load.
+const CODE128_FAST_LUT = new Int8Array(4096);
+CODE128_FAST_LUT.fill(-1);
+for (let c = 0; c < 103; c++) {
+  const p = c * 6;
+  const key =
+    ((CODE128_PATTERNS[p] - 1) << 10) |
+    ((CODE128_PATTERNS[p + 1] - 1) << 8) |
+    ((CODE128_PATTERNS[p + 2] - 1) << 6) |
+    ((CODE128_PATTERNS[p + 3] - 1) << 4) |
+    ((CODE128_PATTERNS[p + 4] - 1) << 2) |
+    (CODE128_PATTERNS[p + 5] - 1);
+  CODE128_FAST_LUT[key] = c;
+}
+
 /**
  * Pre-allocated scratch state for single-scanline Code 128 decoding (all integers).
  */
@@ -95,6 +111,13 @@ export function createCode128State() {
     cribStartPxQ8: 0,
     cribErrQ8: 0,
     cribDir: 0,
+
+    // H6 telemetry counters (pure int32, zero allocations)
+    cribFastAttempts: 0,
+    cribFastSuccess: 0,
+    cribFastFallbacks: 0,
+    cribSymbolsFast: 0,
+    cribSymbolsFull: 0,
 
     workSymbols: new Uint8Array(MAX_CODE128_SYMBOLS),
     workConfsQ10: new Int32Array(MAX_CODE128_SYMBOLS),
@@ -327,9 +350,12 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
     let cursor = (i + Math.imul(6, step)) | 0;
     let stopped = 0;
 
-    // W3 (flagged `cribMatch`): match 44-module StartB+'t'+'s'+'X' crib for rock-solid module scale
+    // W3 / H6 (flagged `cribMatch`): match 44-module StartB+'t'+'s'+'X' crib for rock-solid module scale
+    let cribLocalMatched = 0;
+    let cribTotal44 = 0;
+    const cribFlagOn = (state.flags & FLAG_CRIB_MATCH) !== 0;
     if (
-      (state.flags & FLAG_CRIB_MATCH) !== 0 &&
+      cribFlagOn &&
       bestStart === CODE128_START_B &&
       ((step === 1 && cursor + 18 < rc) || (step === -1 && cursor - 18 >= 0))
     ) {
@@ -338,17 +364,22 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
         cribSum = (cribSum + runWidthsQ8[(cursor + Math.imul(k, step)) | 0]) | 0;
       }
       const total44 = (startSum + cribSum) | 0;
-      if (total44 > 256) {
-        const half44 = total44 >> 1;
+      if (total44 >= (startSum << 1) && total44 <= (startSum << 3) && total44 > 256) {
+        // Single division replaces 18 per-run divisions: 44 * 256 * 16384 = 184549376 (< 2^31)
+        const scaleQ22 = ((184549376 + (total44 >> 1)) / total44) | 0;
+        const maxCribRunQ8 = total44 >> 3; // 5.5 modules -> prevents int32 overflow & fast-rejects >4 mod runs
         let cribErr = 0;
         for (let k = 0; k < 18; k++) {
           const rw = runWidthsQ8[(cursor + Math.imul(k, step)) | 0] | 0;
-          // 44 modules * 256 = 11264
-          const normQ8 = ((Math.imul(rw, 11264) + half44) / total44) | 0;
+          if (rw > maxCribRunQ8) { cribErr = 2200; break; }
+          const normQ8 = ((Math.imul(rw, scaleQ22) + 8192) >> 14) | 0;
           const d = (normQ8 - TSX_CRIB_RUNS_Q8[k]) | 0;
           cribErr = (cribErr + (d < 0 ? -d : d)) | 0;
+          if (cribErr >= 2200) break; // early bailout on non-tsX labels
         }
         if (cribErr < 2200) { // ~0.48 modules avg L1 error across all 18 runs
+          cribLocalMatched = 1;
+          cribTotal44 = total44;
           state.cribMatched = 1;
           state.cribModulePxQ8 = ((total44 + 22) / 44) | 0;
           state.cribErrQ8 = cribErr;
@@ -366,7 +397,152 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
       }
     }
 
-    while (symCount < MAX_CODE128_SYMBOLS) {
+    // H6 (`cribMatch` fast path): when the 44-module StartB+'t'+'s'+'X' crib matches, decode
+    // remaining symbols directly via O(1) LUT using the crib-seeded character width window
+    // (tolerance +/- 0.30 module per run, no 103-symbol search or per-symbol scale search).
+    // Falls back cleanly to the existing full search on tolerance miss or Mod-103 checksum failure.
+    let fastDecoded = 0;
+    if (cribLocalMatched === 1) {
+      state.cribFastAttempts = (state.cribFastAttempts + 1) | 0;
+      const TOL_Q8 = 77; // +/- 0.30 module in Q8 (0.3 * 256 = 76.8)
+      const fastLut = CODE128_FAST_LUT;
+
+      workSymbols[1] = 84; // 't'
+      workSymbols[2] = 83; // 's'
+      workSymbols[3] = 56; // 'X'
+      workConfsQ10[1] = 960;
+      workConfsQ10[2] = 960;
+      workConfsQ10[3] = 960;
+      let fSymCount = 4;
+      let fConfSum = (confSum + 2880) | 0;
+      let fCharW = cribTotal44 >> 2; // 11-module width seeded from 44-module crib
+      let fCursor = (cursor + Math.imul(18, step)) | 0;
+      let fStopped = 0;
+      let fAborted = 0;
+
+      while (fSymCount < MAX_CODE128_SYMBOLS) {
+        const stopEnd = (fCursor + Math.imul(6, step)) | 0;
+        if (stopEnd < 0 || stopEnd >= rc) { fAborted = 1; break; }
+
+        const s0 = runWidthsQ8[fCursor] | 0;
+        const s1 = runWidthsQ8[(fCursor + step) | 0] | 0;
+        const s2 = runWidthsQ8[(fCursor + (step << 1)) | 0] | 0;
+        const s3 = runWidthsQ8[(fCursor + Math.imul(3, step)) | 0] | 0;
+        const s4 = runWidthsQ8[(fCursor + (step << 2)) | 0] | 0;
+        const s5 = runWidthsQ8[(fCursor + Math.imul(5, step)) | 0] | 0;
+        const s6 = runWidthsQ8[(fCursor + Math.imul(6, step)) | 0] | 0;
+
+        // Check Stop [2,3,3,1,1,1,2] (13 modules) within tight fixed-scale window [0.78x..1.28x]
+        const stopSum = (s0 + s1 + s2 + s3 + s4 + s5 + s6) | 0;
+        const expStopW = (Math.imul(fCharW, 303) >> 8) | 0; // 13/11 * fCharW
+        if (
+          stopSum > 256 &&
+          stopSum >= ((Math.imul(expStopW, 200) >> 8) | 0) &&
+          stopSum <= ((Math.imul(expStopW, 328) >> 8) | 0)
+        ) {
+          // 13 * 256 * 16384 = 54525952 (< 2^31; s_k <= stopSum so s_k * invStop <= 54.5M)
+          const invStopQ22 = ((54525952 + (stopSum >> 1)) / stopSum) | 0;
+          let d0 = (((Math.imul(s0, invStopQ22) + 8192) >> 14) - 512) | 0; if (d0 < 0) d0 = -d0;
+          let d1 = (((Math.imul(s1, invStopQ22) + 8192) >> 14) - 768) | 0; if (d1 < 0) d1 = -d1;
+          let d2 = (((Math.imul(s2, invStopQ22) + 8192) >> 14) - 768) | 0; if (d2 < 0) d2 = -d2;
+          let d3 = (((Math.imul(s3, invStopQ22) + 8192) >> 14) - 256) | 0; if (d3 < 0) d3 = -d3;
+          let d4 = (((Math.imul(s4, invStopQ22) + 8192) >> 14) - 256) | 0; if (d4 < 0) d4 = -d4;
+          let d5 = (((Math.imul(s5, invStopQ22) + 8192) >> 14) - 256) | 0; if (d5 < 0) d5 = -d5;
+          let d6 = (((Math.imul(s6, invStopQ22) + 8192) >> 14) - 512) | 0; if (d6 < 0) d6 = -d6;
+
+          if (
+            d0 <= TOL_Q8 && d1 <= TOL_Q8 && d2 <= TOL_Q8 && d3 <= TOL_Q8 &&
+            d4 <= TOL_Q8 && d5 <= TOL_Q8 && d6 <= TOL_Q8
+          ) {
+            const trailIdx = (fCursor + Math.imul(7, step)) | 0;
+            const minTrailW = (Math.imul(fCharW, 82) >> 8) | 0; // ~3.52 modules
+            const trailOk = trailIdx < 0 || trailIdx >= rc || runWidthsQ8[trailIdx] >= minTrailW;
+            if (trailOk) {
+              fStopped = 1;
+              break;
+            }
+          }
+        }
+
+        // Fixed-scale window [0.78x..1.28x] around crib-seeded width + O(1) LUT (no 103-way search)
+        const charSum = (s0 + s1 + s2 + s3 + s4 + s5) | 0;
+        if (
+          charSum <= 256 ||
+          charSum < ((Math.imul(fCharW, 200) >> 8) | 0) ||
+          charSum > ((Math.imul(fCharW, 328) >> 8) | 0)
+        ) {
+          fAborted = 1;
+          break;
+        }
+
+        // 11 * 256 * 16384 = 46137344 (< 2^31; s_k <= charSum so s_k * invChar <= 46.1M)
+        const invCharQ22 = ((46137344 + (charSum >> 1)) / charSum) | 0;
+        const m0 = ((Math.imul(s0, invCharQ22) + 8192) >> 14) | 0;
+        const m1 = ((Math.imul(s1, invCharQ22) + 8192) >> 14) | 0;
+        const m2 = ((Math.imul(s2, invCharQ22) + 8192) >> 14) | 0;
+        const m3 = ((Math.imul(s3, invCharQ22) + 8192) >> 14) | 0;
+        const m4 = ((Math.imul(s4, invCharQ22) + 8192) >> 14) | 0;
+        const m5 = ((Math.imul(s5, invCharQ22) + 8192) >> 14) | 0;
+
+        const q0 = (m0 + 128) >> 8;
+        const q1 = (m1 + 128) >> 8;
+        const q2 = (m2 + 128) >> 8;
+        const q3 = (m3 + 128) >> 8;
+        const q4 = (m4 + 128) >> 8;
+        const q5 = (m5 + 128) >> 8;
+
+        if (
+          q0 < 1 || q0 > 4 || q1 < 1 || q1 > 4 || q2 < 1 || q2 > 4 ||
+          q3 < 1 || q3 > 4 || q4 < 1 || q4 > 4 || q5 < 1 || q5 > 4 ||
+          ((q0 + q1 + q2 + q3 + q4 + q5) | 0) !== 11
+        ) {
+          fAborted = 1;
+          break;
+        }
+
+        let e0 = (m0 - (q0 << 8)) | 0; if (e0 < 0) e0 = -e0;
+        let e1 = (m1 - (q1 << 8)) | 0; if (e1 < 0) e1 = -e1;
+        let e2 = (m2 - (q2 << 8)) | 0; if (e2 < 0) e2 = -e2;
+        let e3 = (m3 - (q3 << 8)) | 0; if (e3 < 0) e3 = -e3;
+        let e4 = (m4 - (q4 << 8)) | 0; if (e4 < 0) e4 = -e4;
+        let e5 = (m5 - (q5 << 8)) | 0; if (e5 < 0) e5 = -e5;
+
+        if (e0 > TOL_Q8 || e1 > TOL_Q8 || e2 > TOL_Q8 || e3 > TOL_Q8 || e4 > TOL_Q8 || e5 > TOL_Q8) {
+          fAborted = 1;
+          break;
+        }
+
+        const key =
+          ((q0 - 1) << 10) | ((q1 - 1) << 8) | ((q2 - 1) << 6) |
+          ((q3 - 1) << 4) | ((q4 - 1) << 2) | (q5 - 1);
+        const code = fastLut[key];
+        if (code < 0) {
+          fAborted = 1;
+          break;
+        }
+
+        workSymbols[fSymCount] = code;
+        workConfsQ10[fSymCount] = 960;
+        fConfSum = (fConfSum + 960) | 0;
+        fSymCount = (fSymCount + 1) | 0;
+        fCharW = ((Math.imul(fCharW, 128) + Math.imul(charSum, 128)) >> 8) | 0;
+        fCursor = (fCursor + Math.imul(6, step)) | 0;
+      }
+
+      if (fAborted === 0 && fStopped === 1 && fSymCount >= 5 && verifyCode128Checksum(workSymbols, fSymCount) === 1) {
+        symCount = fSymCount;
+        confSum = fConfSum;
+        cursor = fCursor;
+        stopped = 1;
+        fastDecoded = 1;
+        state.cribFastSuccess = (state.cribFastSuccess + 1) | 0;
+        state.cribSymbolsFast = (state.cribSymbolsFast + (fSymCount - 1)) | 0;
+      } else {
+        state.cribFastFallbacks = (state.cribFastFallbacks + 1) | 0;
+      }
+    }
+
+    if (fastDecoded === 0) while (symCount < MAX_CODE128_SYMBOLS) {
       const stopEnd = (cursor + Math.imul(6, step)) | 0;
       if (stopEnd < 0 || stopEnd >= rc) break;
 
@@ -502,6 +678,10 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
           bestErr = totalErr;
           bestCode = code;
         }
+      }
+
+      if (cribFlagOn) {
+        state.cribSymbolsFull = (state.cribSymbolsFull + 1) | 0;
       }
 
       if (bestErr > MAX_CHAR_ERR_Q8) break;
