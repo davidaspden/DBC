@@ -13,8 +13,11 @@
  *    and returned back on every result message so buffers are recycled across frames.
  */
 
-import { startCamera, setTorch, stopCamera, listVideoDevices } from './camera.js';
+import { startCamera, setTorch, stopCamera, listVideoDevices, getExposureInfo } from './camera.js';
 import { ROI_CONFIDENCE_THRESHOLD } from './worker/roi.js';
+import { isOn, toWorkerMask } from './flags.js';
+import { formatExposureLabel } from './capture/exposure.js';
+import { initOverlayDim } from './ui/overlay-dim.js';
 
 const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 const RGB_PACKED_FORMATS = new Set(['RGBA', 'RGBX', 'BGRA', 'BGRX']);
@@ -48,6 +51,14 @@ const els = {
   hudPath: document.getElementById('hud-path'),
   hudTheta: document.getElementById('hud-theta'),
   hudAgree: document.getElementById('hud-agree'),
+  hudStatsRow: document.getElementById('hud-stats-row'),
+  hudP95: document.getElementById('hud-p95'),
+  hudLock: document.getElementById('hud-lock'),
+  hudZoom: document.getElementById('hud-zoom'),
+  hudLens: document.getElementById('hud-lens'),
+  hudExp: document.getElementById('hud-exp'),
+  hudPpm: document.getElementById('hud-ppm'),
+  hudSpeed: document.getElementById('hud-speed'),
   historyPanel: document.getElementById('history-panel'),
   historyTitle: document.getElementById('history-title'),
   historyList: document.getElementById('history-list'),
@@ -83,8 +94,25 @@ const app = {
   worker: null,
   workerBusy: false,
   frameId: 0,
+  lastFrameTs: 0,
+  lastMediaTime: 0,
+  debugLogEnabled: typeof location !== 'undefined' && new URLSearchParams(location.search).get('debug') === '1',
   rafHandle: 0,
   vfcHandle: 0,
+
+  // U1 pre-allocated telemetry ring (active only when `hudStats` flag is ON)
+  hudStatsEnabled: isOn('hudStats'),
+  tTotalRing: new Float32Array(256),
+  tTotalScratch: new Float32Array(256),
+  tTotalRingIdx: 0,
+  tTotalRingCount: 0,
+  lastStatsComputeMs: 0,
+  sceneLockStartMs: 0,
+  lastAnyDetectMs: 0,
+  lastLockMs: null,
+
+  // U2 overlay dim controller (null when `overlayDim` flag is OFF)
+  overlayDim: isOn('overlayDim') ? initOverlayDim(document.getElementById('app')) : null,
 
   // Active frame geometry & target resolution preset ('720p' | '1080p')
   targetPreset: '720p',
@@ -531,6 +559,10 @@ function handleWorkerMessage(event) {
   }
 }
 
+function estimateCode128Modules(payloadLen) {
+  return 11 * (payloadLen > 0 ? payloadLen : 12) + 55;
+}
+
 function updateTelemetryHUD(msg, now) {
   const totalPipelineMs = (msg.tCaptureMs || 0) + (msg.tTotalMs || 0);
   els.hudCapture.textContent = `${(msg.tCaptureMs || 0).toFixed(1)} ms`;
@@ -544,6 +576,34 @@ function updateTelemetryHUD(msg, now) {
     ? `${msg.thetaDeg.toFixed(1)}°`
     : 'fan';
   els.hudAgree.textContent = `${msg.consensusCount || 0}x`;
+
+  // U1 (flagged): p95 ring, time-to-lock, ppm, zoom/lens/exposure telemetry
+  if (app.hudStatsEnabled && els.hudStatsRow) {
+    els.hudStatsRow.hidden = false;
+    app.tTotalRing[app.tTotalRingIdx] = msg.tTotalMs || 0;
+    app.tTotalRingIdx = (app.tTotalRingIdx + 1) & 255;
+    if (app.tTotalRingCount < 256) app.tTotalRingCount++;
+
+    if (msg.roiConfidence >= ROI_CONFIDENCE_THRESHOLD && app.sceneLockStartMs === 0) {
+      app.sceneLockStartMs = now;
+    }
+    if (now - app.lastStatsComputeMs >= 500 && app.tTotalRingCount > 0) {
+      app.lastStatsComputeMs = now;
+      const n = app.tTotalRingCount;
+      for (let i = 0; i < n; i++) app.tTotalScratch[i] = app.tTotalRing[i];
+      const slice = app.tTotalScratch.subarray(0, n);
+      slice.sort();
+      const p95 = slice[Math.min(n - 1, Math.floor(n * 0.95))];
+      if (els.hudP95) els.hudP95.textContent = `${p95.toFixed(1)}ms`;
+      if (app.camera && app.camera.track) {
+        const expInfo = getExposureInfo(app.camera.track);
+        if (els.hudExp) els.hudExp.textContent = formatExposureLabel(expInfo);
+        const st = typeof app.camera.track.getSettings === 'function' ? app.camera.track.getSettings() : {};
+        if (els.hudZoom) els.hudZoom.textContent = st.zoom !== undefined ? `${Number(st.zoom).toFixed(1)}×` : 'n/a';
+        if (els.hudLens) els.hudLens.textContent = app.camera.track.label || 'rear';
+      }
+    }
+  }
 
   app.lastFrameNewPayloads.clear();
   const dets = Array.isArray(msg.detections) && msg.detections.length > 0
@@ -587,6 +647,27 @@ function updateTelemetryHUD(msg, now) {
       els.payloadCard.classList.remove('flash');
       void els.payloadCard.offsetWidth;
       els.payloadCard.classList.add('flash');
+      if (app.overlayDim) app.overlayDim.notifyLock();
+    }
+
+    if (app.hudStatsEnabled) {
+      if (app.lastAnyDetectMs === 0 || (now - app.lastAnyDetectMs) > 500) {
+        const refStart = app.sceneLockStartMs || app.scanStartMs || now;
+        app.lastLockMs = Math.max(0, Math.round(now - refStart));
+        if (els.hudLock) els.hudLock.textContent = `${app.lastLockMs}ms`;
+      }
+      app.lastAnyDetectMs = now;
+      app.sceneLockStartMs = 0;
+      if (displayDet.roiMajorLen > 0 && els.hudPpm) {
+        const ppm = displayDet.roiMajorLen / estimateCode128Modules(displayDet.payload.length);
+        els.hudPpm.textContent = `${ppm.toFixed(2)}ppm`;
+      }
+    }
+    if (app.debugLogEnabled) {
+      console.log(
+        `[DBC] ${displayDet.payload} cx=${Math.round(displayDet.roiCenterX || 0)} cy=${Math.round(displayDet.roiCenterY || 0)} ` +
+        `lenPx=${Math.round(displayDet.roiMajorLen || 0)} theta=${(displayDet.thetaDeg || 0).toFixed(1)} tFrame=${(msg.tFrameMs || 0).toFixed(1)}`
+      );
     }
   } else if (app.isStaticMode) {
     app.lastPayload = null;
@@ -832,11 +913,26 @@ function drawHudOverlay(msg) {
   }
 
   if (!app.isStaticMode) {
-    const guideW = Math.min(cssW * 0.72, 420);
-    const guideH = Math.min(cssH * 0.30, 190);
+    let guideW;
+    let guideH;
+    let strokeStyle = 'rgba(255, 255, 255, 0.30)';
+    if (isOn('tallGuide')) {
+      // U3 (flagged): tall 1:1.75 (2 x 3.5 in) centered framing guide with RoI confidence pulse
+      const longAxis = Math.max(cssW, cssH);
+      guideH = Math.min(cssH * 0.62, longAxis * 0.50);
+      guideW = guideH / 1.75;
+      if (msg && msg.roiConfidence >= ROI_CONFIDENCE_THRESHOLD) {
+        strokeStyle = 'rgba(56, 189, 248, 0.85)';
+      } else {
+        strokeStyle = 'rgba(255, 255, 255, 0.55)';
+      }
+    } else {
+      guideW = Math.min(cssW * 0.72, 420);
+      guideH = Math.min(cssH * 0.30, 190);
+    }
     const gx = (cssW - guideW) * 0.5;
     const gy = (cssH - guideH) * 0.5;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.30)';
+    ctx.strokeStyle = strokeStyle;
     ctx.lineWidth = 2;
     const corner = 22;
     ctx.beginPath();
@@ -972,6 +1068,8 @@ async function pumpVideoFrame() {
         {
           type: 'frame',
           frameId,
+          tFrameMs: app.lastFrameTs || performance.now(),
+          flags: toWorkerMask(),
           width: cap.width,
           height: cap.height,
           byteOffset: cap.byteOffset,
@@ -991,11 +1089,14 @@ async function pumpVideoFrame() {
 function scheduleNextFrame() {
   if (app.state !== 'SCANNING') return;
   if (typeof els.video.requestVideoFrameCallback === 'function') {
-    app.vfcHandle = els.video.requestVideoFrameCallback(() => {
+    app.vfcHandle = els.video.requestVideoFrameCallback((now, metadata) => {
+      app.lastFrameTs = (metadata && typeof metadata.captureTime === 'number') ? metadata.captureTime : now;
+      app.lastMediaTime = (metadata && typeof metadata.mediaTime === 'number') ? metadata.mediaTime : 0;
       pumpVideoFrame();
     });
   } else {
-    app.rafHandle = requestAnimationFrame(() => {
+    app.rafHandle = requestAnimationFrame((now) => {
+      app.lastFrameTs = now;
       pumpVideoFrame();
     });
   }
@@ -1041,7 +1142,7 @@ async function startScanning(deviceId = null) {
     els.btnCapture.disabled = false;
 
     const worker = ensureWorker();
-    worker.postMessage({ type: 'init', width: cam.width, height: cam.height });
+    worker.postMessage({ type: 'init', width: cam.width, height: cam.height, flags: toWorkerMask() });
 
     app.scanStartMs = performance.now();
     app.fpsWindowStart = 0;
@@ -1051,16 +1152,19 @@ async function startScanning(deviceId = null) {
     setStatus('SCANNING', `Live camera (${cam.width}×${cam.height}, Code 128)`);
     els.btnStart.textContent = 'Stop Camera';
     els.btnStart.disabled = false;
+    if (app.overlayDim) app.overlayDim.notifyScanActive(true);
     scheduleNextFrame();
   } catch (err) {
     console.error('[main] Camera startup error:', err);
     setStatus('ERROR', err.message || 'Camera access failed');
+    if (app.overlayDim) app.overlayDim.notifyError();
     els.btnStart.textContent = 'Start Camera';
     els.btnStart.disabled = false;
   }
 }
 
 function stopScanning() {
+  if (app.overlayDim) app.overlayDim.notifyScanActive(false);
   if (app.rafHandle) cancelAnimationFrame(app.rafHandle);
   if (app.vfcHandle && typeof els.video.cancelVideoFrameCallback === 'function') {
     els.video.cancelVideoFrameCallback(app.vfcHandle);
