@@ -1,0 +1,14 @@
+commit: d917944daaf5425ca3aca69697aec0459d3d8e98
+date_utc: 2026-11-28T04:23:25Z
+node: v24.19.0 (Windows)
+
+node tests/array.test.js: 7/7 PASS
+node tests/sim.test.js:   4/4 PASS
+node tests/diag.test.js:  9/9 PASS
+
+node --expose-gc tests/harness.js (800 frames, 1280x720):
+  Phase 2 RoI Accuracy: Positives=14/14, Angle<=3deg=14/14 (maxErr=0.68deg), NegativesClean=2/2
+  Phase 2 RoI Timing:   min=0.411ms mean=0.631ms p50=0.697ms p95=0.850ms p99=0.913ms (heap delta=3392 B, 4.24 B/frame)
+  Phase 3 Decode:       Decoded=14/14 (100.0%), FalsePositives=0/2
+  Phase 3 Full Pipe:    min=0.434ms mean=0.693ms p50=0.742ms p95=0.996ms p99=1.061ms (heap delta=12888 B, 16.11 B/frame)
+  Phase 3 Hard Gate (< 20.000 ms/frame): PASS (19.004 ms margin at p95)

@@ -1,0 +1,14 @@
+{
+  "commit": "d917944daaf5425ca3aca69697aec0459d3d8e98",
+  "status": "pending-gpu-capture",
+  "note": "Populate on laptop browser with WebGL GPU for 3 loops per preset.",
+  "device": "",
+  "browser": "",
+  "dateUtc": "",
+  "presets": {
+    "a53-8-720": { "loops": 3, "locked16": null, "timeTo16Sec": [], "falsePositives": null, "workerMedianMs": null, "workerWorstMs": null, "ppm": null },
+    "a53-8-1080": { "loops": 3, "locked16": null, "timeTo16Sec": [], "falsePositives": null, "workerMedianMs": null, "workerWorstMs": null, "ppm": null },
+    "tele-30": { "loops": 3, "locked16": null, "timeTo16Sec": [], "falsePositives": null, "workerMedianMs": null, "workerWorstMs": null, "ppm": null },
+    "full-wall": { "loops": 3, "locked16": null, "timeTo16Sec": [], "falsePositives": null, "workerMedianMs": null, "workerWorstMs": null, "ppm": null }
+  }
+}
