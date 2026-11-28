@@ -43,7 +43,7 @@ See `docs/DBC-zero-alloc-buffer-strategies.md` for the concrete buffer additions
 ## 4. Explicit Anti-Goals (Do NOT Implement)
 
 - **NO 2D reverse-keystone barcode rendering or pixel diffing:** Wastes frame budget and fails under glare/shadows; mathematical checksums + multi-scanline consensus guarantee near-zero false positives. *(Clarification: this rule applies to barcode rendering; block-matching optical flow on already-downsampled luma in `src/worker/flow.js` is allowed behind the `flowOn` flag.)*
-- **Feature-Flag Guardrail (`src/flags.js`):** All new behaviour changes ship behind a named flag defaulting to `false` (overridable via `?flags=...` or `localStorage['dbc.flags']`, passed to the worker as a 32-bit integer bitmask). Verify baseline parity with `node tools/verify.mjs` after every change.
+- **Feature-Flag Guardrail (`src/flags.js`):** All new behaviour changes ship behind a named flag defaulting to `false` (overridable via `?flags=...` or `localStorage['dbc.flags']`, passed to the worker as a 32-bit integer bitmask). Verify baseline parity with `node tools/verify.mjs` at full-wave commits (or when requested), rather than automatically after every patch.
 - **NO full-frame global thresholding (e.g., Otsu):** Fails under ambient shadows, uneven lighting, and glare. Use local 1D first-derivative peak detection / zero-crossing edge extraction.
 - **NO blind format exhaustion:** Never iterate across all 1D/2D symbologies on failed frames. Strictly restrict decoding to an explicit active symbology allowlist (**active scope: `CODE_128` only**).
 - **NO WebAssembly (WASM) by default:** Stay in pure Vanilla JS unless empirical profiling demonstrates a full-frame 2D stage exceeding its allocated frame budget.
@@ -173,3 +173,8 @@ Do not advance to a later phase until the current phase's acceptance criteria ar
 2. **Phase 2 — RoI & Structure Tensor Angle Estimator:** `< 5 ms` on `1280x720` inputs; orientation error within `±3°`; debug overlay verification in harness.
 3. **Phase 3 — Oriented Scanlines, 1D Decoders & Consensus:** `> 95%` decode accuracy across the test matrix in `< 20 ms/frame` with verified zero hot-loop allocations.
 4. **Phase 4 — Android Chrome Live Pipeline & Telemetry:** Stable `1280x720` capture, active continuous autofocus, live HUD telemetry, and `< 100 ms` end-to-end physical barcode lock-on.
+
+### Test & Verification Cadence
+- Do **not** run full test suites, `tools/verify.mjs`, or `tools/simgate.mjs` automatically after each individual patch.
+- Hold full-suite and gate runs back until a **full wave commit** (or when explicitly requested).
+- Ask the user before committing whether they want to run tests or commit directly.
