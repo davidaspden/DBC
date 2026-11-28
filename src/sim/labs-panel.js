@@ -5,7 +5,8 @@
  *  - the worker/product flags (`src/flags.js`), toggled live: the worker mask is read on every frame message;
  *  - the sim/AR flags (`src/sim/simflags.js`), marked when they have no live or headless effect yet;
  *  - the run parameters (preset, path, distance, label/lips settings) read from the page state;
- *  - the camera profile row (K9 is not built yet, shown disabled);
+ *  - the camera profile row (K9): picks one of the camera profiles; it drives the live page through
+ *    `deps.onCameraProfile`, is used by the A/B run and is recorded in the downloaded scenario;
  *  - an A/B button: runs "flags off" then "flags as selected" over the same path and seed on the CPU
  *    renderer + real worker (`ab-run.js`) and shows both rows;
  *  - "Download scenario JSON": a `dbc-scenario` file that `node tools/run-scenario.mjs --scenario file`
@@ -16,6 +17,7 @@
 
 import { buildScenarioJson, specFromScenarioJson, HEADLESS_SIM_FLAGS } from './labs-scenario.js';
 import { runAb } from './ab-run.js';
+import { listCameraProfiles } from './camera-model/profiles.js';
 
 /** Sim flags whose live effect exists in sim.html (T1: simTapePose adds a tape file row; the rest are headless or later items). */
 export const LIVE_SIM_FLAGS = Object.freeze(['simTapePose', 'simMeasuredMotion']);
@@ -44,7 +46,11 @@ export function buildLabsModel({ workerFlags, simFlags, state, presetId, mask })
       ['frame', `${state.width}x${state.height}`],
       ['label', `${state.fcMode ? 'FC 2x' : '2x'}${state.labelHeightIn} in`],
     ],
-    cameraProfile: { available: false, note: 'Camera profile (K9) is not built yet' },
+    cameraProfile: {
+      available: true,
+      note: 'Camera profile (K9): live page = post-process on the read-back luma; A/B and scenario JSON = full camera clock',
+      profiles: listCameraProfiles().map((p) => ({ id: p.id, label: p.label, fidelity: p.fidelity })),
+    },
   };
 }
 
@@ -65,7 +71,7 @@ function el(doc, tag, props = {}, kids = []) {
  *   document: *, describeFlags: Function, setFlag: Function, toWorkerMask: Function,
  *   describeSimFlags: Function, setSimFlag: Function,
  *   getState: () => object, getPresetId: () => string,
- *   onChange?: () => void, download?: (name: string, text: string) => void,
+ *   onChange?: () => void, onCameraProfile?: (id: string) => void, download?: (name: string, text: string) => void,
  *   runAb?: Function, yieldFn?: (() => Promise<void>) | null
  * }} deps
  */
@@ -134,6 +140,7 @@ export function mountLabsPanel(container, deps) {
       state: deps.getState(),
       workerFlags: worker,
       simFlags: selectedSimFlags(),
+      cameraProfile: ui.cam ? ui.cam.value : 'ideal',
       seeds: [Number(ui.seed.value) || 1],
       flagSets: [{ id: 'A-off', worker: [] }, { id: 'B-on', worker }],
       reported,
@@ -191,9 +198,14 @@ export function mountLabsPanel(container, deps) {
   ui.workerList = el(doc, 'div', { className: 'labs-grid' });
   ui.simList = el(doc, 'div', { className: 'labs-grid' });
   ui.params = el(doc, 'div', { className: 'mono' });
-  const cam = el(doc, 'label', { className: 'labs-flag', title: 'K9' }, [
-    el(doc, 'select', { disabled: true }, [el(doc, 'option', { text: 'ideal (camera profiles: K9 not built)' })]),
-  ]);
+  ui.cam = el(doc, 'select', { title: 'K9 camera profile (provisional numbers until G7 fits them)' },
+    listCameraProfiles().map((p) => el(doc, 'option', { value: p.id, text: p.label })));
+  ui.cam.value = 'ideal';
+  ui.cam.addEventListener('change', () => {
+    if (deps.onCameraProfile) deps.onCameraProfile(ui.cam.value);
+    if (deps.onChange) deps.onChange();
+  });
+  const cam = el(doc, 'label', { className: 'labs-flag', title: 'K9' }, [el(doc, 'span', { text: 'camera profile ' }), ui.cam]);
   ui.seed = el(doc, 'input', { type: 'number', value: '1', min: '1' });
   ui.scale = el(doc, 'select', {}, [el(doc, 'option', { value: '1', text: 'full size' }), el(doc, 'option', { value: '0.5', text: 'half size (fast)' })]);
   ui.run = el(doc, 'button', { type: 'button', text: 'Run A/B (off vs selected)' });

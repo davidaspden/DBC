@@ -11,11 +11,13 @@
  *   node tools/simgate.mjs --quick
  *   node tools/simgate.mjs --only S01 --seeds 5 --loops 3
  *   node tools/simgate.mjs --only fc-8-3p5 --flags off,W-fc,W-all --seeds 2
+ *   node tools/simgate.mjs --profiles --quick        (K9: the five camera profiles, 2 s, 1 seed)
+ *   node tools/simgate.mjs --only prof-a53-fc-lowlight-10fps
  */
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildWave1Scenarios, selectScenarios, QUICK_MAX_DURATION_SEC } from './gate/scenarios.mjs';
+import { buildWave1Scenarios, buildProfileScenarios, selectScenarios, QUICK_MAX_DURATION_SEC } from './gate/scenarios.mjs';
 import { runScenarios, evaluateQuickGate } from './gate/score.mjs';
 import {
   PHONE_MS_A53,
@@ -47,6 +49,7 @@ export function parseCliArgs(argv) {
     out: null,
     deviceFactor: null,
     deterministicJson: false,
+    profiles: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -54,6 +57,7 @@ export function parseCliArgs(argv) {
     if (a === '--list') opts.list = true;
     else if (a === '--quick') opts.quick = true;
     else if (a === '--deterministic-json') opts.deterministicJson = true;
+    else if (a === '--profiles') opts.profiles = true;
     else if (a === '--only' && argv[i + 1]) opts.only = argv[++i];
     else if (a.startsWith('--only=')) opts.only = a.slice('--only='.length);
     else if (a === '--seeds' && argv[i + 1]) opts.seeds = Number(argv[++i]);
@@ -84,6 +88,14 @@ function printScenarioList() {
       `  ${sc.id.padEnd(22)} group=${sc.group.padEnd(4)} preset=${sc.presetId.padEnd(18)} ` +
       `${sc.width}x${sc.height}@${sc.fpsCap}fps  loop=${sc.loopDurationSec.toFixed(1)}s  ` +
       `flags=${sc.flagSets.join(',')}${q}`
+    );
+  }
+  const prof = buildProfileScenarios();
+  console.log(`K9 camera-profile scenarios (opt-in: --profiles or --only prof; ${prof.length} entries, camera clock):`);
+  for (const sc of prof) {
+    console.log(
+      `  ${sc.id.padEnd(30)} group=prof profile=${sc.profile.padEnd(24)} preset=${sc.presetId} ` +
+      `${sc.width}x${sc.height}  ${sc.fixedDurationSec}s (quick ${sc.quickMaxDurationSec}s)  flags=${sc.flagSets.join(',')}`
     );
   }
 }
@@ -137,7 +149,7 @@ async function main() {
     : 'standard mode';
   console.log(
     `SimGate: running ${scenarios.length} scenario(s) ` +
-    `(${modeLabel}, profile=ideal, fidelity=uncalibrated, ` +
+    `(${modeLabel}, profile=${[...new Set(scenarios.map((sc) => sc.profile))].join('+')}, fidelity=uncalibrated, ` +
     `${dfDetail})...`
   );
 
@@ -167,7 +179,7 @@ async function main() {
   console.log('');
   console.log(formatTable(results, { quickMode: opts.quick }));
   console.log('');
-  console.log(`Wrote ${outPath} in ${elapsedSec} s (profile=ideal, fidelity=uncalibrated).`);
+  console.log(`Wrote ${outPath} in ${elapsedSec} s (profile=${[...new Set(scenarios.map((sc) => sc.profile))].join('+')}, fidelity=uncalibrated).`);
   if (gate) {
     if (gate.ok) {
       console.log(`Quick Gate: PASS (0 FP on gated full-length fc-tele-30-3p5[W-fc]; coverage ${gate.coverageGate}).`);

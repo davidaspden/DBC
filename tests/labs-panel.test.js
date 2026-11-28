@@ -142,7 +142,7 @@ await test('R3 panel: mounting changes no flag; toggling a worker flag calls set
   assert.equal(describeSimFlags().every((f) => !f.enabled), true);
 });
 
-await test('R3 panel model: sim flags are labelled by what they do, camera profile row is disabled (K9)', () => {
+await test('R3 panel model: sim flags are labelled by what they do, camera profile row lists the K9 profiles', () => {
   const { deps, state } = makeDeps();
   const m = buildLabsModel({
     workerFlags: describeFlags(),
@@ -153,11 +153,20 @@ await test('R3 panel model: sim flags are labelled by what they do, camera profi
   });
   assert.equal(m.simFlags.find((f) => f.name === 'simFcLabel').effect, 'headless');
   assert.equal(m.simFlags.find((f) => f.name === 'arWall').effect, 'none-yet');
-  assert.equal(m.cameraProfile.available, false);
+  assert.equal(m.cameraProfile.available, true);
+  assert.deepEqual(m.cameraProfile.profiles.map((p) => p.id), [
+    'ideal', 'a53-fc-normal', 'a53-fc-lowlight-10fps', 'a53-fc-lowlight-locked', 'a53-torch-glare',
+  ]);
   const root = new FakeEl('details');
-  mountLabsPanel(root, deps);
-  const sel = find(root, (n) => n.tag === 'select' && n.disabled);
-  assert.equal(sel.length, 1, 'camera profile select is present but disabled');
+  let hooked = null;
+  const panel = mountLabsPanel(root, { ...deps, onCameraProfile: (id) => { hooked = id; } });
+  assert.equal(find(root, (n) => n.tag === 'select' && n.disabled).length, 0, 'camera profile select is enabled');
+  assert.equal(panel.ui.cam.value, 'ideal');
+  panel.ui.cam.value = 'a53-fc-lowlight-10fps';
+  panel.ui.cam.fire('change');
+  const json = panel.downloadScenario();
+  assert.equal(json.camera?.profile, 'a53-fc-lowlight-10fps', 'the scenario file records the camera profile');
+  assert.equal(hooked, 'a53-fc-lowlight-10fps', 'the live page hook is told');
 });
 
 await test('R3 panel: A/B run shows both rows; the downloaded scenario reproduces the page numbers headless', async () => {

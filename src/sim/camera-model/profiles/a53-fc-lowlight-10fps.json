@@ -1,0 +1,54 @@
+{
+  "id": "a53-fc-lowlight-10fps",
+  "label": "A53, low light, AE walks to 100 ms, 10 fps",
+  "description": "About 25 lux: AE runs the shutter to the 100 ms ceiling, ISO about 480, so the camera delivers 10 fps with strong motion blur and heavy noise; JPEG quality 75. Reproduces the live 10 fps seen on the phone.",
+  "ideal": false,
+  "fidelity": "provisional",
+  "deviceFactorA53": 8.09,
+  "workerMsModel": 25,
+  "scheduler": {
+    "nominalFps": 30,
+    "jitterStdMs": 0.8,
+    "stallProb": 0.01,
+    "copyCostMsPerMp": 1.2,
+    "dropPolicy": "latest"
+  },
+  "exposure": {
+    "mode": "continuous",
+    "lux": 25,
+    "minFrameRate": 15,
+    "strictFrameRateCeiling": false,
+    "initialExposureMs": 100,
+    "initialIso": 480
+  },
+  "sensor": {
+    "iso": 480,
+    "shotCoeff": 0.022,
+    "readNoiseBase": 0.005
+  },
+  "optics": {
+    "defocusEnabled": true,
+    "demosaicEnabled": true,
+    "demosaicStrength": 0.18,
+    "vignetteEnabled": true,
+    "vignetteStrength": 0.22,
+    "distortionEnabled": true,
+    "k1": -0.06,
+    "sharpenEnabled": true,
+    "sharpenAmount": 0.3,
+    "sharpenRadiusPx": 1.5
+  },
+  "rolling": {
+    "readoutMs": 25,
+    "bandCount": 4
+  },
+  "compress": {
+    "quality": 75
+  },
+  "glare": {
+    "gloss": 0.5,
+    "roomGlareEnabled": true,
+    "roomIntensity": 0.35,
+    "torchEnabled": false
+  }
+}

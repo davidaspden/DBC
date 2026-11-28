@@ -19,6 +19,7 @@ import {
   extractMultiDetections,
 } from '../worker/scanner.worker.js';
 import { FLAG_VERTICAL_MODE } from '../worker/flagbits.js';
+import { createProfileRun } from './camera-model/profile-run.js';
 
 const r4 = (x) => Math.round(x * 10000) / 10000;
 
@@ -38,6 +39,9 @@ export async function runSpecSeed(spec, seed, workerMask, opts = {}) {
   const scale = opts.scale > 0 && opts.scale < 1 ? opts.scale : 1;
   const width = Math.max(64, Math.round((spec.width * scale) / 2) * 2);
   const height = Math.max(64, Math.round((spec.height * scale) / 2) * 2);
+  if (spec.profile && spec.profile !== 'ideal') {
+    return runSpecSeedProfile(spec, seed, workerMask, width, height, opts);
+  }
   const fpsCap = spec.fpsCap > 0 ? spec.fpsCap : 30;
   const dtSec = 1.0 / fpsCap;
   const durationSec = Math.max(dtSec, spec.durationSec);
@@ -128,6 +132,39 @@ export async function runSpecSeed(spec, seed, workerMask, opts = {}) {
     decodedPayloads,
     falsePositives,
     timeToAllSec,
+    workerMs: { p50: Math.round(pct(sorted, 0.5) * 1000) / 1000, p95: Math.round(pct(sorted, 0.95) * 1000) / 1000 },
+  };
+}
+
+/** K9: camera-profile seed (same loop as `tools/gate/score.mjs` via `createProfileRun`). */
+async function runSpecSeedProfile(spec, seed, workerMask, width, height, opts) {
+  const run = createProfileRun(spec, seed, workerMask, {
+    width,
+    height,
+    pipeline: { createPipelineState, createPipelineResult, processFrameMulti, extractMultiDetections },
+  });
+  let steps = 0;
+  const approxSteps = Math.max(1, Math.round(run.durationSec * run.session.profile.scheduler.nominalFps));
+  while (run.step()) {
+    steps++;
+    if (opts.yieldFn && opts.yieldEvery > 0 && steps % opts.yieldEvery === 0) {
+      if (opts.onProgress) opts.onProgress(Math.min(1, steps / approxSteps));
+      await opts.yieldFn();
+    }
+  }
+  const raw = run.finish();
+  const sorted = [...raw.workerMsSamples].sort((a, b) => a - b);
+  return {
+    seed,
+    width,
+    height,
+    framesRendered: raw.framesRendered,
+    decoded: raw.decodedPayloads.length,
+    total: raw.totalCells,
+    decodedPayloads: raw.decodedPayloads,
+    falsePositives: raw.falsePositives,
+    timeToAllSec: raw.timeToAllSec,
+    camera: raw.camera,
     workerMs: { p50: Math.round(pct(sorted, 0.5) * 1000) / 1000, p95: Math.round(pct(sorted, 0.95) * 1000) / 1000 },
   };
 }

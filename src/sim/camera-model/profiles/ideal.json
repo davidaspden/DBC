@@ -1,0 +1,7 @@
+{
+  "id": "ideal",
+  "label": "ideal (no camera model)",
+  "description": "All camera-model stages off. Output equals the pre-K9 renderer byte for byte.",
+  "ideal": true,
+  "fidelity": "ideal"
+}

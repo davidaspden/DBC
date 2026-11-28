@@ -1,0 +1,53 @@
+{
+  "id": "a53-torch-glare",
+  "label": "A53, torch on, glossy labels, hotspots",
+  "description": "Dim aisle (about 25 lux) with the torch on at the camera: the torch adds about 900 lux at 12 in, AE drops to a fast shutter, glossy stock gives a specular hotspot that moves with the pose and washes out bars.",
+  "ideal": false,
+  "fidelity": "provisional",
+  "deviceFactorA53": 8.09,
+  "workerMsModel": 25,
+  "scheduler": {
+    "nominalFps": 30,
+    "jitterStdMs": 0.8,
+    "stallProb": 0.01,
+    "copyCostMsPerMp": 1.2,
+    "dropPolicy": "latest"
+  },
+  "exposure": {
+    "mode": "continuous",
+    "lux": 25,
+    "minFrameRate": 15,
+    "strictFrameRateCeiling": false,
+    "initialExposureMs": 4,
+    "initialIso": 100
+  },
+  "sensor": {
+    "iso": 100
+  },
+  "optics": {
+    "defocusEnabled": true,
+    "demosaicEnabled": true,
+    "demosaicStrength": 0.18,
+    "vignetteEnabled": true,
+    "vignetteStrength": 0.22,
+    "distortionEnabled": true,
+    "k1": -0.06,
+    "sharpenEnabled": true,
+    "sharpenAmount": 0.4,
+    "sharpenRadiusPx": 1.5
+  },
+  "rolling": {
+    "readoutMs": 25,
+    "bandCount": 4
+  },
+  "compress": {
+    "quality": 85
+  },
+  "glare": {
+    "gloss": 1,
+    "roomGlareEnabled": true,
+    "roomIntensity": 0.35,
+    "torchEnabled": true,
+    "torchIntensity": 0.95
+  }
+}

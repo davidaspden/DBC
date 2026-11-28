@@ -19,6 +19,7 @@ import {
   extractMultiDetections,
 } from '../../src/worker/scanner.worker.js';
 import { FLAG_VERTICAL_MODE } from '../../src/worker/flagbits.js';
+import { createProfileRun } from '../../src/sim/camera-model/profile-run.js';
 import { getDeviceFactorA53 } from './device-factor.mjs';
 import { median, percentileSorted as percentile } from '../../src/util/stats.js';
 
@@ -42,6 +43,9 @@ function round4(x) {
  */
 export function runScenarioSeed(scenario, seed, opts = {}) {
   const deviceFactor = opts.deviceFactor ?? getDeviceFactorA53();
+  if (scenario.profile && scenario.profile !== 'ideal') {
+    return runProfileScenarioSeed(scenario, seed, deviceFactor);
+  }
   const width = scenario.width | 0;
   const height = scenario.height | 0;
   const fpsCap = scenario.fpsCap > 0 ? scenario.fpsCap : 30;
@@ -193,6 +197,63 @@ export function runScenarioSeed(scenario, seed, opts = {}) {
 }
 
 /**
+ * K9: camera-profile seed. Frames come from the profile's camera clock (scheduler, exposure, rolling
+ * shutter, sensor, optics, JPEG) instead of a fixed `fpsCap` step; everything else (decode, FP rules,
+ * worker timing, heap) matches `runScenarioSeed`. `ideal` never takes this path.
+ */
+function runProfileScenarioSeed(scenario, seed, deviceFactor) {
+  const run = createProfileRun(scenario, seed, (scenario.flags?.workerMask | 0) || 0, {
+    pipeline: { createPipelineState, createPipelineResult, processFrameMulti, extractMultiDetections },
+  });
+  let heapBefore = 0;
+  const measureHeap = typeof global.gc === 'function';
+  if (measureHeap) {
+    global.gc();
+    heapBefore = process.memoryUsage().heapUsed;
+  }
+  while (run.step()) { /* one camera frame per step */ }
+  const raw = run.finish();
+  let heapBytesPerFrame = null;
+  if (measureHeap) {
+    global.gc();
+    const heapAfter = process.memoryUsage().heapUsed;
+    heapBytesPerFrame = round3(Math.max(0, (heapAfter - heapBefore) / Math.max(1, raw.cameraFrames)));
+  }
+  const sortedMs = [...raw.workerMsSamples].sort((a, b) => a - b);
+  const p50 = percentile(sortedMs, 0.5);
+  const p95 = percentile(sortedMs, 0.95);
+  const max = sortedMs.length ? sortedMs[sortedMs.length - 1] : 0;
+  const timeToFirstByLabel = {};
+  for (const pl of raw.decodedPayloads) timeToFirstByLabel[pl] = raw.first.get(pl);
+  const decodedCount = raw.decodedPayloads.length;
+  const totalCells = raw.totalCells;
+  return {
+    seed,
+    framesRendered: raw.framesRendered,
+    fpsDelivered: round3(raw.framesRendered / raw.durationSec),
+    decodedCount,
+    totalCells,
+    coverageRatio: totalCells > 0 ? round4(decodedCount / totalCells) : 0,
+    lockedAll: decodedCount === totalCells && totalCells > 0,
+    timeToAllSec: raw.timeToAllSec,
+    decodedPayloads: raw.decodedPayloads,
+    timeToFirstByLabel,
+    falsePositives: raw.falsePositives,
+    falsePositivePayloads: raw.falsePositivePayloads,
+    camera: raw.camera,
+    workerMs: {
+      node: { p50: round3(p50), p95: round3(p95), max: round3(max) },
+      a53Scaled: {
+        p50: round3(p50 * deviceFactor),
+        p95: round3(p95 * deviceFactor),
+        max: round3(max * deviceFactor),
+      },
+    },
+    heapBytesPerFrame,
+  };
+}
+
+/**
  * Aggregates per-seed results into a canonical scenario summary.
  */
 export function aggregateScenarioResults(scenario, seedResults, deviceFactor = getDeviceFactorA53()) {
@@ -230,6 +291,7 @@ export function aggregateScenarioResults(scenario, seedResults, deviceFactor = g
       timeToFirstByLabel: r.timeToFirstByLabel,
       falsePositives: r.falsePositives,
       falsePositivePayloads: r.falsePositivePayloads,
+      ...(r.camera ? { camera: r.camera } : {}),
     })),
   };
 
@@ -271,6 +333,7 @@ export function aggregateScenarioResults(scenario, seedResults, deviceFactor = g
     falsePositivesTotal: totalFp,
     fpsDelivered: ordered.length ? ordered[0].fpsDelivered : 0,
     deterministicHash,
+    ...(ordered.length && ordered[0].camera ? { camera: ordered[0].camera } : {}),
     workerMs: {
       deviceFactorA53: deviceFactor,
       node: { p50: medNodeP50, p95: medNodeP95, max: worstNodeMax },
@@ -323,6 +386,7 @@ export function stripVolatileMetrics(reportOrScenario) {
     falsePositivesTotal: sc.falsePositivesTotal,
     fpsDelivered: sc.fpsDelivered,
     deterministicHash: sc.deterministicHash,
+    ...(sc.camera ? { camera: sc.camera } : {}),
     seeds: sc.seeds.map((s) => ({
       seed: s.seed,
       framesRendered: s.framesRendered,
@@ -336,6 +400,7 @@ export function stripVolatileMetrics(reportOrScenario) {
       timeToFirstByLabel: s.timeToFirstByLabel,
       falsePositives: s.falsePositives,
       falsePositivePayloads: s.falsePositivePayloads,
+      ...(s.camera ? { camera: s.camera } : {}),
     })),
   });
 

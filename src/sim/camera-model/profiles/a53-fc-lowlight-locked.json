@@ -1,0 +1,57 @@
+{
+  "id": "a53-fc-lowlight-locked",
+  "label": "A53, low light, locked 5 ms / ISO 3200, 30 fps (PP2 prediction)",
+  "description": "The same light as the 10 fps profile with the PP2 behaviour: exposure locked at 5 ms, ISO 3200, minimum frame rate 30. Sharp bars and 30 fps, paid for with underexposure (about 1.6 EV dark) and heavy noise. Predicts what PP2 buys; it needs PP2 in src/camera.js to exist for real.",
+  "ideal": false,
+  "fidelity": "provisional",
+  "requires": "PP2",
+  "deviceFactorA53": 8.09,
+  "workerMsModel": 25,
+  "scheduler": {
+    "nominalFps": 30,
+    "jitterStdMs": 0.8,
+    "stallProb": 0.01,
+    "copyCostMsPerMp": 1.2,
+    "dropPolicy": "latest"
+  },
+  "exposure": {
+    "mode": "manual",
+    "lux": 25,
+    "minFrameRate": 30,
+    "strictFrameRateCeiling": true,
+    "manualExposureMs": 5,
+    "manualIso": 3200,
+    "initialExposureMs": 5,
+    "initialIso": 3200
+  },
+  "sensor": {
+    "iso": 3200,
+    "shotCoeff": 0.022,
+    "readNoiseBase": 0.005
+  },
+  "optics": {
+    "defocusEnabled": true,
+    "demosaicEnabled": true,
+    "demosaicStrength": 0.18,
+    "vignetteEnabled": true,
+    "vignetteStrength": 0.22,
+    "distortionEnabled": true,
+    "k1": -0.06,
+    "sharpenEnabled": true,
+    "sharpenAmount": 0.3,
+    "sharpenRadiusPx": 1.5
+  },
+  "rolling": {
+    "readoutMs": 25,
+    "bandCount": 4
+  },
+  "compress": {
+    "quality": 75
+  },
+  "glare": {
+    "gloss": 0.5,
+    "roomGlareEnabled": true,
+    "roomIntensity": 0.35,
+    "torchEnabled": false
+  }
+}

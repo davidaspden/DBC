@@ -2,7 +2,9 @@
  * G2 — SimGate Scenario Matrix & Flag-Set Definitions (`tools/gate/scenarios.mjs`).
  *
  * Wave 1 scope:
- *  - Profile: `ideal` only (no K-model yet; K9 adds A53 profiles in Wave 3).
+ *  - Profile: `ideal` for the Wave 1 matrix. K9 adds the opt-in `prof-*` group (`buildProfileScenarios`,
+ *    selected with `--profiles` or `--only prof`): the five camera profiles over one FC preset on the
+ *    camera clock. They are not part of the default matrix, so the G3 baseline is untouched.
  *  - Presets: the 4 original presets (`S01` flags-off, `S02` W-all) + the 6 FC presets
  *    (including `snake-h-fast-step`) from `src/sim/presets.js`.
  *  - Flag sets per spec section 10.1: `off`, `W-fc`, `W-all`, `strict`, `A-all`, `single:<flag>`.
@@ -17,10 +19,18 @@ import {
 } from '../../src/sim/presets.js';
 import { PATH_DEFINITIONS, computeOptics } from '../../src/sim/paths.js';
 import { computeCode128Modules } from '../../src/sim/label.js';
+import { CAMERA_PROFILE_IDS } from '../../src/sim/camera-model/profiles.js';
 
 export const DEFAULT_SEEDS = Object.freeze([1, 2, 3, 4, 5]);
 export const QUICK_SEEDS = Object.freeze([1]);
 export const QUICK_MAX_DURATION_SEC = 10;
+
+// K9 profile group (opt-in). One preset, short fixed runs: a profile frame costs about a second at 1080p
+// (rolling-shutter bands + exposure blur + optics + noise + JPEG), so durations are not a full path loop.
+export const PROFILE_PRESET_ID = 'fc-12-3p5-auto';
+export const PROFILE_FULL_DURATION_SEC = 6;
+export const PROFILE_QUICK_DURATION_SEC = 2;
+export const PROFILE_SEEDS = Object.freeze([1, 2]);
 
 // Spec section 10.1 canonical worker flag sets
 export const W_FC_FLAGS = Object.freeze([
@@ -200,6 +210,8 @@ export function createScenarioFromPreset(presetId, opts = {}) {
     coverageGated: opts.coverageGated !== false,
     fpGated: Boolean(opts.fpGated),
     ppm: Number(optics.ppm.toFixed(3)),
+    ...(Number.isFinite(opts.fixedDurationSec) ? { fixedDurationSec: opts.fixedDurationSec } : {}),
+    ...(Number.isFinite(opts.quickMaxDurationSec) ? { quickMaxDurationSec: opts.quickMaxDurationSec } : {}),
     expectedPayloads: opts.expectedPayloads
       ? [...opts.expectedPayloads]
       : scene.cells.map((c) => c.payload),
@@ -260,11 +272,39 @@ export function buildWave1Scenarios() {
 }
 
 /**
+ * K9: the camera-profile scenarios, one per profile in `CAMERA_PROFILE_IDS` (ids `prof-<profile>`),
+ * over `fc-12-3p5-auto`. Flag sets `off` and `W-fc`; quick = 1 seed, `off`, 2 s.
+ * `ideal` takes the unchanged fixed-step path, so `prof-ideal` is the control row for the camera ones.
+ */
+export function buildProfileScenarios() {
+  return CAMERA_PROFILE_IDS.map((profileId) => createScenarioFromPreset(PROFILE_PRESET_ID, {
+    id: `prof-${profileId}`,
+    group: 'prof',
+    profile: profileId,
+    flagSet: 'off',
+    flagSets: ['off', 'W-fc'],
+    seeds: [...PROFILE_SEEDS],
+    fixedDurationSec: PROFILE_FULL_DURATION_SEC,
+    durationSec: PROFILE_FULL_DURATION_SEC,
+    quick: true,
+    quickFlagSets: ['off'],
+    quickSeeds: [...QUICK_SEEDS],
+    quickMaxDurationSec: PROFILE_QUICK_DURATION_SEC,
+  }));
+}
+
+/**
  * Filters and expands Wave 1 scenarios according to CLI switches (`--only`, `--quick`,
  * `--seeds`, `--flags`, `--loops`, `--duration`).
  */
 export function selectScenarios(opts = {}) {
   let scenarios = buildWave1Scenarios();
+  const profileScenarios = (opts.profiles || opts.only) ? buildProfileScenarios() : [];
+  if (opts.profiles || opts.only) scenarios = scenarios.concat(profileScenarios);
+  if (opts.profiles && !opts.only) {
+    // `--profiles` alone: only the profile group (the Wave 1 matrix has its own run)
+    scenarios = profileScenarios;
+  }
 
   if (opts.only) {
     const wanted = String(opts.only)
@@ -272,16 +312,16 @@ export function selectScenarios(opts = {}) {
       .map((s) => s.trim())
       .filter(Boolean);
     const wantedSet = new Set(wanted);
-    scenarios = scenarios.filter((sc) =>
-      wantedSet.has(sc.id) ||
-      wantedSet.has(sc.presetId) ||
-      wantedSet.has(sc.group)
-    );
+    // the K9 `prof` group is matched by id, group or profile id only (never by its shared preset id,
+    // which would pull five slow camera runs into `--only fc-12-3p5-auto`)
+    scenarios = scenarios.filter((sc) => sc.group === 'prof'
+      ? (wantedSet.has(sc.id) || wantedSet.has(sc.group) || wantedSet.has(sc.profile))
+      : (wantedSet.has(sc.id) || wantedSet.has(sc.presetId) || wantedSet.has(sc.group)));
     if (scenarios.length === 0) {
       throw new Error(`No scenarios match --only=${opts.only}`);
     }
   } else if (opts.quick) {
-    scenarios = scenarios.filter((sc) => sc.quick);
+    scenarios = scenarios.filter((sc) => sc.quick && (opts.profiles || sc.group !== 'prof'));
   }
 
   const expanded = [];
@@ -300,12 +340,14 @@ export function selectScenarios(opts = {}) {
       }
 
       const loops = Number.isFinite(opts.loops) && opts.loops > 0 ? (opts.loops | 0) : sc.loops;
-      const fullDurationSec = Number((sc.loopDurationSec * loops).toFixed(4));
+      const fullDurationSec = sc.fixedDurationSec > 0
+        ? sc.fixedDurationSec
+        : Number((sc.loopDurationSec * loops).toFixed(4));
       let durationSec = Number.isFinite(opts.durationSec)
         ? opts.durationSec
         : fullDurationSec;
       if (opts.quick && !Number.isFinite(opts.durationSec) && !sc.quickFullLength) {
-        durationSec = Math.min(durationSec, QUICK_MAX_DURATION_SEC);
+        durationSec = Math.min(durationSec, sc.quickMaxDurationSec > 0 ? sc.quickMaxDurationSec : QUICK_MAX_DURATION_SEC);
       }
 
       const truncated = Boolean(opts.quick && durationSec + 1e-6 < fullDurationSec);

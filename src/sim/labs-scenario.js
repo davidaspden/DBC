@@ -9,6 +9,7 @@
  *     presetId, params: { pathId, distanceIn, hfovDeg, speedInPerSec, fpsCap, shutterMs, jitter,
  *                         width, height, loop, manualPose? },
  *     sceneOverrides: { shadowStrength, noiseStrength, glareStrength, fcMode?, label: { widthIn?, heightIn? } },
+ *     camera?: { profile }          // K9 camera profile id; absent or 'ideal' = no camera model
  *     flags: { worker: [names], sim: [names] },
  *     run: { seeds: [1], durationSec, flagSets: [{ id, worker: [names] }] },
  *     reported?: { [flagSetId]: { decoded, total, falsePositives, timeToAllSec } }   // what the page showed
@@ -20,6 +21,7 @@
 import { flagsToWorkerMask } from '../flags.js';
 import { getPreset, createSceneForPreset, applySimFcLabel } from './presets.js';
 import { PATH_DEFINITIONS } from './paths.js';
+import { isKnownCameraProfile } from './camera-model/profiles.js';
 
 export const SCENARIO_FORMAT = 'dbc-scenario';
 export const SCENARIO_VERSION = 1;
@@ -44,7 +46,7 @@ export function loopDurationSec(pathId, speedInPerSec) {
 /**
  * Builds the downloadable scenario object from the sim page state and the Labs panel selections.
  *
- * @param {{ presetId: string, state: object, workerFlags: string[], simFlags?: string[],
+ * @param {{ presetId: string, state: object, workerFlags: string[], simFlags?: string[], cameraProfile?: string,
  *           seeds?: number[], durationSec?: number, flagSets?: Array<{id:string, worker:string[]}>,
  *           reported?: object }} o
  */
@@ -90,6 +92,7 @@ export function buildScenarioJson(o) {
     },
   };
   if (pathId === 'manual' && st.manualPose) out.params.manualPose = { ...st.manualPose };
+  if (o.cameraProfile && o.cameraProfile !== 'ideal') out.camera = { profile: o.cameraProfile };
   if (o.reported) out.reported = o.reported;
   return out;
 }
@@ -108,6 +111,9 @@ export function validateScenarioJson(obj) {
   if (!PATH_DEFINITIONS.some((d) => d.id === p.pathId)) errors.push(`unknown pathId ${p.pathId}`);
   for (const k of ['distanceIn', 'hfovDeg', 'speedInPerSec', 'fpsCap', 'width', 'height']) {
     if (!(p[k] > 0)) errors.push(`params.${k} must be > 0`);
+  }
+  if (obj.camera && obj.camera.profile !== undefined && !isKnownCameraProfile(obj.camera.profile)) {
+    errors.push(`unknown camera.profile ${obj.camera.profile}`);
   }
   const run = obj.run || {};
   if (!Array.isArray(run.seeds) || run.seeds.length === 0) errors.push('run.seeds must be a non-empty array');
@@ -148,6 +154,7 @@ export function specFromScenarioJson(obj) {
     height: p.height | 0,
     loop: false,
     manualPose: p.manualPose ? { ...p.manualPose } : null,
+    profile: (obj.camera && obj.camera.profile) || 'ideal',
     durationSec: obj.run.durationSec,
     seeds: [...obj.run.seeds],
     flagSets: obj.run.flagSets.map((f) => ({ id: f.id, worker: [...f.worker], workerMask: workerMaskFromNames(f.worker) })),

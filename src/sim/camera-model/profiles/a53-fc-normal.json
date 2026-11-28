@@ -1,0 +1,52 @@
+{
+  "id": "a53-fc-normal",
+  "label": "A53, FC warehouse light, AE, 30 fps",
+  "description": "Fluorescent warehouse (about 400 lux), auto exposure about 16 ms at ISO about 180, 30 fps, 25 ms rolling readout, mild sharpening, JPEG quality 85, semi-gloss labels.",
+  "ideal": false,
+  "fidelity": "provisional",
+  "deviceFactorA53": 8.09,
+  "workerMsModel": 25,
+  "scheduler": {
+    "nominalFps": 30,
+    "jitterStdMs": 0.8,
+    "stallProb": 0.01,
+    "copyCostMsPerMp": 1.2,
+    "dropPolicy": "latest"
+  },
+  "exposure": {
+    "mode": "continuous",
+    "lux": 400,
+    "minFrameRate": 15,
+    "strictFrameRateCeiling": false,
+    "initialExposureMs": 16.67,
+    "initialIso": 180
+  },
+  "sensor": {
+    "iso": 180
+  },
+  "optics": {
+    "defocusEnabled": true,
+    "demosaicEnabled": true,
+    "demosaicStrength": 0.18,
+    "vignetteEnabled": true,
+    "vignetteStrength": 0.22,
+    "distortionEnabled": true,
+    "k1": -0.06,
+    "sharpenEnabled": true,
+    "sharpenAmount": 0.4,
+    "sharpenRadiusPx": 1.5
+  },
+  "rolling": {
+    "readoutMs": 25,
+    "bandCount": 4
+  },
+  "compress": {
+    "quality": 85
+  },
+  "glare": {
+    "gloss": 0.5,
+    "roomGlareEnabled": true,
+    "roomIntensity": 0.35,
+    "torchEnabled": false
+  }
+}

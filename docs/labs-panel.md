@@ -7,7 +7,7 @@
 - **Worker flags**: every flag in `src/flags.js` as a checkbox. Toggling writes the flag (same `dbc.flags` storage as the other pages) and the next frame message to the worker carries the new mask, so you can flip a flag while a run is playing. The mask is shown in the header.
 - **Sim / AR flags** (`src/sim/simflags.js`): checkboxes too, tagged `[headless]` (the flag has an effect in the CPU/headless run — today only `simFcLabel`) or `[no effect yet]` (the later T/M/L items add their behaviour behind these). None has a live effect in the WebGL page yet.
 - **Run parameters**: preset, path, distance, FOV, speed, fps, shutter, jitter, frame size, label — read from the page controls.
-- **Camera profile**: disabled row, waiting for K9.
+- **Camera profile** (K9): a select with the five profiles (`ideal` default). On the live page it post-processes the read-back luma (glare, optics, sensor noise, JPEG) and sets the frame period and shutter blur from the profile's exposure; the A/B run and the downloaded scenario use the full camera clock (rolling-shutter bands too). See `docs/camera-profiles.md`.
 - **Run A/B**: renders the current path on the CPU renderer and runs the real scanner worker code twice over the same frames and seed: A = every worker flag off, B = the flags as ticked. Shows decoded/total, false positives, time to all, worker p50 and the mask for both. "half size (fast)" runs at half resolution for a quick look (the numbers are then not what the downloaded scenario will reproduce).
 - **Download scenario JSON**: a `dbc-scenario` file (preset, path, camera, label/scene overrides, flags worker + sim, seeds, duration, and the A/B result the page showed if the run was full size).
 - **Reset all flags OFF**.

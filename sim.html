@@ -604,6 +604,7 @@
     import { readTapeSensors, registerTapePath } from './src/sim/tape-pose.js';
     import { enableMeasuredMotion, disableMeasuredMotion, getActiveMotionGenerator, legacyJitterModel, validateMotionModel } from './src/sim/measured-motion.js';
     import { mountLabsPanel } from './src/sim/labs-panel.js';
+    import { createCameraProfileHook } from './src/sim/camera-profile-hook.js';
 
     const glCanvas = document.getElementById('gl-canvas');
     const hudCanvas = document.getElementById('hud-canvas');
@@ -964,6 +965,9 @@
       miniCtx.fill();
     }
 
+    // K9: camera profile hook; 'ideal' (default) returns every input unchanged
+    const camHook = createCameraProfileHook();
+
     function renderAndDispatchOnce() {
       const cfg = {
         distanceIn: state.distanceIn,
@@ -983,10 +987,10 @@
       };
 
       // Build temporal sub-frame poses across shutter exposure interval for physical motion blur
-      const shutterSec = state.shutterMs * 0.001;
+      const shutterSec = camHook.shutterSec(state.shutterMs * 0.001);
       const poses = [];
       if (shutterSec > 0 && state.pathId !== 'manual' && !pose.finished) {
-        const subFrames = state.shutterMs >= 8 ? 7 : 5;
+        const subFrames = shutterSec * 1000 >= 8 ? 7 : 5;
         for (let k = 0; k < subFrames; k++) {
           const frac = (k / (subFrames - 1)) - 0.5; // -0.5 .. +0.5
           poses.push(applyStartOrient(sampleCameraPose(state.pathId, Math.max(0, state.simTimeSec + frac * shutterSec), cfg)));
@@ -1022,6 +1026,7 @@
         },
         lumaView
       );
+      if (canDispatch) camHook.apply(lumaView, state.width, state.height, pose, state.hfovDeg);
       const tCaptureMs = performance.now() - tCap0;
 
       if (canDispatch) {
@@ -1069,7 +1074,7 @@
       const dt = Math.min(0.1, (now - lastTickPerf) * 0.001);
       lastTickPerf = now;
 
-      const minIntervalMs = state.fpsCap > 0 ? (1000 / state.fpsCap) : 0;
+      const minIntervalMs = camHook.intervalMs(state.fpsCap > 0 ? (1000 / state.fpsCap) : 0);
       if (now - lastRenderPerf >= minIntervalMs - 0.5) {
         if (state.playing) {
           state.simTimeSec += dt;
@@ -1354,6 +1359,7 @@
       setSimFlag,
       getState: () => state,
       getPresetId: () => activePresetId,
+      onCameraProfile: (id) => camHook.setProfile(id),
       onChange: () => { refreshFlagsHud(); refreshTapeRow(); syncMotion(); },
       download: (name, text) => {
         const a = document.createElement('a');

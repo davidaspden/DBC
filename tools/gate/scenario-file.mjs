@@ -10,6 +10,7 @@ export function scenarioFromSpec(spec, flagSet) {
   const sc = createScenarioFromPreset(spec.presetId, {
     id: `file-${spec.presetId}-${flagSet.id}`,
     group: 'file',
+    profile: spec.profile || 'ideal',
     flagSet: flagSet.worker.length ? flagSet.worker.join(',') : 'off',
     seeds: spec.seeds,
     durationSec: spec.durationSec,
