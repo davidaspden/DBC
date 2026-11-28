@@ -1,16 +1,30 @@
 {
-  "commit": "ce8b33ed269838cb90d0e2893d9b8c02efe8b577",
-  "shortCommit": "ce8b33e",
+  "commit": "80cbcf502bd297b5a675f792c960d1aa86d74559",
+  "shortCommit": "80cbcf5",
   "renderer": "cpu",
   "status": "cpu-baseline",
   "fidelityStatus": "uncalibrated",
-  "note": "G3 flags-off CPU baseline (3 loops x 5 seeds, ideal profile) captured via tools/simgate.mjs. R6 GL parity upgrades status to gl-verified.",
+  "note": "F3/G3 flags-off CPU baseline (3 loops x 5 seeds, ideal profile) captured via tools/simgate at real HEAD 80cbcf5 with dynamic deviceFactorA53=8.0927. R6 GL parity upgrades status to gl-verified.",
   "device": "win32/x64 (lapdancer2026)",
+  "machine": {
+    "hostname": "LapDancer2026",
+    "platform": "win32",
+    "arch": "x64",
+    "cpuModel": "Intel(R) Core(TM) Ultra 9 275HX",
+    "cpuCount": 24,
+    "nodeVersion": "v24.19.0"
+  },
   "browser": "Node v24.19.0 (headless cpu-render.js)",
-  "dateUtc": "2026-11-28T09:46:59.069Z",
+  "dateUtc": "2026-11-28T15:16:37.907Z",
   "loops": 3,
   "seeds": 5,
-  "deviceFactorA53": 5.8,
+  "deviceFactorA53": 8.0927,
+  "deviceFactorMeta": {
+    "phoneMs": 38,
+    "nodeP50Ms": 4.695600000000013,
+    "nodeP95Ms": 5.089599999999962,
+    "iterations": 30
+  },
   "presets": {
     "a53-8-720": {
       "group": "original",
@@ -31,13 +45,13 @@
         12.3956
       ],
       "falsePositives": 0,
-      "workerMedianMs": 1.694,
-      "workerP95Ms": 2.22,
-      "workerWorstMs": 42.461,
-      "a53ScaledMedianMs": 9.825,
-      "a53ScaledP95Ms": 12.876,
+      "workerMedianMs": 1.63,
+      "workerP95Ms": 2.132,
+      "workerWorstMs": 41.301,
+      "a53ScaledMedianMs": 13.191,
+      "a53ScaledP95Ms": 17.254,
       "ppm": 2.343,
-      "deterministicHash": "c8f8b2e9f94d4080",
+      "deterministicHash": "ee2872b5856076a9",
       "timeTo16MedianSec": 12.3956
     },
     "a53-8-1080": {
@@ -59,13 +73,13 @@
         11.0879
       ],
       "falsePositives": 0,
-      "workerMedianMs": 3.507,
-      "workerP95Ms": 4.616,
-      "workerWorstMs": 76.601,
-      "a53ScaledMedianMs": 20.341,
-      "a53ScaledP95Ms": 26.773,
+      "workerMedianMs": 3.226,
+      "workerP95Ms": 4.248,
+      "workerWorstMs": 52.322,
+      "a53ScaledMedianMs": 26.107,
+      "a53ScaledP95Ms": 34.378,
       "ppm": 2.929,
-      "deterministicHash": "b39f16376ef6c608",
+      "deterministicHash": "afd8b4c0b52e2301",
       "timeTo16MedianSec": 11.0879
     },
     "tele-30": {
@@ -87,13 +101,13 @@
         10.0381
       ],
       "falsePositives": 0,
-      "workerMedianMs": 3.429,
-      "workerP95Ms": 4.238,
-      "workerWorstMs": 30.477,
-      "a53ScaledMedianMs": 19.888,
-      "a53ScaledP95Ms": 24.58,
+      "workerMedianMs": 3.234,
+      "workerP95Ms": 3.966,
+      "workerWorstMs": 28.299,
+      "a53ScaledMedianMs": 26.172,
+      "a53ScaledP95Ms": 32.096,
       "ppm": 3.6,
-      "deterministicHash": "ee74edb56cd5996d",
+      "deterministicHash": "734a0728f6692282",
       "timeTo16MedianSec": 10.0112
     },
     "full-wall": {
@@ -109,13 +123,13 @@
       "totalCells": 16,
       "timeTo16Sec": [],
       "falsePositives": 0,
-      "workerMedianMs": 7.547,
-      "workerP95Ms": 8.228,
-      "workerWorstMs": 63.165,
-      "a53ScaledMedianMs": 43.773,
-      "a53ScaledP95Ms": 47.722,
+      "workerMedianMs": 6.87,
+      "workerP95Ms": 7.72,
+      "workerWorstMs": 31.749,
+      "a53ScaledMedianMs": 55.597,
+      "a53ScaledP95Ms": 62.476,
       "ppm": 0.676,
-      "deterministicHash": "c108d49dd8e926d4"
+      "deterministicHash": "7537c52c63f0635a"
     },
     "fc-8-3p5": {
       "group": "fc",
@@ -136,13 +150,13 @@
         16.011
       ],
       "falsePositives": 0,
-      "workerMedianMs": 3.397,
-      "workerP95Ms": 4.129,
-      "workerWorstMs": 27.436,
-      "a53ScaledMedianMs": 19.703,
-      "a53ScaledP95Ms": 23.948,
+      "workerMedianMs": 3.16,
+      "workerP95Ms": 3.825,
+      "workerWorstMs": 25.849,
+      "a53ScaledMedianMs": 25.573,
+      "a53ScaledP95Ms": 30.955,
       "ppm": 3.166,
-      "deterministicHash": "a5a4586c83e1dec9",
+      "deterministicHash": "1d85c02963e1e0a7",
       "timeTo16MedianSec": 16.011
     },
     "fc-12-3p5-auto": {
@@ -164,13 +178,13 @@
         15.7802
       ],
       "falsePositives": 0,
-      "workerMedianMs": 3.148,
-      "workerP95Ms": 3.943,
-      "workerWorstMs": 26.15,
-      "a53ScaledMedianMs": 18.258,
-      "a53ScaledP95Ms": 22.869,
+      "workerMedianMs": 2.95,
+      "workerP95Ms": 3.678,
+      "workerWorstMs": 26.856,
+      "a53ScaledMedianMs": 23.873,
+      "a53ScaledP95Ms": 29.765,
       "ppm": 2.111,
-      "deterministicHash": "088f0f2d730cc891",
+      "deterministicHash": "a07b648f739c53e0",
       "timeTo16MedianSec": 15.795
     },
     "fc-tele-30-3p5": {
@@ -192,13 +206,13 @@
         12.1714
       ],
       "falsePositives": 12,
-      "workerMedianMs": 2.932,
-      "workerP95Ms": 3.723,
-      "workerWorstMs": 22.991,
-      "a53ScaledMedianMs": 17.006,
-      "a53ScaledP95Ms": 21.593,
+      "workerMedianMs": 2.981,
+      "workerP95Ms": 3.588,
+      "workerWorstMs": 23.085,
+      "a53ScaledMedianMs": 24.124,
+      "a53ScaledP95Ms": 29.037,
       "ppm": 2.594,
-      "deterministicHash": "22f055f6f3153829",
+      "deterministicHash": "7b80c05b88de617e",
       "timeTo16MedianSec": 12.1778
     },
     "fc-30-1x-fail": {
@@ -214,13 +228,13 @@
       "totalCells": 16,
       "timeTo16Sec": [],
       "falsePositives": 0,
-      "workerMedianMs": 3.487,
-      "workerP95Ms": 4.96,
-      "workerWorstMs": 24.291,
-      "a53ScaledMedianMs": 20.225,
-      "a53ScaledP95Ms": 28.768,
+      "workerMedianMs": 3.276,
+      "workerP95Ms": 4.8,
+      "workerWorstMs": 25.428,
+      "a53ScaledMedianMs": 26.512,
+      "a53ScaledP95Ms": 38.845,
       "ppm": 0.844,
-      "deterministicHash": "0d51775d78e0e723"
+      "deterministicHash": "dd5f7c248f332818"
     },
     "fc-jitter-hard": {
       "group": "fc",
@@ -241,13 +255,13 @@
         13.9143
       ],
       "falsePositives": 0,
-      "workerMedianMs": 3.065,
-      "workerP95Ms": 3.927,
-      "workerWorstMs": 30.413,
-      "a53ScaledMedianMs": 17.777,
-      "a53ScaledP95Ms": 22.777,
+      "workerMedianMs": 2.917,
+      "workerP95Ms": 3.711,
+      "workerWorstMs": 25.653,
+      "a53ScaledMedianMs": 23.606,
+      "a53ScaledP95Ms": 30.032,
       "ppm": 2.533,
-      "deterministicHash": "15fe27c678ac42a4",
+      "deterministicHash": "fa0b44c352ae81e5",
       "timeTo16MedianSec": 13.9274
     },
     "snake-h-fast-step": {
@@ -269,13 +283,13 @@
         15.8571
       ],
       "falsePositives": 0,
-      "workerMedianMs": 3.101,
-      "workerP95Ms": 3.965,
-      "workerWorstMs": 25.122,
-      "a53ScaledMedianMs": 17.986,
-      "a53ScaledP95Ms": 22.997,
+      "workerMedianMs": 3.043,
+      "workerP95Ms": 3.881,
+      "workerWorstMs": 24.742,
+      "a53ScaledMedianMs": 24.626,
+      "a53ScaledP95Ms": 31.408,
       "ppm": 2.111,
-      "deterministicHash": "bed4b4ceffcc0085",
+      "deterministicHash": "dad39857e3415924",
       "timeTo16MedianSec": 15.8291
     }
   }
