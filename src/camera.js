@@ -128,6 +128,109 @@ export async function setTorch(track, enabled) {
 }
 
 /**
+ * C4: Reads live exposure/ISO capabilities and current settings from a video track.
+ * Safe on devices that do not expose Image Capture exposure keys.
+ *
+ * @param {MediaStreamTrack | null} track
+ */
+export function getExposureInfo(track) {
+  const empty = {
+    supported: false,
+    manualSupported: false,
+    mode: 'auto',
+    exposureTime: null,
+    exposureTimeSec: null,
+    min: null,
+    max: null,
+    step: null,
+    iso: null,
+    isoMin: null,
+    isoMax: null,
+    compMin: null,
+    compMax: null,
+  };
+  if (!track) return empty;
+  const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+  const sets = typeof track.getSettings === 'function' ? track.getSettings() : {};
+  const modes = Array.isArray(caps.exposureMode) ? caps.exposureMode : [];
+  const expCap = caps.exposureTime && typeof caps.exposureTime === 'object' ? caps.exposureTime : null;
+  const isoCap = caps.iso && typeof caps.iso === 'object' ? caps.iso : null;
+  const compCap = caps.exposureCompensation && typeof caps.exposureCompensation === 'object' ? caps.exposureCompensation : null;
+
+  const rawExp = typeof sets.exposureTime === 'number' ? sets.exposureTime : null;
+  // W3C Image Capture spec reports exposureTime in 100-microsecond units (10,000 = 1 s)
+  const expSec = rawExp !== null ? rawExp * 1e-4 : null;
+
+  return {
+    supported: Boolean(expCap || modes.length > 0 || compCap),
+    manualSupported: Boolean(modes.includes('manual') && expCap),
+    mode: sets.exposureMode || 'auto',
+    exposureTime: rawExp,
+    exposureTimeSec: expSec,
+    min: expCap ? expCap.min : null,
+    max: expCap ? expCap.max : null,
+    step: expCap ? (expCap.step || 1) : null,
+    iso: typeof sets.iso === 'number' ? sets.iso : null,
+    isoMin: isoCap ? isoCap.min : null,
+    isoMax: isoCap ? isoCap.max : null,
+    compMin: compCap ? compCap.min : null,
+    compMax: compCap ? compCap.max : null,
+  };
+}
+
+/**
+ * C4: Applies manual fast shutter (two-step: mode first, then exposureTime & ISO)
+ * or falls back to minimum exposureCompensation when manual mode is unavailable.
+ *
+ * @param {MediaStreamTrack | null} track
+ * @param {{ targetSec?: number, enableManual?: boolean }} [opts]
+ */
+export async function setExposure(track, opts = {}) {
+  if (!track || typeof track.applyConstraints !== 'function') {
+    return { ok: false, mode: 'unavailable', info: getExposureInfo(track) };
+  }
+  const info = getExposureInfo(track);
+  const targetSec = opts.targetSec || (1 / 500);
+  const wantManual = opts.enableManual !== false;
+
+  if (!wantManual) {
+    try {
+      await track.applyConstraints({ advanced: [{ exposureMode: 'continuous' }] });
+    } catch {}
+    return { ok: true, mode: 'auto', info: getExposureInfo(track) };
+  }
+
+  if (info.manualSupported && info.min !== null && info.max !== null) {
+    // Convert target seconds to 100-microsecond units and clamp/snap to HAL step
+    const rawUnits = targetSec * 1e4;
+    const step = info.step || 1;
+    const clamped = Math.min(info.max, Math.max(info.min, info.min + Math.round((rawUnits - info.min) / step) * step));
+    const adv = { exposureTime: clamped };
+    if (info.isoMin !== null && info.isoMax !== null) {
+      // Highest ISO within first 75% of range to maintain brightness at short shutter
+      adv.iso = Math.round(info.isoMin + (info.isoMax - info.isoMin) * 0.75);
+    }
+    try {
+      // Two-step apply per Android Chrome Camera2 HAL requirement
+      await track.applyConstraints({ advanced: [{ exposureMode: 'manual' }] });
+      await track.applyConstraints({ advanced: [adv] });
+      return { ok: true, mode: 'manual', info: getExposureInfo(track) };
+    } catch (err) {
+      console.warn('[camera] Manual exposure constraint failed:', err);
+    }
+  }
+
+  if (info.compMin !== null) {
+    try {
+      await track.applyConstraints({ advanced: [{ exposureCompensation: info.compMin }] });
+      return { ok: true, mode: 'comp-min', info: getExposureInfo(track) };
+    } catch {}
+  }
+
+  return { ok: false, mode: 'auto', info: getExposureInfo(track) };
+}
+
+/**
  * Stops all active tracks on a MediaStream cleanly.
  * @param {MediaStream | null} stream
  */
