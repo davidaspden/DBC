@@ -7,7 +7,8 @@
  * recorded payloads, and exits non-zero if any golden payload regresses.
  *
  * Usage:
- *   node tools/replay.mjs path/to/tape.dbct [--flags=vertFallback,cribMatch]
+ *   node tools/replay.mjs path/to/tape.dbct [--flags=vertFallback,cribMatch] [--vertical]
+ *   (flag-set scoring over tapes/*.dbct with the superset rule: tools/gate/tape-score.mjs)
  */
 
 import { readFileSync } from 'node:fs';
@@ -56,7 +57,13 @@ export function parseTapeBytes(bytes) {
 /**
  * Replays parsed tape frames through `processFrameMulti` and returns accuracy & timing summary.
  */
-export function replayTape(parsed, workerFlagsMask = 0) {
+export function replayTape(parsed, workerFlagsMask = 0, opts = {}) {
+  // T2: `opts.vertical` (true/false) sets the scanline stage's vertical mode like the live worker does
+  // (undefined keeps the old behaviour: leave it untouched). Extra result fields are additive.
+  const vertical = opts.vertical;
+  const firstSeen = {};
+  const payloadFrameCounts = {};
+  const t0Ms = parsed.frames.length ? Number(parsed.frames[0].meta.tFrameMs) || 0 : 0;
   let state = null;
   const result = createPipelineResult();
   const times = [];
@@ -72,6 +79,7 @@ export function replayTape(parsed, workerFlagsMask = 0) {
       state = createPipelineState(w, h);
     }
     state.flags = workerFlagsMask | 0;
+    if (vertical !== undefined) state.scanline.mode = vertical ? 1 : 0;
     const t0 = performance.now();
     processFrameMulti(frame.luma, w, h, state, result, true);
     times.push(performance.now() - t0);
@@ -79,6 +87,17 @@ export function replayTape(parsed, workerFlagsMask = 0) {
     const dets = extractMultiDetections(state);
     const gotSet = new Set(dets.map((d) => d.payload));
     const exp = Array.isArray(frame.meta.expectedPayloads) ? frame.meta.expectedPayloads : [];
+    for (const p of gotSet) {
+      payloadFrameCounts[p] = (payloadFrameCounts[p] || 0) + 1;
+      if (firstSeen[p] === undefined) {
+        const tMs = Number(frame.meta.tFrameMs);
+        firstSeen[p] = {
+          frameIndex: times.length - 1,
+          frameId: frame.meta.frameId,
+          tSec: Number.isFinite(tMs) ? Math.round(((tMs - t0Ms) / 1000) * 1e4) / 1e4 : null,
+        };
+      }
+    }
 
     for (const p of exp) {
       goldenTotal++;
@@ -104,6 +123,41 @@ export function replayTape(parsed, workerFlagsMask = 0) {
     p50Ms: Math.round(p50 * 100) / 100,
     p95Ms: Math.round(p95 * 100) / 100,
     pass,
+    // T2 additions
+    maxMs: Math.round((times.length ? times[times.length - 1] : 0) * 100) / 100,
+    decodedPayloads: Object.keys(payloadFrameCounts).sort(),
+    payloadFrameCounts,
+    firstSeen,
+  };
+}
+
+/**
+ * T2: the capture conditions a tape carries, `null` where the tape does not say (PP2 writes
+ * fps/exposure/ISO into the tape; older tapes have none). Looks at the header meta, then the frame metas
+ * (`camera` block from the AR recorder, `fps`), then derives fps from the frame timestamps.
+ */
+export function describeTapeCamera(parsed) {
+  const hm = (parsed.header && parsed.header.meta) || {};
+  const cam = hm.camera || (parsed.frames.length && parsed.frames[0].meta.camera) || {};
+  const pick = (...vals) => {
+    for (const v of vals) if (v !== undefined && v !== null && Number.isFinite(Number(v))) return Number(v);
+    return null;
+  };
+  let derivedFps = null;
+  const fr = parsed.frames;
+  if (fr.length >= 2) {
+    const dt = (Number(fr[fr.length - 1].meta.tFrameMs) - Number(fr[0].meta.tFrameMs)) / (fr.length - 1);
+    if (Number.isFinite(dt) && dt > 0) derivedFps = Math.round((1000 / dt) * 100) / 100;
+  }
+  return {
+    fps: pick(cam.fps, hm.fps, fr.length ? fr[0].meta.fps : null),
+    derivedFps,
+    exposureMs: pick(cam.exposureMs, hm.exposureMs),
+    // MediaTrackSettings.exposureTime is browser-defined units (Chrome: 100 us), so it is passed through raw
+    exposureTimeRaw: pick(cam.exposureTime),
+    iso: pick(cam.iso, hm.iso),
+    width: fr.length ? fr[0].meta.width | 0 : null,
+    height: fr.length ? fr[0].meta.height | 0 : null,
   };
 }
 
@@ -121,7 +175,7 @@ if (typeof process !== 'undefined' && process.argv[1] && process.argv[1].endsWit
     : 0;
   const bytes = readFileSync(tapePath);
   const parsed = parseTapeBytes(bytes);
-  const rep = replayTape(parsed, mask);
+  const rep = replayTape(parsed, mask, args.includes('--vertical') ? { vertical: true } : {});
   console.log(
     `Replay ${tapePath}: frames=${rep.frameCount} golden=${rep.goldenMatched}/${rep.goldenTotal} ` +
     `extra=${rep.extraDecoded} p50=${rep.p50Ms}ms p95=${rep.p95Ms}ms -> ${rep.pass ? 'PASS' : 'FAIL'}`

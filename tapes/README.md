@@ -72,3 +72,14 @@ node tools/replay.mjs tapes/<name>.dbct --flags=verticalMode,cribMatch,requirePr
 ```
 
 Flags-on replay must decode a superset of the flags-off payload set with zero new wrong payloads (verified against `labels` in the sidecar when present).
+
+## Scoring tapes (T2, gate scenario S15)
+
+```bash
+node tools/gate/tape-score.mjs                       # every tapes/*.dbct, flag sets off, W-fc, W-all
+node tools/gate/tape-score.mjs tapes/<name>.dbct --sets off,W-fc,verticalMode,cribMatch
+node tools/gate/tape-score.mjs --json out.json       # save a result; later: --baseline out.json
+node tools/gate/tape-score.mjs --golden              # also require each frame's golden payloads to decode again
+```
+
+Per tape and flag set it prints the decode set, time to first decode per payload (tape clock), false-positive detections, worker ms (p50/p95/max) and the tape's recorded fps / exposure / ISO (`unknown` when the tape has none). Exit code 1 on a violation. See `docs/tape-score.md`.
