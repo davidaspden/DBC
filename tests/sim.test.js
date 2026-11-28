@@ -14,12 +14,21 @@ import {
   WALL_HEIGHT_IN,
   PATH_DEFINITIONS,
   createWallCells,
+  buildWallPolylines,
   computeOptics,
   sampleCameraPose,
   mat4Perspective,
   mat4CameraView,
   mat4Multiply,
 } from '../src/sim/paths.js';
+import { createScene, TOTE_ORIENTATIONS } from '../src/sim/scene.js';
+import { renderFrame } from '../src/sim/cpu-render.js';
+import {
+  createPipelineState,
+  createPipelineResult,
+  processFrameMulti,
+  extractMultiDetections,
+} from '../src/worker/scanner.worker.js';
 import { encodeCode128 } from './harness.js';
 
 let passed = 0;
@@ -141,6 +150,92 @@ test('F2 snake-h has zero along-scan blur on row passes while snake-v has full a
   assert.ok(pH.alongScanSpeedInPerSec < 0.01, `horizontal row pass should have ~0 along-scan speed, got ${pH.alongScanSpeedInPerSec}`);
   assert.ok(pV.alongScanSpeedInPerSec > 19.5, `vertical column pass should have full along-scan speed, got ${pV.alongScanSpeedInPerSec}`);
   assert.ok(PATH_DEFINITIONS.some((p) => p.id === 'snake-h-fast-step'));
+});
+
+test('L3 pitchX=16, pitchY=14, toteOrientation & labelOffset parameterise wall, paths and rendering cleanly', () => {
+  assert.equal(TOTE_ORIENTATIONS['14Wx16H'].widthIn, 14);
+  assert.equal(TOTE_ORIENTATIONS['16Wx14H'].widthIn, 16);
+
+  // 16Wx14H orientation derives 64x56 wall and cell centers (-24, +21) .. (+24, -21)
+  const scene16x14 = createScene({ toteOrientation: '16Wx14H' });
+  assert.equal(scene16x14.toteOrientation, '16Wx14H');
+  assert.equal(scene16x14.tote.widthIn, 16);
+  assert.equal(scene16x14.tote.heightIn, 14);
+  assert.equal(scene16x14.pitchXIn, 16);
+  assert.equal(scene16x14.pitchYIn, 14);
+  assert.equal(scene16x14.wallWidthIn, 64);
+  assert.equal(scene16x14.wallHeightIn, 56);
+  assert.equal(scene16x14.cells[0].cx, -24);
+  assert.equal(scene16x14.cells[0].cy, 21);
+  assert.equal(scene16x14.cells[15].cx, 24);
+  assert.equal(scene16x14.cells[15].cy, -21);
+
+  // Pitch can be set independently of outer tote size (e.g. measured interlock pitch)
+  const customPitch = createScene({
+    toteOrientation: 'custom',
+    tote: { widthIn: 14, heightIn: 16 },
+    pitchX: 14.5,
+    pitchY: 15.5,
+    labelOffset: { meanXIn: 0.25, meanYIn: -0.5, sigmaXIn: 0.1, sigmaYIn: 0.1, seed: 99 },
+  });
+  assert.equal(customPitch.tote.widthIn, 14);
+  assert.equal(customPitch.tote.heightIn, 16);
+  assert.equal(customPitch.pitchXIn, 14.5);
+  assert.equal(customPitch.pitchYIn, 15.5);
+  assert.equal(customPitch.wallWidthIn, 58);
+  assert.equal(customPitch.wallHeightIn, 62);
+  assert.ok(Number.isFinite(customPitch.cells[0].labelOffsetXIn));
+  assert.ok(Math.abs(customPitch.cells[0].labelCx - (customPitch.cells[0].cx + customPitch.cells[0].labelOffsetXIn)) < 1e-9);
+
+  // Deterministic seeded labelOffset
+  const customPitchRepeat = createScene({
+    toteOrientation: 'custom',
+    tote: { widthIn: 14, heightIn: 16 },
+    pitchX: 14.5,
+    pitchY: 15.5,
+    labelOffset: { meanXIn: 0.25, meanYIn: -0.5, sigmaXIn: 0.1, sigmaYIn: 0.1, seed: 99 },
+  });
+  assert.equal(customPitch.cells[7].labelOffsetXIn, customPitchRepeat.cells[7].labelOffsetXIn);
+  assert.equal(customPitch.cells[7].labelOffsetYIn, customPitchRepeat.cells[7].labelOffsetYIn);
+
+  // buildWallPolylines + sampleCameraPose sweep the true 16x14 cell centers
+  const polys = buildWallPolylines(scene16x14);
+  assert.equal(polys['snake-h'].points[0].x, -26); // cx(-24) - 2 lead-in
+  assert.equal(polys['snake-h'].points[0].y, 21);  // cy(+21)
+  const poseStart = sampleCameraPose('snake-h', 0, {
+    distanceIn: 10,
+    speedInPerSec: 18,
+    jitter: 0,
+    loop: false,
+    scene: scene16x14,
+  });
+  assert.equal(poseStart.x, -26);
+  assert.equal(poseStart.y, 21);
+
+  // Legacy defaults (14x16, zero offset) remain identical
+  const poseDef = sampleCameraPose('snake-h', 0, { distanceIn: 10, speedInPerSec: 18, jitter: 0, loop: false });
+  assert.equal(poseDef.x, -23);
+  assert.equal(poseDef.y, 24);
+
+  // Render & decode a cell on the 16x14 wall to verify end-to-end compatibility
+  const width = 1280;
+  const height = 720;
+  const out = new Uint8Array(width * height);
+  const cell = scene16x14.cells[5]; // R2C2 at (-8, +7)
+  assert.equal(cell.cx, -8);
+  assert.equal(cell.cy, 7);
+  renderFrame(scene16x14, [{ x: cell.cx, y: cell.cy, z: 10, yawDeg: 0, pitchDeg: 0, rollDeg: 0 }], {
+    width,
+    height,
+    hfovDeg: 70.7,
+    seed: 1,
+  }, out);
+  const state = createPipelineState(width, height);
+  const res = createPipelineResult();
+  processFrameMulti(out, width, height, state, res, false);
+  const dets = extractMultiDetections(state);
+  assert.ok(dets.length >= 1, 'expected decode on 16x14 pitch wall');
+  assert.equal(dets[0].payload, cell.payload);
 });
 
 console.log(`All ${passed} WebGL simulator tests passed.`);

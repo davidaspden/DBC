@@ -14,6 +14,7 @@ import {
   LEGACY_PAYLOAD_FN,
   FC_12_PAYLOAD_FN,
   computeCode128Modules,
+  mulberry32,
 } from './label.js';
 
 export const TOTE_WIDTH_IN = 14;
@@ -32,19 +33,31 @@ const RAD2DEG = 180 / Math.PI;
  * Generates tote wall cell definitions (row 0 = top, col 0 = left).
  * Default (`fcMode = false`): 4x4 of 14x16 in totes, 16-char Code 128B (`TOTE-R1C1-000101`, 231 modules, 6 in).
  * FC realism mode (`fcMode = true`): 12-char Code 128B (`tsX11A00001B`, 187 modules, 3.5 in).
- * Accepts optional `cols`, `rows`, `pitchXIn`, `pitchYIn`, and `label.payloadFn`.
+ * Accepts optional `cols`, `rows`, `pitchXIn`/`pitchX`, `pitchYIn`/`pitchY`, `labelOffset`, and `label.payloadFn`.
  */
 export function createWallCells(opts = {}) {
   const fcMode = Boolean(opts && opts.fcMode);
   const cols = (opts && opts.cols > 0) ? (opts.cols | 0) : GRID_COLS;
   const rows = (opts && opts.rows > 0) ? (opts.rows | 0) : GRID_ROWS;
-  const pitchXIn = (opts && opts.pitchXIn > 0) ? opts.pitchXIn : TOTE_WIDTH_IN;
-  const pitchYIn = (opts && opts.pitchYIn > 0) ? opts.pitchYIn : TOTE_HEIGHT_IN;
+  const rawPitchX = opts ? (opts.pitchXIn ?? opts.pitchX) : undefined;
+  const rawPitchY = opts ? (opts.pitchYIn ?? opts.pitchY) : undefined;
+  const pitchXIn = (rawPitchX > 0) ? rawPitchX : TOTE_WIDTH_IN;
+  const pitchYIn = (rawPitchY > 0) ? rawPitchY : TOTE_HEIGHT_IN;
   const wallWidthIn = pitchXIn * cols;
   const wallHeightIn = pitchYIn * rows;
   const payloadFn = (opts && opts.label && typeof opts.label.payloadFn === 'function')
     ? opts.label.payloadFn
     : (fcMode ? FC_12_PAYLOAD_FN : LEGACY_PAYLOAD_FN);
+
+  const off = opts && opts.labelOffset ? opts.labelOffset : null;
+  const meanX = off && Number.isFinite(off.meanXIn) ? off.meanXIn : 0;
+  const meanY = off && Number.isFinite(off.meanYIn) ? off.meanYIn : 0;
+  const sigmaX = off && Number.isFinite(off.sigmaXIn) && off.sigmaXIn > 0 ? off.sigmaXIn : 0;
+  const sigmaY = off && Number.isFinite(off.sigmaYIn) && off.sigmaYIn > 0 ? off.sigmaYIn : 0;
+  const hasOffset = meanX !== 0 || meanY !== 0 || sigmaX > 0 || sigmaY > 0;
+  const rng = hasOffset
+    ? mulberry32(((off.seed ?? opts.seed ?? 1) >>> 0) ^ 0x3c6ef372)
+    : null;
 
   const cells = [];
   for (let r = 0; r < rows; r++) {
@@ -52,7 +65,23 @@ export function createWallCells(opts = {}) {
       const idx = r * cols + c;
       const cx = -wallWidthIn * 0.5 + (c + 0.5) * pitchXIn;
       const cy = wallHeightIn * 0.5 - (r + 0.5) * pitchYIn;
-      cells.push({
+      let labelOffsetXIn = 0;
+      let labelOffsetYIn = 0;
+      if (hasOffset) {
+        let gx = 0;
+        let gy = 0;
+        if (sigmaX > 0 || sigmaY > 0) {
+          const u1 = Math.max(1e-7, rng());
+          const u2 = rng();
+          const mag = Math.sqrt(-2.0 * Math.log(u1));
+          const ang = 2.0 * Math.PI * u2;
+          gx = mag * Math.cos(ang);
+          gy = mag * Math.sin(ang);
+        }
+        labelOffsetXIn = meanX + sigmaX * gx;
+        labelOffsetYIn = meanY + sigmaY * gy;
+      }
+      const cell = {
         index: idx,
         row: r,
         col: c,
@@ -60,7 +89,14 @@ export function createWallCells(opts = {}) {
         payload: payloadFn(r, c, idx),
         cx,
         cy,
-      });
+      };
+      if (hasOffset) {
+        cell.labelOffsetXIn = labelOffsetXIn;
+        cell.labelOffsetYIn = labelOffsetYIn;
+        cell.labelCx = cx + labelOffsetXIn;
+        cell.labelCy = cy + labelOffsetYIn;
+      }
+      cells.push(cell);
     }
   }
   return cells;
@@ -178,60 +214,118 @@ function samplePolyline(poly, dist) {
   };
 }
 
-function cellCenter(r, c) {
+function cellCenterFor(r, c, cols, rows, pitchXIn, pitchYIn) {
+  const wallW = cols * pitchXIn;
+  const wallH = rows * pitchYIn;
   return {
-    x: -WALL_WIDTH_IN * 0.5 + (c + 0.5) * TOTE_WIDTH_IN,
-    y: WALL_HEIGHT_IN * 0.5 - (r + 0.5) * TOTE_HEIGHT_IN,
+    x: -wallW * 0.5 + (c + 0.5) * pitchXIn,
+    y: wallH * 0.5 - (r + 0.5) * pitchYIn,
   };
 }
 
-// Precompute canonical wall-space waypoints for each path mode
-const SNAKE_H_POLY = buildPolyline([
-  // Row 1 L->R (slight 2 in lead-in/out so edge labels fully cross center)
-  { x: cellCenter(0, 0).x - 2, y: cellCenter(0, 0).y },
-  { x: cellCenter(0, 3).x + 2, y: cellCenter(0, 3).y },
-  // Drop to Row 2 R->L
-  { x: cellCenter(1, 3).x + 2, y: cellCenter(1, 3).y },
-  { x: cellCenter(1, 0).x - 2, y: cellCenter(1, 0).y },
-  // Drop to Row 3 L->R
-  { x: cellCenter(2, 0).x - 2, y: cellCenter(2, 0).y },
-  { x: cellCenter(2, 3).x + 2, y: cellCenter(2, 3).y },
-  // Drop to Row 4 R->L
-  { x: cellCenter(3, 3).x + 2, y: cellCenter(3, 3).y },
-  { x: cellCenter(3, 0).x - 2, y: cellCenter(3, 0).y },
-]);
+/**
+ * L3 — Builds wall-space path polylines parameterised by `(cols, rows, pitchXIn, pitchYIn)`.
+ * Defaults match the legacy 4x4 14x16 in wall bit-for-bit.
+ *
+ * @param {{ cols?: number, rows?: number, pitchXIn?: number, pitchYIn?: number, pitchX?: number, pitchY?: number }} [geom]
+ */
+export function buildWallPolylines(geom = {}) {
+  const cols = (geom && geom.cols > 0) ? (geom.cols | 0) : GRID_COLS;
+  const rows = (geom && geom.rows > 0) ? (geom.rows | 0) : GRID_ROWS;
+  const rawPitchX = geom ? (geom.pitchXIn ?? geom.pitchX) : undefined;
+  const rawPitchY = geom ? (geom.pitchYIn ?? geom.pitchY) : undefined;
+  const pitchXIn = (rawPitchX > 0) ? rawPitchX : TOTE_WIDTH_IN;
+  const pitchYIn = (rawPitchY > 0) ? rawPitchY : TOTE_HEIGHT_IN;
+  const cc = (r, c) => cellCenterFor(r, c, cols, rows, pitchXIn, pitchYIn);
+  const lastC = cols - 1;
+  const lastR = rows - 1;
 
-const SNAKE_V_POLY = buildPolyline([
-  // Col 1 T->B
-  { x: cellCenter(0, 0).x, y: cellCenter(0, 0).y + 2 },
-  { x: cellCenter(3, 0).x, y: cellCenter(3, 0).y - 2 },
-  // Col 2 B->T
-  { x: cellCenter(3, 1).x, y: cellCenter(3, 1).y - 2 },
-  { x: cellCenter(0, 1).x, y: cellCenter(0, 1).y + 2 },
-  // Col 3 T->B
-  { x: cellCenter(0, 2).x, y: cellCenter(0, 2).y + 2 },
-  { x: cellCenter(3, 2).x, y: cellCenter(3, 2).y - 2 },
-  // Col 4 B->T
-  { x: cellCenter(3, 3).x, y: cellCenter(3, 3).y - 2 },
-  { x: cellCenter(0, 3).x, y: cellCenter(0, 3).y + 2 },
-]);
+  // Snake horizontal across all rows
+  const snakeHPts = [];
+  for (let r = 0; r < rows; r++) {
+    if ((r & 1) === 0) {
+      snakeHPts.push({ x: cc(r, 0).x - 2, y: cc(r, 0).y });
+      snakeHPts.push({ x: cc(r, lastC).x + 2, y: cc(r, lastC).y });
+    } else {
+      snakeHPts.push({ x: cc(r, lastC).x + 2, y: cc(r, lastC).y });
+      snakeHPts.push({ x: cc(r, 0).x - 2, y: cc(r, 0).y });
+    }
+  }
+  const snakeH = buildPolyline(snakeHPts);
 
-const ROW_SWEEP_POLY = buildPolyline([
-  { x: cellCenter(1, 0).x - 3, y: cellCenter(1, 0).y },
-  { x: cellCenter(1, 3).x + 3, y: cellCenter(1, 3).y },
-  { x: cellCenter(1, 0).x - 3, y: cellCenter(1, 0).y },
-]);
+  // Snake vertical across all columns
+  const snakeVPts = [];
+  for (let c = 0; c < cols; c++) {
+    if ((c & 1) === 0) {
+      snakeVPts.push({ x: cc(0, c).x, y: cc(0, c).y + 2 });
+      snakeVPts.push({ x: cc(lastR, c).x, y: cc(lastR, c).y - 2 });
+    } else {
+      snakeVPts.push({ x: cc(lastR, c).x, y: cc(lastR, c).y - 2 });
+      snakeVPts.push({ x: cc(0, c).x, y: cc(0, c).y + 2 });
+    }
+  }
+  const snakeV = buildPolyline(snakeVPts);
 
-const DIAGONAL_POLY = buildPolyline([
-  { x: cellCenter(0, 0).x - 2, y: cellCenter(0, 0).y + 1 },
-  { x: cellCenter(1, 3).x + 2, y: cellCenter(1, 3).y - 1 },
-  { x: cellCenter(0, 3).x + 2, y: cellCenter(0, 3).y + 1 },
-  { x: cellCenter(2, 0).x - 2, y: cellCenter(2, 0).y - 1 },
-  { x: cellCenter(1, 0).x - 2, y: cellCenter(1, 0).y },
-  { x: cellCenter(3, 3).x + 2, y: cellCenter(3, 3).y - 1 },
-  { x: cellCenter(2, 3).x + 2, y: cellCenter(2, 3).y },
-  { x: cellCenter(3, 0).x - 2, y: cellCenter(3, 0).y - 1 },
-]);
+  const sweepRow = rows > 1 ? 1 : 0;
+  const rowSweep = buildPolyline([
+    { x: cc(sweepRow, 0).x - 3, y: cc(sweepRow, 0).y },
+    { x: cc(sweepRow, lastC).x + 3, y: cc(sweepRow, lastC).y },
+    { x: cc(sweepRow, 0).x - 3, y: cc(sweepRow, 0).y },
+  ]);
+
+  const r1 = Math.min(1, lastR);
+  const r2 = Math.min(2, lastR);
+  const diagonal = buildPolyline([
+    { x: cc(0, 0).x - 2, y: cc(0, 0).y + 1 },
+    { x: cc(r1, lastC).x + 2, y: cc(r1, lastC).y - 1 },
+    { x: cc(0, lastC).x + 2, y: cc(0, lastC).y + 1 },
+    { x: cc(r2, 0).x - 2, y: cc(r2, 0).y - 1 },
+    { x: cc(r1, 0).x - 2, y: cc(r1, 0).y },
+    { x: cc(lastR, lastC).x + 2, y: cc(lastR, lastC).y - 1 },
+    { x: cc(r2, lastC).x + 2, y: cc(r2, lastC).y },
+    { x: cc(lastR, 0).x - 2, y: cc(lastR, 0).y - 1 },
+  ]);
+
+  return {
+    'snake-h': snakeH,
+    'snake-h-fast-step': snakeH,
+    'pan-snake': snakeH,
+    'snake-v': snakeV,
+    'row-sweep': rowSweep,
+    'diagonal-tilt': diagonal,
+  };
+}
+
+// Precompute canonical default 4x4 14x16 in wall-space waypoints
+const DEFAULT_POLYLINES = buildWallPolylines();
+const SNAKE_H_POLY = DEFAULT_POLYLINES['snake-h'];
+const SNAKE_V_POLY = DEFAULT_POLYLINES['snake-v'];
+const ROW_SWEEP_POLY = DEFAULT_POLYLINES['row-sweep'];
+const DIAGONAL_POLY = DEFAULT_POLYLINES['diagonal-tilt'];
+
+const polylineCache = new Map();
+function getPolylinesForConfig(cfg) {
+  const src = (cfg && cfg.scene) ? cfg.scene : cfg;
+  if (!src) return DEFAULT_POLYLINES;
+  const cols = (src.cols > 0) ? (src.cols | 0) : GRID_COLS;
+  const rows = (src.rows > 0) ? (src.rows | 0) : GRID_ROWS;
+  const rawPitchX = src.pitchXIn ?? src.pitchX;
+  const rawPitchY = src.pitchYIn ?? src.pitchY;
+  const pitchXIn = (rawPitchX > 0) ? rawPitchX : TOTE_WIDTH_IN;
+  const pitchYIn = (rawPitchY > 0) ? rawPitchY : TOTE_HEIGHT_IN;
+
+  if (cols === GRID_COLS && rows === GRID_ROWS && pitchXIn === TOTE_WIDTH_IN && pitchYIn === TOTE_HEIGHT_IN) {
+    return DEFAULT_POLYLINES;
+  }
+  const key = `${cols}x${rows}:${pitchXIn}x${pitchYIn}`;
+  let cached = polylineCache.get(key);
+  if (!cached) {
+    cached = buildWallPolylines({ cols, rows, pitchXIn, pitchYIn });
+    if (polylineCache.size > 32) polylineCache.clear();
+    polylineCache.set(key, cached);
+  }
+  return cached;
+}
 
 export const PATH_DEFINITIONS = [
   { id: 'snake-h', label: 'Snake Horizontal (4 rows)', lengthIn: SNAKE_H_POLY.totalLength },
@@ -280,10 +374,8 @@ export function sampleCameraPose(pathId, tSec, cfg) {
     };
   }
 
-  let poly = SNAKE_H_POLY;
-  if (pathId === 'snake-v') poly = SNAKE_V_POLY;
-  else if (pathId === 'row-sweep') poly = ROW_SWEEP_POLY;
-  else if (pathId === 'diagonal-tilt') poly = DIAGONAL_POLY;
+  const polys = getPolylinesForConfig(cfg);
+  const poly = polys[pathId] || polys['snake-h'];
 
   const durationSec = poly.totalLength / speed;
   const rawDist = tSec * speed;
