@@ -15,11 +15,13 @@
 
 import { createRoiState, estimateRoi, selectRoiCluster, MAX_ROI_CLUSTERS } from './roi.js';
 import {
-  createScanlineState,
-  MAX_SCANLINE_LEN,
   FLAG_VERT_FALLBACK,
   FLAG_VERTICAL_MODE,
   FLAG_FLOW_ON,
+} from './flagbits.js';
+import {
+  createScanlineState,
+  MAX_SCANLINE_LEN,
   buildScanlinePlan,
   sampleScanlineLuma,
   extractRunsFromScanline,

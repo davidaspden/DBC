@@ -4,6 +4,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   FLAG_DEFS,
   WORKER_FLAG_BITS,
@@ -13,6 +16,7 @@ import {
   toWorkerMask,
   describe,
 } from '../src/flags.js';
+import * as flagBits from '../src/worker/flagbits.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -74,6 +78,44 @@ test('Unknown flag names in URL/storage are ignored safely and describe() return
   const desc = describe();
   assert.equal(desc.length, FLAG_DEFS.length);
   assert.ok(desc.every((d) => typeof d.name === 'string' && typeof d.item === 'string' && typeof d.desc === 'string'));
+});
+
+test('H3 WORKER_FLAG_BITS matches golden bit positions and has no duplicate declarations outside flagbits.js', () => {
+  const GOLDEN_BITS = {
+    vertFallback:        1 << 0,
+    extraLines:          1 << 1,
+    cribMatch:           1 << 2,
+    requirePrefix:       1 << 3,
+    requirePrefixStrict: 1 << 4,
+    prefixStack:         1 << 5,
+    illumNorm:           1 << 6,
+    subpixEdges:         1 << 7,
+    scanSmooth:          1 << 8,
+    roiSmallCodes:       1 << 9,
+    verticalMode:        1 << 10,
+    deblur1d:            1 << 11,
+    flowOn:              1 << 12,
+  };
+  assert.deepEqual(WORKER_FLAG_BITS, GOLDEN_BITS);
+  assert.deepEqual(flagBits.WORKER_FLAG_BITS, GOLDEN_BITS);
+
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
+  function collectJsFiles(dir, out = []) {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) collectJsFiles(full, out);
+      else if (ent.isFile() && ent.name.endsWith('.js')) out.push(full);
+    }
+    return out;
+  }
+  const files = collectJsFiles(srcRoot);
+  const canonicalPath = join(srcRoot, 'worker', 'flagbits.js');
+  for (const file of files) {
+    if (file === canonicalPath) continue;
+    const text = readFileSync(file, 'utf8');
+    assert.equal(/FLAG_[A-Z0-9_]+\s*=\s*1\s*<</.test(text), false, `duplicate FLAG_* literal in ${file}`);
+    assert.equal(/WORKER_FLAG_BITS\s*=\s*Object\.freeze/.test(text), false, `duplicate WORKER_FLAG_BITS in ${file}`);
+  }
 });
 
 console.log(`All ${passed} GR1 feature-flag tests passed.`);

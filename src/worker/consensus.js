@@ -23,8 +23,6 @@
  */
 
 import {
-  MAX_SCANLINES,
-  MAX_SCANLINE_LEN,
   FLAG_EXTRA_LINES,
   FLAG_CRIB_MATCH,
   FLAG_REQUIRE_PREFIX,
@@ -33,6 +31,10 @@ import {
   FLAG_ILLUM_NORM,
   FLAG_SUBPIX_EDGES,
   FLAG_DEBLUR_1D,
+} from './flagbits.js';
+import {
+  MAX_SCANLINES,
+  MAX_SCANLINE_LEN,
   buildScanlinePlan,
   sampleScanlineLuma,
   normaliseScanlineLuma,

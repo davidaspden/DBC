@@ -28,20 +28,38 @@ export const MAX_SCANLINES = 15;
 export const MAX_SCANLINE_LEN = 2304; // > hypot(1920, 1080) = 2202.9 px
 export const MAX_RUNS = 512;
 
-// Worker feature-flag bits (`src/flags.js` WORKER_FLAG_BITS)
-export const FLAG_VERT_FALLBACK = 1 << 0;
-export const FLAG_EXTRA_LINES = 1 << 1;
-export const FLAG_CRIB_MATCH = 1 << 2;
-export const FLAG_REQUIRE_PREFIX = 1 << 3;
-export const FLAG_REQUIRE_PREFIX_STRICT = 1 << 4;
-export const FLAG_PREFIX_STACK = 1 << 5;
-export const FLAG_ILLUM_NORM = 1 << 6;
-export const FLAG_SUBPIX_EDGES = 1 << 7;
-export const FLAG_SCAN_SMOOTH = 1 << 8;
-export const FLAG_ROI_SMALL_CODES = 1 << 9;
-export const FLAG_VERTICAL_MODE = 1 << 10;
-export const FLAG_DEBLUR_1D = 1 << 11;
-export const FLAG_FLOW_ON = 1 << 12;
+// Worker feature-flag bits (canonical source: `src/worker/flagbits.js`)
+import {
+  FLAG_VERT_FALLBACK,
+  FLAG_EXTRA_LINES,
+  FLAG_CRIB_MATCH,
+  FLAG_REQUIRE_PREFIX,
+  FLAG_REQUIRE_PREFIX_STRICT,
+  FLAG_PREFIX_STACK,
+  FLAG_ILLUM_NORM,
+  FLAG_SUBPIX_EDGES,
+  FLAG_SCAN_SMOOTH,
+  FLAG_ROI_SMALL_CODES,
+  FLAG_VERTICAL_MODE,
+  FLAG_DEBLUR_1D,
+  FLAG_FLOW_ON,
+} from './flagbits.js';
+
+export {
+  FLAG_VERT_FALLBACK,
+  FLAG_EXTRA_LINES,
+  FLAG_CRIB_MATCH,
+  FLAG_REQUIRE_PREFIX,
+  FLAG_REQUIRE_PREFIX_STRICT,
+  FLAG_PREFIX_STACK,
+  FLAG_ILLUM_NORM,
+  FLAG_SUBPIX_EDGES,
+  FLAG_SCAN_SMOOTH,
+  FLAG_ROI_SMALL_CODES,
+  FLAG_VERTICAL_MODE,
+  FLAG_DEBLUR_1D,
+  FLAG_FLOW_ON,
+};
 
 const DEG_TO_RAD = Math.PI / 180;
 

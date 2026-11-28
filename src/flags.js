@@ -12,23 +12,10 @@
  * hot loop checks `(state.flags & BIT) !== 0` with strictly zero allocations.
  */
 
-export const STORAGE_KEY = 'dbc.flags';
+import { WORKER_FLAG_BITS } from './worker/flagbits.js';
+export { WORKER_FLAG_BITS };
 
-export const WORKER_FLAG_BITS = Object.freeze({
-  vertFallback:        1 << 0,  // W1
-  extraLines:          1 << 1,  // W2
-  cribMatch:           1 << 2,  // W3
-  requirePrefix:       1 << 3,  // W4
-  requirePrefixStrict: 1 << 4,  // W4 (array page strict mode)
-  prefixStack:         1 << 5,  // W5
-  illumNorm:           1 << 6,  // W6
-  subpixEdges:         1 << 7,  // W7
-  scanSmooth:          1 << 8,  // W8
-  roiSmallCodes:       1 << 9,  // W9
-  verticalMode:        1 << 10, // W10
-  deblur1d:            1 << 11, // W12
-  flowOn:              1 << 12, // W13
-});
+export const STORAGE_KEY = 'dbc.flags';
 
 export const FLAG_DEFS = Object.freeze([
   // Platform

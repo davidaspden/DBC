@@ -14,6 +14,8 @@
  *  Zero floats, zero helper calls taking float args, zero V8 HeapNumber allocations.
  */
 
+import { FLAG_CRIB_MATCH } from '../flagbits.js';
+
 export const MAX_CODE128_SYMBOLS = 64;
 export const MAX_CODE128_PAYLOAD = 128;
 export const MAX_LINE_HITS = 8;
@@ -81,7 +83,6 @@ const TSX_CRIB_RUNS_Q8 = new Int16Array([
   1 << 8, 1 << 8, 4 << 8, 2 << 8, 1 << 8, 2 << 8, // 's' (83)
   3 << 8, 3 << 8, 1 << 8, 1 << 8, 2 << 8, 1 << 8, // 'X' (56)
 ]);
-const FLAG_CRIB_MATCH = 1 << 2;
 
 /**
  * Pre-allocated scratch state for single-scanline Code 128 decoding (all integers).

@@ -24,8 +24,10 @@ const BLOCK_SIZE = 1 << BLOCK_SHIFT;
 const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 
+import { FLAG_ROI_SMALL_CODES } from './flagbits.js';
+
 export const MAX_ROI_CLUSTERS = 24;
-export const FLAG_ROI_SMALL_CODES = 1 << 9;
+export { FLAG_ROI_SMALL_CODES };
 
 /**
  * Default RoI confidence threshold separating real barcode clusters from background clutter.
