@@ -145,30 +145,42 @@ export const PRODUCT_FLAG_COVERAGE = Object.freeze({
   moduleEst: {
     registry: 'product',
     scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
-    tests: [{ file: 'tests/flags.test.js' }],
+    tests: [
+      { file: 'tests/bl1-module-est.test.js', testName: 'BL1 crib-first (source=1) and autocorrelation fallback (source=2) accuracy vs ground truth' },
+      { file: 'tests/bl1-module-est.test.js', testName: 'BL1 negatives suite: early-reject rate on clutter & 0 FP across all 9 categories' },
+    ],
     planned: 'BL1',
-    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL1 module-width/early-reject tests added in BL1.',
+    reason: 'Exercised by SimGate W-all worker flag set and dedicated BL1 module-width/early-reject unit suite.',
   },
   blurEdges: {
     registry: 'product',
     scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
-    tests: [{ file: 'tests/flags.test.js' }],
+    tests: [
+      { file: 'tests/bl2-blur-edges.test.js', testName: 'BL2 blur & print-gain defect suite + deblur1d independent composition' },
+      { file: 'tests/bl2-blur-edges.test.js', testName: 'BL2 easy sharp cases never trigger fallback (blurFallbackTriggered === 0)' },
+    ],
     planned: 'BL2',
-    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL2 fallback blur-edge tests added in BL2.',
+    reason: 'Exercised by SimGate W-all worker flag set and dedicated BL2 fallback blur-edge unit suite.',
   },
   matchFilter: {
     registry: 'product',
     scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
-    tests: [{ file: 'tests/flags.test.js' }],
+    tests: [
+      { file: 'tests/bl3-match-filter.test.js', testName: 'BL3 blur & print-gain defect suite (standalone and combined with BL1/BL2)' },
+      { file: 'tests/bl3-match-filter.test.js', testName: 'BL3 stopGuard agreement & low-stop-correlation rejection' },
+    ],
     planned: 'BL3',
-    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL3 matched-filter tests added in BL3.',
+    reason: 'Exercised by SimGate W-all worker flag set and dedicated BL3 matched-filter & stopGuard unit suite.',
   },
   roiMultiscale: {
     registry: 'product',
     scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
-    tests: [{ file: 'tests/flags.test.js' }],
+    tests: [
+      { file: 'tests/bl4-roi-multiscale.test.js', testName: '3. Easy clean frames skip multi-scale (multiscaleTriggered === 0); weak/low-contrast/blurred/small frames trigger & recover' },
+      { file: 'tests/bl4-roi-multiscale.test.js', testName: '5. R8 overlay ground truth with decodeAnchor OFF and ON' },
+    ],
     planned: 'BL4',
-    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL4 multi-scale tensor tests added in BL4.',
+    reason: 'Exercised by SimGate W-all worker flag set and dedicated BL4 multi-scale structure-tensor unit suite.',
   },
   softDecode: {
     registry: 'product',
