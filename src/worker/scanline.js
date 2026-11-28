@@ -28,6 +28,9 @@ export const MAX_SCANLINES = 15;
 export const MAX_SCANLINE_LEN = 2304; // > hypot(1920, 1080) = 2202.9 px
 export const MAX_RUNS = 512;
 
+// Bit 0 of worker flags bitmask (`src/flags.js` WORKER_FLAG_BITS.vertFallback)
+export const FLAG_VERT_FALLBACK = 1 << 0;
+
 const DEG_TO_RAD = Math.PI / 180;
 
 // Fallback directional fan angles (degrees): 0°, +15°, -15° (165°), 90°
@@ -40,6 +43,10 @@ const FALLBACK_OFFSETS_PX = new Int32Array([0, 36, -36]);
  */
 export function createScanlineState() {
   return {
+    // Runtime mode (0 = auto, 1 = vertical) & worker feature-flag bitmask (zero allocation)
+    mode: 0,
+    flags: 0,
+
     // Generated scanline descriptors in 16.16 fixed-point integers (zero float boxing!)
     lineCount: 0,
     lineStartXQ16: new Int32Array(MAX_SCANLINES),
@@ -160,6 +167,92 @@ export function buildScanlinePlan(width, height, result, hasRoi, state, numLines
       lineStepYQ16[count] = stepYQ16;
       lineLength[count] = len;
       count++;
+    }
+  } else if ((state.flags & FLAG_VERT_FALLBACK) !== 0) {
+    // W1 (flagged): full-width vertical fallback scanlines (integer arithmetic, zero allocations)
+    const wInt = width | 0;
+    const hInt = height | 0;
+    let vLen = (hInt - 5) | 0;
+    if (vLen > MAX_SCANLINE_LEN) vLen = MAX_SCANLINE_LEN;
+
+    if ((state.mode | 0) === 1) {
+      // Vertical mode: 11 evenly spaced full-height 90° scanlines across the full frame width
+      const nVert = 11;
+      if (vLen >= 64) {
+        for (let i = 0; i < nVert && count < MAX_SCANLINES; i++) {
+          const x = ((wInt * (i + 1)) / (nVert + 1)) | 0;
+          if (x < 2 || x > wInt - 3) continue;
+          lineStartXQ16[count] = x << 16;
+          lineStartYQ16[count] = 2 << 16;
+          lineStepXQ16[count] = 0;
+          lineStepYQ16[count] = 65536;
+          lineLength[count] = vLen;
+          count++;
+        }
+      }
+    } else {
+      // Auto mode: 0°, +15°, 165° with 2 offsets each (6 lines) + 5 full-width vertical lines = 11
+      const baseCx = width * 0.5;
+      const baseCy = height * 0.5;
+      const halfMajor = width * 0.46;
+      for (let a = 0; a < 3; a++) {
+        const rad = FALLBACK_ANGLES_DEG[a] * DEG_TO_RAD;
+        const ux = Math.cos(rad);
+        const uy = Math.sin(rad);
+        const perpX = -uy;
+        const perpY = ux;
+        const stepXQ16 = Math.round(ux * 65536.0) | 0;
+        const stepYQ16 = Math.round(uy * 65536.0) | 0;
+        const hasUx = Math.abs(ux) > 1e-6;
+        const hasUy = Math.abs(uy) > 1e-6;
+        const invUx = hasUx ? 1.0 / ux : 0;
+        const invUy = hasUy ? 1.0 / uy : 0;
+
+        for (let o = 0; o < 2; o++) {
+          if (count >= MAX_SCANLINES) break;
+          const off = FALLBACK_OFFSETS_PX[o];
+          const cx = baseCx + perpX * off;
+          const cy = baseCy + perpY * off;
+          let tMin = -halfMajor;
+          let tMax = halfMajor;
+          if (hasUx) {
+            let tx0 = (minX - cx) * invUx;
+            let tx1 = (maxX - cx) * invUx;
+            if (tx0 > tx1) { const tmp = tx0; tx0 = tx1; tx1 = tmp; }
+            if (tx0 > tMin) tMin = tx0;
+            if (tx1 < tMax) tMax = tx1;
+          } else if (cx < minX || cx > maxX) continue;
+          if (hasUy) {
+            let ty0 = (minY - cy) * invUy;
+            let ty1 = (maxY - cy) * invUy;
+            if (ty0 > ty1) { const tmp = ty0; ty0 = ty1; ty1 = tmp; }
+            if (ty0 > tMin) tMin = ty0;
+            if (ty1 < tMax) tMax = ty1;
+          } else if (cy < minY || cy > maxY) continue;
+          if (tMax <= tMin) continue;
+          let len = ((tMax - tMin) | 0) + 1;
+          if (len < 64) continue;
+          if (len > MAX_SCANLINE_LEN) len = MAX_SCANLINE_LEN;
+          lineStartXQ16[count] = Math.round((cx + ux * tMin) * 65536.0) | 0;
+          lineStartYQ16[count] = Math.round((cy + uy * tMin) * 65536.0) | 0;
+          lineStepXQ16[count] = stepXQ16;
+          lineStepYQ16[count] = stepYQ16;
+          lineLength[count] = len;
+          count++;
+        }
+      }
+      if (vLen >= 64) {
+        for (let i = 0; i < 5 && count < MAX_SCANLINES; i++) {
+          const x = ((wInt * (i + 1)) / 6) | 0;
+          if (x < 2 || x > wInt - 3) continue;
+          lineStartXQ16[count] = x << 16;
+          lineStartYQ16[count] = 2 << 16;
+          lineStepXQ16[count] = 0;
+          lineStepYQ16[count] = 65536;
+          lineLength[count] = vLen;
+          count++;
+        }
+      }
     }
   } else {
     // Low-confidence fallback fan: 0°, +15°, -15°, 90° across center strip
