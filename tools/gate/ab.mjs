@@ -10,6 +10,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { median } from '../../src/util/stats.js';
+export { median };
 
 export const DEFAULT_AB_THRESHOLDS = Object.freeze({
   maxP50Ratio: 1.10,       // <= +10% median latency
@@ -17,19 +19,6 @@ export const DEFAULT_AB_THRESHOLDS = Object.freeze({
   maxHeapIncreaseBpf: 4.0, // <= +4 B/frame over base
   maxHeapCeilingBpf: 64.0, // hard hot-loop heap ceiling (B/frame)
 });
-
-/**
- * Computes exact median of a non-empty numeric array.
- * @param {number[]} values
- */
-export function median(values) {
-  if (!Array.isArray(values) || values.length === 0) {
-    throw new Error('median requires a non-empty array');
-  }
-  const sorted = values.slice().sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return (sorted.length & 1) === 1 ? sorted[mid] : 0.5 * (sorted[mid - 1] + sorted[mid]);
-}
 
 /**
  * Parses `tests/harness.js` stdout into structured metrics.

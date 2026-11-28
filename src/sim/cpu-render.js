@@ -100,21 +100,7 @@ for (let i = 0; i < RIB_LUT_SIZE; i++) {
   RIB_LUT[i] = 0.96 + 0.04 * Math.sin(ax * 9.5);
 }
 
-/**
- * Seeded mulberry32 PRNG returning floats in [0, 1).
- * Deterministic across runs and platforms; never uses `Math.random`.
- *
- * @param {number} seed
- */
-export function mulberry32(seed) {
-  let a = (seed >>> 0) || 0x6d2b79f5;
-  return function next() {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+export { mulberry32 } from './prng.js';
 
 /**
  * Exact GLSL `hash12(vec2(px, py))` port for deterministic per-tote tone parity.

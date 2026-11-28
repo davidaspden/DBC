@@ -5,40 +5,35 @@
 
 import { startCamera, stopCamera } from '../camera.js';
 import { hashDeviceId } from './hash.js';
+import { computeCode128Modules } from '../array/config.js';
+import { median } from '../util/stats.js';
 
 const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 
-function median(arr) {
-  if (!arr.length) return 0;
-  const copy = arr.slice().sort((a, b) => a - b);
-  const mid = copy.length >> 1;
-  return (copy.length & 1) ? copy[mid] : (copy[mid - 1] + copy[mid]) * 0.5;
-}
-
-function estimateModules(payloadLen) {
-  // Code 128B: 11 * chars + 35 (start + check + stop) + 20 (quiet zones)
-  const chars = payloadLen > 0 ? payloadLen : 12;
-  return 11 * chars + 55;
-}
-
 /**
  * D3: Computes theoretical & formatted pixels-per-module summary for a given label length
- * (default 3.5 in, 12 chars = 187 modules) at 8 in and 16 in standoff distances.
+ * (legacy default 3.5 in, 12 chars = 187 modules; real FC label sample `tsX07wz7py1` is
+ * 11 chars = 176 modules) at 8 in and 16 in standoff distances.
  */
 export function formatLabelSizeOpticsSummary({
   labelLenIn = 3.5,
-  payloadChars = 12,
+  payloadChars,
+  payload,
+  quietModules = 10,
   hfovDeg = 70.7,
   zoom = 1,
   longAxisPx = 1920,
 } = {}) {
-  const modules = estimateModules(payloadChars);
+  const resolvedChars = typeof payload === 'string' && payload.length > 0
+    ? payload.length
+    : (payloadChars > 0 ? (payloadChars | 0) : 12);
+  const modules = computeCode128Modules(resolvedChars, quietModules);
   const fPx = ((longAxisPx * 0.5) / Math.tan((hfovDeg * 0.5) * (Math.PI / 180))) * Math.max(0.5, zoom);
   const ppm8 = Math.round(((fPx * labelLenIn) / (8 * modules)) * 100) / 100;
   const ppm16 = Math.round(((fPx * labelLenIn) / (16 * modules)) * 100) / 100;
   return {
     labelLenIn,
-    payloadChars,
+    payloadChars: resolvedChars,
     modules,
     ppm8,
     ppm16,
@@ -146,7 +141,7 @@ export async function runLabelTest(opts) {
         if (det && det.payload) {
           decodes++;
           lastPayload = det.payload;
-          const mods = estimateModules(det.payload.length);
+          const mods = computeCode128Modules(det.payload.length);
           if (det.roiMajorLen > 0) {
             ppms.push(det.roiMajorLen / mods);
           }
@@ -247,7 +242,8 @@ export async function runLabelTest(opts) {
     const medianPpm = ppms.length > 0 ? Math.round(median(ppms) * 10) / 10 : null;
     const labelSummary = formatLabelSizeOpticsSummary({
       labelLenIn: opts.labelLenIn || 3.5,
-      payloadChars: opts.payloadChars || 12,
+      payloadChars: opts.payloadChars,
+      payload: opts.payload,
       longAxisPx: Math.max(width, height),
       zoom: typeof actualZoom === 'number' ? actualZoom : 1,
     });

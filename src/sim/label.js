@@ -6,6 +6,9 @@
  */
 
 import { CODE128_PATTERNS, CODE128_START_B } from '../worker/decoders/code128.js';
+import { mulberry32 } from './prng.js';
+export { mulberry32 } from './prng.js';
+export { computeCode128Modules } from '../array/config.js';
 
 export const CODE128_STOP_PATTERN = new Uint8Array([2, 3, 3, 1, 1, 1, 2]);
 
@@ -37,22 +40,6 @@ export function FC_12_PAYLOAD_FN(row, col, index) {
 }
 
 const BASE36_LOWER = '0123456789abcdefghijklmnopqrstuvwxyz';
-
-/**
- * Deterministic mulberry32 PRNG returning floats in [0, 1).
- * Never uses Math.random.
- *
- * @param {number} seed
- */
-export function mulberry32(seed) {
-  let a = (seed >>> 0) || 0x6d2b79f5;
-  return function next() {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /**
  * L2 — Generates a deterministic array of unique 11-char FC `tsX` payloads
@@ -128,24 +115,6 @@ export function createFcLabelSpec(opts = {}) {
     orientation: 'ladder',
     payloadFn: createFcLabelPayloadFn({ seed, count: opts.count ?? 64 }),
   }, true);
-}
-
-/**
- * Computes exact Code 128 module count:
- * `11 * chars + 11 (Start) + 11 (Check) + 13 (Stop) + 2 * quietModules`.
- *
- * @param {string | number} payloadOrChars
- * @param {number} [quietModules=10]
- */
-export function computeCode128Modules(payloadOrChars, quietModules = 10) {
-  const chars = typeof payloadOrChars === 'string'
-    ? payloadOrChars.length
-    : (payloadOrChars | 0);
-  if (chars <= 0) {
-    throw new Error(`Code 128 payload must have >= 1 character, got ${chars}`);
-  }
-  const quiet = quietModules | 0;
-  return 11 * chars + 11 + 11 + 13 + 2 * quiet;
 }
 
 /**

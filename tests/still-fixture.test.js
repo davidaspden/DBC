@@ -30,18 +30,13 @@ import {
   FLAG_CRIB_MATCH,
   FLAG_REQUIRE_PREFIX,
 } from '../src/worker/flagbits.js';
+import { percentile } from '../src/util/stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.join(__dirname, 'fixtures-sim', 'tote-tsX07wz7py1-gray.pgm.gz');
 const EXPECTED_PAYLOAD = 'tsX07wz7py1';
 const PHONE_MS_A53 = 38;
 const FLAGS_ON = FLAG_VERTICAL_MODE | FLAG_CRIB_MATCH | FLAG_REQUIRE_PREFIX;
-
-function percentile(sorted, p) {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p));
-  return sorted[idx];
-}
 
 function measureMulti(luma, width, height, flagsMask, vertMode, iters = 30) {
   const state = createPipelineState(width, height);
