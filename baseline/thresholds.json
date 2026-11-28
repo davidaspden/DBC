@@ -1,0 +1,368 @@
+{
+  "schemaVersion": 1,
+  "status": "provisional",
+  "note": "G6 rules for `node tools/verify.mjs --gate`. Rules follow plan section 10.3. `references` are captured from the CPU renderer (deterministic fields compare across machines; timing only against `timing[<machine>]`). Floors are `uncalibrated` until G7 fits the camera profiles. Re-capture with `node tools/verify.mjs --gate-only --capture-thresholds` after an intended change.",
+  "renderer": "cpu",
+  "capturedAtCommit": "c3dea8a",
+  "rules": {
+    "flagsOff": {
+      "timeToFirstTolerancePct": 10,
+      "p50TolerancePct": 10,
+      "p95TolerancePct": 25
+    },
+    "canary": {
+      "timeToFirstTolerancePct": 5,
+      "perLabelSlackSec": 0.1
+    },
+    "flagsOn": {
+      "fpMax": 0,
+      "timeToAllTolerancePct": 5,
+      "p50TolerancePct": {
+        "W-fc": 20,
+        "W-all": 30,
+        "default": 30
+      },
+      "p50SlackMs": 0.5
+    },
+    "profiles": {
+      "fpMax": 0,
+      "deliveredFpsTolerancePct": 5
+    }
+  },
+  "references": {
+    "S01-a53-8-720@quick": {
+      "kind": "flagsOff",
+      "flagSet": "off",
+      "profile": "ideal",
+      "coverageMedian": 12,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "TOTE-R1C1-000101",
+        "TOTE-R1C2-000202",
+        "TOTE-R1C3-000303",
+        "TOTE-R1C4-000404",
+        "TOTE-R2C1-000505",
+        "TOTE-R2C2-000606",
+        "TOTE-R2C3-000707",
+        "TOTE-R2C4-000808",
+        "TOTE-R3C1-000909",
+        "TOTE-R3C2-001010",
+        "TOTE-R3C3-001111",
+        "TOTE-R3C4-001212"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 52.714,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 13,
+      "deterministicHash": "9d347bab32cf8880"
+    },
+    "S01-a53-8-1080@quick": {
+      "kind": "flagsOff",
+      "flagSet": "off",
+      "profile": "ideal",
+      "coverageMedian": 14,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "TOTE-R1C1-000101",
+        "TOTE-R1C2-000202",
+        "TOTE-R1C3-000303",
+        "TOTE-R1C4-000404",
+        "TOTE-R2C1-000505",
+        "TOTE-R2C2-000606",
+        "TOTE-R2C3-000707",
+        "TOTE-R2C4-000808",
+        "TOTE-R3C1-000909",
+        "TOTE-R3C2-001010",
+        "TOTE-R3C3-001111",
+        "TOTE-R3C4-001212",
+        "TOTE-R4C3-001515",
+        "TOTE-R4C4-001616"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 66.064,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 13,
+      "deterministicHash": "a11871d8ea87f9de"
+    },
+    "S01-tele-30@quick": {
+      "kind": "flagsOff",
+      "flagSet": "off",
+      "profile": "ideal",
+      "coverageMedian": 15,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "TOTE-R1C1-000101",
+        "TOTE-R1C2-000202",
+        "TOTE-R1C3-000303",
+        "TOTE-R1C4-000404",
+        "TOTE-R2C1-000505",
+        "TOTE-R2C2-000606",
+        "TOTE-R2C3-000707",
+        "TOTE-R2C4-000808",
+        "TOTE-R3C1-000909",
+        "TOTE-R3C2-001010",
+        "TOTE-R3C3-001111",
+        "TOTE-R3C4-001212",
+        "TOTE-R4C2-001414",
+        "TOTE-R4C3-001515",
+        "TOTE-R4C4-001616"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 69.337,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 30,
+      "deterministicHash": "66caaa86bf070172"
+    },
+    "S01-full-wall@quick": {
+      "kind": "flagsOff",
+      "flagSet": "off",
+      "profile": "ideal",
+      "coverageMedian": 0,
+      "totalCells": 16,
+      "decodedPayloads": [],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 0,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 30,
+      "deterministicHash": "8746232f433fdbbe"
+    },
+    "fc-tele-30-3p5[off]@quick": {
+      "kind": "flagsOff",
+      "flagSet": "off",
+      "profile": "ideal",
+      "coverageMedian": 16,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "tsX11A00001B",
+        "tsX12A00002B",
+        "tsX13A00003B",
+        "tsX14A00004B",
+        "tsX21A00005B",
+        "tsX22A00006B",
+        "tsX23A00007B",
+        "tsX24A00008B",
+        "tsX31A00009B",
+        "tsX32A00010B",
+        "tsX33A00011B",
+        "tsX34A00012B",
+        "tsX41A00013B",
+        "tsX42A00014B",
+        "tsX43A00015B",
+        "tsX44A00016B"
+      ],
+      "falsePositivesTotal": 1,
+      "timeToFirstSumSec": 96.746,
+      "timeToAllMedianSec": 12.1864,
+      "fpsDelivered": 29.948,
+      "deterministicHash": "a114841c7470290a"
+    },
+    "S01-a53-8-720[single:verticalMode]@quick": {
+      "kind": "canary",
+      "flagSet": "single:verticalMode",
+      "profile": "ideal",
+      "coverageMedian": 12,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "TOTE-R1C1-000101",
+        "TOTE-R1C2-000202",
+        "TOTE-R1C3-000303",
+        "TOTE-R1C4-000404",
+        "TOTE-R2C1-000505",
+        "TOTE-R2C2-000606",
+        "TOTE-R2C3-000707",
+        "TOTE-R2C4-000808",
+        "TOTE-R3C1-000909",
+        "TOTE-R3C2-001010",
+        "TOTE-R3C3-001111",
+        "TOTE-R3C4-001212"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 52.714,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 13,
+      "deterministicHash": "977ba58259ae0b12",
+      "timeToFirstByLabel": {
+        "TOTE-R1C1-000101": 0.0211,
+        "TOTE-R1C2-000202": 0.4826,
+        "TOTE-R1C3-000303": 1.2518,
+        "TOTE-R1C4-000404": 2.0211,
+        "TOTE-R2C1-000505": 5.4826,
+        "TOTE-R2C2-000606": 4.7134,
+        "TOTE-R2C3-000707": 3.9441,
+        "TOTE-R2C4-000808": 3.4057,
+        "TOTE-R3C1-000909": 6.8672,
+        "TOTE-R3C2-001010": 7.4057,
+        "TOTE-R3C3-001111": 8.1749,
+        "TOTE-R3C4-001212": 8.9441
+      }
+    },
+    "prof-ideal@quick": {
+      "kind": "profile",
+      "flagSet": "off",
+      "profile": "ideal",
+      "coverageMedian": 3,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "tsX11A00001B",
+        "tsX12A00002B",
+        "tsX13A00003B"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 2.063,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 13,
+      "deterministicHash": "b23d282554f4c1d6"
+    },
+    "prof-a53-fc-normal@quick": {
+      "kind": "profile",
+      "flagSet": "off",
+      "profile": "a53-fc-normal",
+      "coverageMedian": 3,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "tsX11A00001B",
+        "tsX12A00002B",
+        "tsX13A00003B"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 2.026,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 29.5,
+      "camera": {
+        "cameraFps": 30,
+        "deliveredFps": 30,
+        "droppedFrames": 0
+      },
+      "deterministicHash": "304d9475e2d4c3a7"
+    },
+    "prof-a53-fc-lowlight-10fps@quick": {
+      "kind": "profile",
+      "flagSet": "off",
+      "profile": "a53-fc-lowlight-10fps",
+      "coverageMedian": 3,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "tsX11A00001B",
+        "tsX12A00002B",
+        "tsX13A00003B"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 2.126,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 9.5,
+      "camera": {
+        "cameraFps": 10,
+        "deliveredFps": 10,
+        "droppedFrames": 0
+      },
+      "deterministicHash": "c49b4d3107ba11ae"
+    },
+    "prof-a53-fc-lowlight-locked@quick": {
+      "kind": "profile",
+      "flagSet": "off",
+      "profile": "a53-fc-lowlight-locked",
+      "coverageMedian": 3,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "tsX11A00001B",
+        "tsX12A00002B",
+        "tsX13A00003B"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 2.093,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 29.5,
+      "camera": {
+        "cameraFps": 30,
+        "deliveredFps": 30,
+        "droppedFrames": 0
+      },
+      "deterministicHash": "8d5a74f253c42e44"
+    },
+    "prof-a53-torch-glare@quick": {
+      "kind": "profile",
+      "flagSet": "off",
+      "profile": "a53-torch-glare",
+      "coverageMedian": 3,
+      "totalCells": 16,
+      "decodedPayloads": [
+        "tsX11A00001B",
+        "tsX12A00002B",
+        "tsX13A00003B"
+      ],
+      "falsePositivesTotal": 0,
+      "timeToFirstSumSec": 2.06,
+      "timeToAllMedianSec": null,
+      "fpsDelivered": 29.5,
+      "camera": {
+        "cameraFps": 30,
+        "deliveredFps": 30,
+        "droppedFrames": 0
+      },
+      "deterministicHash": "56f6420224bb804a"
+    }
+  },
+  "timing": {},
+  "floors": [
+    {
+      "id": "fps-lowlight-10fps",
+      "run": "prof-a53-fc-lowlight-10fps",
+      "metric": "camera.deliveredFps",
+      "min": 8.5,
+      "max": 11.5,
+      "status": "uncalibrated",
+      "why": "AE walks to the 100 ms ceiling in low light: about 10 fps (live phone: 10 fps)"
+    },
+    {
+      "id": "fps-lowlight-locked",
+      "run": "prof-a53-fc-lowlight-locked",
+      "metric": "camera.deliveredFps",
+      "min": 27,
+      "status": "uncalibrated",
+      "why": "PP2 lock holds 30 fps"
+    },
+    {
+      "id": "fps-normal",
+      "run": "prof-a53-fc-normal",
+      "metric": "camera.deliveredFps",
+      "min": 27,
+      "status": "uncalibrated",
+      "why": "warehouse light, AE about 16 ms: 30 fps"
+    },
+    {
+      "id": "fps-torch",
+      "run": "prof-a53-torch-glare",
+      "metric": "camera.deliveredFps",
+      "min": 27,
+      "status": "uncalibrated",
+      "why": "torch gives AE a fast shutter: 30 fps"
+    },
+    {
+      "id": "locked-vs-10fps",
+      "run": "prof-a53-fc-lowlight-locked",
+      "ratioTo": "prof-a53-fc-lowlight-10fps",
+      "metric": "camera.deliveredFps",
+      "min": 2.5,
+      "status": "uncalibrated",
+      "why": "same scenario: locked exposure about 3x the frame rate"
+    },
+    {
+      "id": "S03-normal-coverage",
+      "run": "prof-a53-fc-normal",
+      "metric": "coverageMedian",
+      "min": 15,
+      "appliesTo": "fullLength",
+      "status": "report-only",
+      "why": "plan S03: >= 15/16 in one snake pass; needs a full-pass profile run (about 8 min per seed), so report-only"
+    },
+    {
+      "id": "S04-lowlight-coverage",
+      "run": "prof-a53-fc-lowlight-10fps",
+      "metric": "coverageMedian",
+      "min": 12,
+      "appliesTo": "fullLength",
+      "status": "report-only",
+      "why": "plan S04: >= 12/16 in two passes with FP 0; report-only until the profile run is long enough"
+    }
+  ]
+}

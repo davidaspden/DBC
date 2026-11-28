@@ -12,6 +12,10 @@
  *   node tools/verify.mjs                          # Same-machine A/B vs HEAD~1 (N=5)
  *   node tools/verify.mjs --base d917944 --runs 3  # Same-machine A/B vs specific commit
  *   node tools/verify.mjs --legacy-json            # Historical comparison vs baseline JSON
+ *   node tools/verify.mjs --gate                   # (G6) also run the SimGate quick subset against baseline/thresholds.json
+ *   node tools/verify.mjs --gate --full            # (G6) the whole matrix (long: opt-in)
+ *   node tools/verify.mjs --gate-only              # (G6) only the gate, skip unit suites and the harness A/B
+ *   node tools/verify.mjs --gate-only --capture-thresholds   # re-capture references from this run (explicit, after an intended change)
  */
 
 import { spawnSync } from 'node:child_process';
@@ -37,11 +41,19 @@ function parseCliArgs(argv) {
     runs: 5,
     iters: 25,
     gate: false,
+    full: false,
+    gateOnly: false,
+    captureThresholds: false,
+    timing: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--legacy-json') opts.legacyJson = true;
     else if (a === '--gate') opts.gate = true;
+    else if (a === '--full') opts.full = true;
+    else if (a === '--gate-only') { opts.gate = true; opts.gateOnly = true; }
+    else if (a === '--capture-thresholds') opts.captureThresholds = true;
+    else if (a === '--capture-timing') opts.timing = true;
     else if (a === '--base' && argv[i + 1]) opts.baseRev = argv[++i];
     else if (a.startsWith('--base=')) opts.baseRev = a.slice('--base='.length);
     else if (a === '--runs' && argv[i + 1]) opts.runs = Math.max(1, Number(argv[++i]) | 0);
@@ -74,7 +86,7 @@ const testFiles = readdirSync(join(ROOT, 'tests'))
   .filter((f) => f.endsWith('.test.js'))
   .sort();
 
-for (const file of testFiles) {
+for (const file of (cli.gateOnly ? [] : testFiles)) {
   const r = runNode([join('tests', file)], ROOT);
   const m = r.stdout.match(/All\s+(\d+)\s+.*passed/i);
   const count = m ? Number(m[1]) : 0;
@@ -88,7 +100,9 @@ for (const file of testFiles) {
 }
 
 // 2. Benchmark harness: either legacy JSON mode or same-machine interleaved A/B mode
-if (cli.legacyJson) {
+if (cli.gateOnly) {
+  // gate only: no harness A/B
+} else if (cli.legacyJson) {
   const baseline = JSON.parse(readFileSync(LEGACY_BASELINE_PATH, 'utf8'));
   const h = runNode(['--expose-gc', 'tests/harness.js', `--iters=${cli.iters}`], ROOT);
   const parsed = h.status === 0 ? parseHarnessOutput(h.stdout) : null;
@@ -214,7 +228,41 @@ if (existsSync(tapesDir) && existsSync(replayScript)) {
   }
 }
 
-const headerSuffix = cli.legacyJson
+// 4. (G6) SimGate subset against baseline/thresholds.json
+if (cli.gate) {
+  const gt0 = Date.now();
+  const { selectGateScenarios, evaluateGate, formatGateTable, loadThresholds, writeCapturedThresholds, THRESHOLDS_PATH } =
+    await import('./gate/thresholds.mjs');
+  const { runScenarios } = await import('./gate/score.mjs');
+  const { buildReport, writeReportJson, defaultReportPath, getShortCommit, getMachineSlug } = await import('./gate/report.mjs');
+  const mode = cli.full ? 'full' : 'quick';
+  const scenarios = selectGateScenarios(mode);
+  console.log(`\nGate (${mode}): running ${scenarios.length} runs (${cli.full ? 'whole matrix, long' : 'quick subset'})...`);
+  const results = await runScenarios(scenarios, {});
+  const commit = getShortCommit(ROOT);
+  const machine = getMachineSlug();
+  const outPath = defaultReportPath(ROOT, `${commit}-gate-${mode}`, machine);
+  writeReportJson(buildReport(results, { commit, machine, quickMode: !cli.full }), outPath);
+  if (cli.captureThresholds) {
+    writeCapturedThresholds(THRESHOLDS_PATH, results, { withTiming: cli.timing, commit, machine });
+    rows.push({ suite: 'gate (capture)', status: 'PASS', detail: `references captured into baseline/thresholds.json from ${results.length} runs${cli.timing ? ' (+ timing for ' + machine + ')' : ''}` });
+  } else {
+    const ev = evaluateGate(results, loadThresholds(THRESHOLDS_PATH), { machine, mode });
+    console.log(formatGateTable(ev));
+    if (!ev.ok) failed = true;
+    rows.push({
+      suite: `gate (${mode})`,
+      status: ev.ok ? 'PASS' : 'FAIL',
+      detail: ev.ok
+        ? `${ev.rows.filter((x) => x.status === 'PASS').length} checks pass, ${ev.warnings.length} warn, ${((Date.now() - gt0) / 1000).toFixed(0)} s (report ${outPath.replace(ROOT, '.')})`
+        : ev.failures.slice(0, 3).map((x) => `${x.run}: ${x.check}`).join(' | '),
+    });
+  }
+}
+
+const headerSuffix = cli.gateOnly
+  ? '(gate only)'
+  : cli.legacyJson
   ? '(vs legacy baseline d917944)'
   : `(same-machine A/B vs ${cli.baseRev}, N=${cli.runs})`;
 console.log(`\n=== DBC Verification Gate ${headerSuffix} ===`);
