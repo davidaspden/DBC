@@ -82,6 +82,14 @@ export function quatFromAxisAngleVec(rx, ry, rz, out) {
   return out;
 }
 
+// A9 (`allocCleanup`): module-level preallocated scratch buffers (zero per-frame GC allocations)
+const _qYawScratch = new Float64Array(4);
+const _qPitchScratch = new Float64Array(4);
+const _qRollScratch = new Float64Array(4);
+const _qTmpScratch = new Float64Array(4);
+const _vecFwdScratch = new Float64Array(3);
+const _vecRightScratch = new Float64Array(3);
+
 /**
  * Builds a quaternion representing camera yaw (right +), pitch (up +), roll (CCW +)
  * in wall-normal space where the camera optical axis is `(0, 0, -1)`.
@@ -94,13 +102,12 @@ export function quatFromPanTiltRollDeg(panRightDeg, tiltUpDeg, rollDeg = 0, out 
   const cr = Math.cos((rollDeg * 0.5) * DEG_TO_RAD);
   const sr = Math.sin((rollDeg * 0.5) * DEG_TO_RAD);
 
-  // q = qYaw(Y) * qPitch(X) * qRoll(Z)
-  const qy = [0, sy, 0, cy];
-  const qp = [sp, 0, 0, cp];
-  const qr = [0, 0, sr, cr];
-  const tmp = new Float64Array(4);
-  quatMultiply(qy, qp, tmp);
-  quatMultiply(tmp, qr, out);
+  // q = qYaw(Y) * qPitch(X) * qRoll(Z) using preallocated scratch TypedArrays
+  _qYawScratch[0] = 0; _qYawScratch[1] = sy; _qYawScratch[2] = 0; _qYawScratch[3] = cy;
+  _qPitchScratch[0] = sp; _qPitchScratch[1] = 0; _qPitchScratch[2] = 0; _qPitchScratch[3] = cp;
+  _qRollScratch[0] = 0; _qRollScratch[1] = 0; _qRollScratch[2] = sr; _qRollScratch[3] = cr;
+  quatMultiply(_qYawScratch, _qPitchScratch, _qTmpScratch);
+  quatMultiply(_qTmpScratch, _qRollScratch, out);
   return quatNormalize(out, out);
 }
 
@@ -109,14 +116,12 @@ export function quatFromPanTiltRollDeg(panRightDeg, tiltUpDeg, rollDeg = 0, out 
  * quaternion `qRel` where reference forward is `(0, 0, -1)`.
  */
 export function extractPanTiltRollDeg(qRel, out = { panDeg: 0, tiltDeg: 0, rollDeg: 0 }) {
-  const f = new Float64Array(3);
-  const r = new Float64Array(3);
-  quatRotateVec(qRel, 0, 0, -1, f);
-  quatRotateVec(qRel, 1, 0, 0, r);
-  const horiz = Math.hypot(f[0], -f[2]) || 1e-9;
-  out.panDeg = Math.atan2(f[0], -f[2]) * RAD_TO_DEG;
-  out.tiltDeg = Math.atan2(f[1], horiz) * RAD_TO_DEG;
-  out.rollDeg = Math.atan2(r[1], Math.hypot(r[0], r[2]) || 1e-9) * RAD_TO_DEG;
+  quatRotateVec(qRel, 0, 0, -1, _vecFwdScratch);
+  quatRotateVec(qRel, 1, 0, 0, _vecRightScratch);
+  const horiz = Math.hypot(_vecFwdScratch[0], -_vecFwdScratch[2]) || 1e-9;
+  out.panDeg = Math.atan2(_vecFwdScratch[0], -_vecFwdScratch[2]) * RAD_TO_DEG;
+  out.tiltDeg = Math.atan2(_vecFwdScratch[1], horiz) * RAD_TO_DEG;
+  out.rollDeg = Math.atan2(_vecRightScratch[1], Math.hypot(_vecRightScratch[0], _vecRightScratch[2]) || 1e-9) * RAD_TO_DEG;
   return out;
 }
 

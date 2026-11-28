@@ -11,10 +11,16 @@
  *  - Wall lies on Z = 0; camera stands at (Px, Py, D) looking along -Z when qRel = identity.
  */
 
-import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js?v=4';
+import { quatRotateVec, quatFromPanTiltRollDeg, quatConjugate } from './orient.js?v=5';
 import { FC_PROFILE, resolveTotePitch } from './config.js';
 import { evaluateOptics, estimateModules } from './optics.js';
 import { AXIS_REMAPS, applyAxisRemap } from './setup.js';
+import {
+  solveDistanceFromLabel,
+  solveTwoReadFocalAndDistance,
+  createPanKalmanFilter,
+  computeDriftSigmaIn,
+} from './kalman.js';
 
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
@@ -51,6 +57,9 @@ export function createPanArrayMapper(opts = {}) {
     nudgeDamp: Boolean(opts.nudgeDamp),
     nudgeGain: opts.nudgeGain ?? 0.10,
     driftFromLabel: Boolean(opts.driftFromLabel),
+    // Wave 3 Stream A feature flags (default OFF)
+    panKalman: Boolean(opts.panKalman),
+    allocCleanup: Boolean(opts.allocCleanup),
   };
 
   // Camera stance offset relative to wall center (inches)
@@ -69,13 +78,32 @@ export function createPanArrayMapper(opts = {}) {
     lastReadPayload: '',
     lastNudgeMs: 0,
     nudgeCumInWindow: 0,
+    driftSigmaIn: 0,
     stanceWarning: false,
     calibratedTwoCorner: false,
   };
 
-  // Scratch vectors (zero hot-loop allocations)
+  // A8 (`panKalman`): pre-allocated 3-state residual Kalman filter
+  const kalman = createPanKalmanFilter({ camSensorOffsetMs: cfg.camSensorOffsetMs });
+
+  // Scratch vectors & reusable footprint buffers (A9 zero hot-loop allocations)
   const rayScratch = new Float64Array(3);
   const rotScratch = new Float64Array(3);
+  const qConjScratch = new Float64Array(4);
+  const fpCenterScratch = { ok: false, wx: 0, wy: 0, wzIn: 0, colFloat: -1, rowFloat: -1 };
+  const fpCornerScratch = [
+    { ok: false, wx: 0, wy: 0, wzIn: 0, colFloat: -1, rowFloat: -1 },
+    { ok: false, wx: 0, wy: 0, wzIn: 0, colFloat: -1, rowFloat: -1 },
+    { ok: false, wx: 0, wy: 0, wzIn: 0, colFloat: -1, rowFloat: -1 },
+    { ok: false, wx: 0, wy: 0, wzIn: 0, colFloat: -1, rowFloat: -1 },
+  ];
+  const fpResultScratch = {
+    ok: false,
+    center: fpCenterScratch,
+    corners: fpCornerScratch,
+    targetCell: null,
+    inGrid: false,
+  };
 
   let cells = [];
   const payloadToCellIdx = new Map();
@@ -125,9 +153,9 @@ export function createPanArrayMapper(opts = {}) {
 
   /**
    * Projects an image pixel `(px, py)` through camera orientation `qRel` onto the wall plane Z = 0.
-   * Returns `{ ok, wx, wy, wzIn, colFloat, rowFloat }` in wall inches.
+   * Writes into optional `out` struct (A9 zero-allocation path) or returns a fresh object.
    */
-  function projectPixelToWall(qRel, px, py, frameW, frameH) {
+  function projectPixelToWall(qRel, px, py, frameW, frameH, out = null) {
     const fPx = getFocalLengthPx(frameW, frameH);
     const u = (px - frameW * 0.5) / fPx;
     const v = -(py - frameH * 0.5) / fPx; // +v is up
@@ -148,8 +176,15 @@ export function createPanArrayMapper(opts = {}) {
     ry = cfg.invertTilt ? -ry : ry;
     const wzIn = -rotScratch[2]; // positive into wall
 
+    const res = out || { ok: false, wx: 0, wy: 0, wzIn: 0, colFloat: -1, rowFloat: -1 };
     if (wzIn < MIN_WZ_IN) {
-      return { ok: false, wx: 0, wy: 0, wzIn, colFloat: -1, rowFloat: -1 };
+      res.ok = false;
+      res.wx = 0;
+      res.wy = 0;
+      res.wzIn = wzIn;
+      res.colFloat = -1;
+      res.rowFloat = -1;
+      return res;
     }
 
     // Apply small yaw/pitch trim + optional 2-corner empirical scale
@@ -161,13 +196,35 @@ export function createPanArrayMapper(opts = {}) {
     const colFloat = wx / cfg.pitchXIn + (cfg.cols - 1) * 0.5;
     const rowFloat = (cfg.rows - 1) * 0.5 - wy / cfg.pitchYIn;
 
-    return { ok: true, wx, wy, wzIn, colFloat, rowFloat };
+    res.ok = true;
+    res.wx = wx;
+    res.wy = wy;
+    res.wzIn = wzIn;
+    res.colFloat = colFloat;
+    res.rowFloat = rowFloat;
+    return res;
   }
 
   /**
    * Projects the camera center ray + 4 frame corners onto the wall plane for live HUD rendering.
+   * When `cfg.allocCleanup` is enabled (A9), reuses preallocated scratch structs with zero GC.
    */
   function getCameraFootprint(qRel, frameW, frameH) {
+    if (cfg.allocCleanup) {
+      const center = projectPixelToWall(qRel, frameW * 0.5, frameH * 0.5, frameW, frameH, fpCenterScratch);
+      projectPixelToWall(qRel, 0, 0, frameW, frameH, fpCornerScratch[0]);
+      projectPixelToWall(qRel, frameW, 0, frameW, frameH, fpCornerScratch[1]);
+      projectPixelToWall(qRel, frameW, frameH, frameW, frameH, fpCornerScratch[2]);
+      projectPixelToWall(qRel, 0, frameH, frameW, frameH, fpCornerScratch[3]);
+      const col = Math.round(center.colFloat);
+      const row = Math.round(center.rowFloat);
+      const inGrid = center.ok && col >= 0 && col < cfg.cols && row >= 0 && row < cfg.rows;
+      fpResultScratch.ok = center.ok;
+      fpResultScratch.targetCell = inGrid ? cells[row * cfg.cols + col] : null;
+      fpResultScratch.inGrid = inGrid;
+      return fpResultScratch;
+    }
+
     const center = projectPixelToWall(qRel, frameW * 0.5, frameH * 0.5, frameW, frameH);
     const tl = projectPixelToWall(qRel, 0, 0, frameW, frameH);
     const tr = projectPixelToWall(qRel, frameW, 0, frameW, frameH);
@@ -186,6 +243,52 @@ export function createPanArrayMapper(opts = {}) {
       targetCell,
       inGrid,
     };
+  }
+
+  /**
+   * C7 (`predictCrop`) / A8 helper: Projects the expected center & height of cell `(row, col)`
+   * onto image pixel coordinates `(uPx, vPx, expectedLenPx)` under orientation `qRel`.
+   */
+  function predictLabelPixel(qRel, row, col, frameW, frameH) {
+    if (row < 0 || row >= cfg.rows || col < 0 || col >= cfg.cols) {
+      return { ok: false, inFrame: false, uPx: 0, vPx: 0, expectedLenPx: 0 };
+    }
+    const cell = cells[row * cfg.cols + col];
+    const wx = (cell.cx - stance.px) / (stance.scaleX || 1);
+    const wy = (cell.cy - stance.py) / (stance.scaleY || 1);
+    const wz = -stance.d; // wall lies at z = -d in camera-origin wall frame
+    const rxW = cfg.invertPan ? -wx : wx;
+    const ryW = cfg.invertTilt ? -wy : wy;
+
+    quatConjugate(qRel, qConjScratch);
+    quatRotateVec(qConjScratch, rxW, ryW, wz, rotScratch);
+    const camZ = -rotScratch[2];
+    if (camZ < 2.0) {
+      return { ok: false, inFrame: false, uPx: 0, vPx: 0, expectedLenPx: 0 };
+    }
+    const fPx = getFocalLengthPx(frameW, frameH);
+    const uPx = frameW * 0.5 + (rotScratch[0] / camZ) * fPx;
+    const vPx = frameH * 0.5 - (rotScratch[1] / camZ) * fPx;
+    const panRad = Math.atan2(wx, stance.d);
+    const tiltRad = Math.atan2(wy, Math.hypot(wx, stance.d));
+    const expectedLenPx =
+      (fPx * cfg.labelLenIn * Math.cos(tiltRad) * Math.cos(tiltRad) * Math.cos(panRad)) / Math.max(4, stance.d);
+    const inFrame = uPx >= 0 && uPx <= frameW && vPx >= 0 && vPx <= frameH;
+    return { ok: true, inFrame, uPx, vPx, expectedLenPx };
+  }
+
+  /**
+   * A9 (`allocCleanup`): Writes compact cell state codes into a pre-allocated Uint8Array
+   * (0=EMPTY, 1=READ, 2=LOW_CONF, 3=CONFLICT, 4=MISSING) so UI code avoids `getCells().map(...)`.
+   */
+  function getCellStateSnapshot(outUint8) {
+    const n = cells.length;
+    const dst = outUint8 && outUint8.length >= n ? outUint8 : new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const s = cells[i].state;
+      dst[i] = s === 'READ' ? 1 : (s === 'LOW_CONF' ? 2 : (s === 'CONFLICT' ? 3 : (s === 'MISSING' ? 4 : 0)));
+    }
+    return dst;
   }
 
   /**
@@ -429,9 +532,49 @@ export function createPanArrayMapper(opts = {}) {
       payloadToCellIdx.set(bestPayload, cell.index);
     }
 
-    // Gentle body-sway anchor absorption
+    // Gentle body-sway anchor absorption (or A8 Kalman filter when `cfg.panKalman` is enabled)
     stance.lastResidualIn = Math.round(errIn * 10) / 10;
-    if (cfg.nudgeDamp) {
+    if (cfg.panKalman) {
+      const dtSec = stance.lastNudgeMs > 0 ? Math.max(0.01, (now - stance.lastNudgeMs) * 0.001) : 0.05;
+      stance.lastNudgeMs = now;
+      const panRad = Math.atan2(proj.wx - stance.px, stance.d);
+      const tiltRad = Math.atan2(proj.wy - stance.py, Math.hypot(proj.wx - stance.px, stance.d));
+      stance.driftSigmaIn = Math.round(computeDriftSigmaIn(stance.d, panRad, dtSec) * 100) / 100;
+
+      // Angle-compensated standoff distance refinement from label height `lenPx`
+      if (obs.lenPx > 20) {
+        const dSol = solveDistanceFromLabel({
+          fPx: getFocalLengthPx(frameW, frameH),
+          labelLenIn: cfg.labelLenIn,
+          lenPx: obs.lenPx,
+          panRad,
+          tiltRad,
+          minIn: 6,
+          maxIn: 50,
+        });
+        if (dSol) {
+          stance.d = Math.max(6, Math.min(50, stance.d + 0.3 * (dSol.dIn - stance.d)));
+        }
+      }
+
+      if (errIn > Math.min(cfg.pitchXIn, cfg.pitchYIn) * 0.42) {
+        stance.stanceWarning = true;
+      } else if (cell.state === 'READ') {
+        kalman.x[0] = stance.yawTrimRad;
+        kalman.x[1] = stance.px;
+        kalman.x[2] = stance.py;
+        kalman.predict(dtSec);
+        kalman.update(-ex, -ey, stance.d, proj.wzIn);
+        stance.yawTrimRad = Math.max(-0.25, Math.min(0.25, kalman.x[0]));
+        stance.px = kalman.x[1];
+        stance.py = kalman.x[2];
+        stance.stanceWarning = false;
+      }
+      stance.lastResidualEx = ex;
+      stance.lastResidualEy = ey;
+      stance.lastReadCellIdx = cell.index;
+      stance.lastReadPayload = bestPayload;
+    } else if (cfg.nudgeDamp) {
       // A4: damped stance nudge only on agreeing reads within 3 in of prior residual, rate-capped
       const sameRead = stance.lastReadCellIdx === cell.index && stance.lastReadPayload === bestPayload;
       const resJump = Math.hypot(ex - stance.lastResidualEx, ey - stance.lastResidualEy);
@@ -530,6 +673,8 @@ export function createPanArrayMapper(opts = {}) {
     stance.lastReadPayload = '';
     stance.stanceWarning = false;
     stance.calibratedTwoCorner = false;
+    stance.driftSigmaIn = 0;
+    kalman.reset(0, 0, 0);
     duplicateEvents = [];
     rebuildGrid();
   }
@@ -619,10 +764,12 @@ export function createPanArrayMapper(opts = {}) {
     cfg,
     stance,
     getCells: () => cells,
+    getCellStateSnapshot,
     getUnplaced: () => unplaced,
     getDuplicateEvents: () => duplicateEvents,
     getFocalLengthPx,
     projectPixelToWall,
+    predictLabelPixel,
     getCameraFootprint,
     getAimQuaternionForCell,
     getStartCornerAim,
@@ -631,6 +778,8 @@ export function createPanArrayMapper(opts = {}) {
     anchorAimToCell,
     anchorObservationToCell,
     recordCornerCalibration,
+    solveTwoReadFocalAndDistance,
+    kalman,
     addObservation,
     clearCell,
     resetAll,
