@@ -39,6 +39,7 @@ export function createPipelineState(width = 1280, height = 720) {
   return {
     width: width | 0,
     height: height | 0,
+    flags: 0,
     roi: createRoiState(width, height),
     scanline: createScanlineState(),
     consensus: createConsensusState(),
@@ -152,6 +153,7 @@ function storeUniqueFrameDetection(state, result) {
  */
 export function processFrame(luma, width, height, state, result, measureStages = false) {
   const t0 = measureStages ? performance.now() : 0;
+  state.scanline.flags = state.flags | 0;
 
   const hasRoi = estimateRoi(luma, width, height, state.roi, result);
   const t1 = measureStages ? performance.now() : 0;
@@ -266,6 +268,7 @@ function collectMultiConsensusSlots(state, result, width, height) {
 export function processFrameMulti(luma, width, height, state, result, measureStages = false) {
   const t0 = measureStages ? performance.now() : 0;
   state.detCount = 0;
+  state.scanline.flags = state.flags | 0;
 
   const hasRoi = estimateRoi(luma, width, height, state.roi, result);
   const t1 = measureStages ? performance.now() : 0;
@@ -428,19 +431,32 @@ export function extractMultiDetections(state) {
     const pLen = state.detPayloadLens[d];
     const sOff = d * MAX_CODE128_SYMBOLS;
     const sCount = state.detSymbolCounts[d];
+    const payload = bytesSliceToAscii(state.detPayloadBytes, pOff, pLen);
+    const cx = state.detCenterX[d];
+    const cy = state.detCenterY[d];
+    const majorLen = state.detMajorLen[d];
+    const thetaDeg = state.detThetaDeg[d];
+    const rad = (thetaDeg * Math.PI) / 180;
+    const halfDx = Math.cos(rad) * majorLen * 0.5;
+    const halfDy = Math.sin(rad) * majorLen * 0.5;
     out[d] = {
-      payload: bytesSliceToAscii(state.detPayloadBytes, pOff, pLen),
+      payload,
       payloadHex: bytesSliceToHex(state.detPayloadBytes, pOff, pLen),
       symbolsHex: symbolsSliceToHex(state.detSymbolBytes, sOff, sCount),
       symbology: 'CODE_128',
+      prefixOk: payload.startsWith('tsX') ? 1 : 0,
       roiX: state.detRoiX[d],
       roiY: state.detRoiY[d],
       roiW: state.detRoiW[d],
       roiH: state.detRoiH[d],
-      roiCenterX: state.detCenterX[d],
-      roiCenterY: state.detCenterY[d],
-      roiMajorLen: state.detMajorLen[d],
-      thetaDeg: state.detThetaDeg[d],
+      roiCenterX: cx,
+      roiCenterY: cy,
+      roiMajorLen: majorLen,
+      x0: cx - halfDx,
+      y0: cy - halfDy,
+      x1: cx + halfDx,
+      y1: cy + halfDy,
+      thetaDeg,
       roiConfidence: state.detConfidence[d],
       consensusCount: state.detAgreeCount[d],
     };
@@ -562,7 +578,9 @@ if (
       const w = (msg.width | 0) || 1280;
       const h = (msg.height | 0) || 720;
       workerState = createPipelineState(w, h);
-      self.postMessage({ type: 'ready', width: w, height: h });
+      workerState.flags = msg.flags | 0;
+      workerState.scanline.flags = workerState.flags;
+      self.postMessage({ type: 'ready', width: w, height: h, flags: workerState.flags });
       return;
     }
 
@@ -574,6 +592,11 @@ if (
       if (!workerState || workerState.width !== width || workerState.height !== height) {
         workerState = createPipelineState(width, height);
       }
+      if (msg.flags !== undefined) {
+        workerState.flags = msg.flags | 0;
+      }
+      workerState.scanline.flags = workerState.flags | 0;
+      workerState.scanline.mode = msg.vertical ? 1 : 0;
 
       workerResult.detected = 0;
       workerResult.consensusCount = 0;
@@ -601,6 +624,12 @@ if (
         {
           type: 'result',
           frameId: msg.frameId | 0,
+          tFrameMs: msg.tFrameMs || 0,
+          cropX: msg.cropX | 0,
+          cropY: msg.cropY | 0,
+          frameW: width,
+          frameH: height,
+          flags: workerState.flags | 0,
           tCaptureMs: msg.tCaptureMs || 0,
           detected: decoded,
           detectionCount: detCount,
