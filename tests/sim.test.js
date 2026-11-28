@@ -116,4 +116,23 @@ test('mat4Perspective + mat4CameraView maps wall origin (0,0,0) to NDC center (0
   assert.ok(Math.abs(px / pw) < 1e-5, `expected aimed point (+10,0,0) at NDC x=0, got ${px / pw}`);
 });
 
+test('F1 FC realism 3.5 in tsX labels match expected module count and Nyquist floor at 8/12/30 in', () => {
+  const fcCells = createWallCells({ fcMode: true });
+  assert.equal(fcCells.length, 16);
+  for (const c of fcCells) {
+    assert.ok(c.payload.startsWith('tsX'), `expected tsX prefix, got ${c.payload}`);
+    const enc = encodeCode128(c.payload, { subset: 'B', quietZoneModules: 10 });
+    assert.equal(enc.totalModules, 187, `expected 187 modules for 12-char Code 128B, got ${enc.totalModules}`);
+  }
+
+  // A53 1x (70.7 deg) 1080p at 8 in -> > 3 ppm (OK), 12 in -> > 2 ppm (OK), 30 in -> < 1.0 ppm (FAIL)
+  const o8 = computeOptics({ distanceIn: 8, hfovDeg: 70.7, widthPx: 1920, heightPx: 1080, totalModules: 187, labelHeightIn: 3.5 });
+  const o12 = computeOptics({ distanceIn: 12, hfovDeg: 70.7, widthPx: 1920, heightPx: 1080, totalModules: 187, labelHeightIn: 3.5 });
+  const o30 = computeOptics({ distanceIn: 30, hfovDeg: 70.7, widthPx: 1920, heightPx: 1080, totalModules: 187, labelHeightIn: 3.5 });
+  assert.ok(o8.ppm > 3.0, `8 in ppm=${o8.ppm}`);
+  assert.ok(o12.ppm > 2.0, `12 in ppm=${o12.ppm}`);
+  assert.ok(o30.ppm < 1.0, `30 in 1x ppm=${o30.ppm}`);
+  assert.equal(o30.nyquistOk, false);
+});
+
 console.log(`All ${passed} WebGL simulator tests passed.`);

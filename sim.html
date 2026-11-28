@@ -427,6 +427,13 @@
           <button class="chip" data-preset="tele-30" type="button">3× Tele 30″ Pan</button>
           <button class="chip" data-preset="full-wall" type="button">Full Wall 48″</button>
         </div>
+        <div class="btn-row" aria-label="FC 3.5 inch realism presets">
+          <button class="chip" data-preset="fc-8-3p5" type="button">FC 3.5″ 8″ A53</button>
+          <button class="chip" data-preset="fc-12-3p5-auto" type="button">FC 3.5″ 12″ Auto 1/60</button>
+          <button class="chip" data-preset="fc-tele-30-3p5" type="button">FC 3.5″ 30″ 3× Tele</button>
+          <button class="chip" data-preset="fc-30-1x-fail" type="button">FC 3.5″ 30″ 1× Fail</button>
+          <button class="chip" data-preset="fc-jitter-hard" type="button">FC 3.5″ Hard Jitter</button>
+        </div>
       </div>
 
       <div class="card">
@@ -632,7 +639,7 @@
     }
 
     // Build 4x4 wall cells and coverage tiles
-    const cells = createWallCells();
+    let cells = createWallCells({ fcMode: false });
     const payloadToCell = new Map();
     const cellTiles = [];
     for (const cell of cells) {
@@ -642,6 +649,17 @@
       tile.innerHTML = `<div class="cell-id">${cell.id}</div><div class="cell-meta">--</div>`;
       wallGridEl.appendChild(tile);
       cellTiles.push(tile);
+    }
+
+    function setLabelMode(fcMode) {
+      const nextHeight = fcMode ? 3.5 : 6;
+      if (state.fcMode === fcMode && state.labelHeightIn === nextHeight) return;
+      state.fcMode = fcMode;
+      state.labelHeightIn = nextHeight;
+      cells = createWallCells({ fcMode });
+      payloadToCell.clear();
+      for (const c of cells) payloadToCell.set(c.payload, c);
+      renderer.setCells(cells);
     }
 
     // Initialize WebGL renderer
@@ -671,6 +689,8 @@
       jitter: 0.15,
       shadowStrength: 0.35,
       noiseStrength: 0.015,
+      fcMode: false,
+      labelHeightIn: 6,
       simTimeSec: 0,
       frameId: 0,
       manualPose: { x: 0, y: 0, z: 14, yawDeg: 0, pitchDeg: 0, rollDeg: 0 },
@@ -734,9 +754,10 @@
         widthPx: state.width,
         heightPx: state.height,
         totalModules: renderer.totalModules,
+        labelHeightIn: state.labelHeightIn,
       });
       mPpm.textContent = `${optics.ppm.toFixed(2)} ppm`;
-      mPpm.className = `metric-val ${optics.ppm >= 2.2 ? 'good' : (optics.ppm >= 1.6 ? 'warn' : 'bad')}`;
+      mPpm.className = `metric-val ${optics.ppm >= 2.0 ? 'good' : (optics.ppm >= 1.5 ? 'warn' : 'bad')}`;
     }
 
     // Handle real worker results
@@ -935,6 +956,7 @@
         widthPx: state.width,
         heightPx: state.height,
         totalModules: renderer.totalModules,
+        labelHeightIn: state.labelHeightIn,
       });
 
       const canDispatch = !workerBusy && recycledBuffer && recycledBuffer.byteLength === state.width * state.height;
@@ -947,6 +969,7 @@
           width: state.width,
           height: state.height,
           hfovDeg: state.hfovDeg,
+          labelHeightIn: state.labelHeightIn,
           shadowStrength: state.shadowStrength,
           noiseStrength: state.noiseStrength,
           glareStrength: 0.16,
@@ -1027,6 +1050,8 @@
     }
 
     function applyPreset(name) {
+      const isFc = name.startsWith('fc-');
+      setLabelMode(isFc);
       if (name === 'a53-8-720') {
         state.pathId = 'snake-h';
         state.distanceIn = 10;
@@ -1034,6 +1059,7 @@
         state.speedInPerSec = 18;
         state.fpsCap = 13;
         state.shutterMs = 2;
+        state.jitter = 0.15;
         selRes.value = '1280x720';
         applyResolution('1280x720');
       } else if (name === 'a53-8-1080') {
@@ -1043,6 +1069,7 @@
         state.speedInPerSec = 20;
         state.fpsCap = 13;
         state.shutterMs = 2;
+        state.jitter = 0.15;
         selRes.value = '1920x1080';
         applyResolution('1920x1080');
       } else if (name === 'tele-30') {
@@ -1052,6 +1079,7 @@
         state.speedInPerSec = 22;
         state.fpsCap = 30;
         state.shutterMs = 2;
+        state.jitter = 0.15;
         selRes.value = '1920x1080';
         applyResolution('1920x1080');
       } else if (name === 'full-wall') {
@@ -1061,9 +1089,61 @@
         state.hfovDeg = 70.7;
         state.fpsCap = 30;
         state.shutterMs = 0;
+        state.jitter = 0;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'fc-8-3p5') {
+        state.pathId = 'snake-h';
+        state.distanceIn = 8;
+        state.hfovDeg = 70.7;
+        state.speedInPerSec = 14;
+        state.fpsCap = 13;
+        state.shutterMs = 4;
+        state.jitter = 0.25;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'fc-12-3p5-auto') {
+        state.pathId = 'snake-h';
+        state.distanceIn = 12;
+        state.hfovDeg = 70.7;
+        state.speedInPerSec = 14;
+        state.fpsCap = 13;
+        state.shutterMs = 16;
+        state.jitter = 0.30;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'fc-tele-30-3p5') {
+        state.pathId = 'pan-snake';
+        state.distanceIn = 30;
+        state.hfovDeg = 26;
+        state.speedInPerSec = 18;
+        state.fpsCap = 30;
+        state.shutterMs = 4;
+        state.jitter = 0.25;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'fc-30-1x-fail') {
+        state.pathId = 'pan-snake';
+        state.distanceIn = 30;
+        state.hfovDeg = 70.7;
+        state.speedInPerSec = 16;
+        state.fpsCap = 13;
+        state.shutterMs = 8;
+        state.jitter = 0.20;
+        selRes.value = '1920x1080';
+        applyResolution('1920x1080');
+      } else if (name === 'fc-jitter-hard') {
+        state.pathId = 'snake-h';
+        state.distanceIn = 10;
+        state.hfovDeg = 70.7;
+        state.speedInPerSec = 16;
+        state.fpsCap = 10;
+        state.shutterMs = 8;
+        state.jitter = 0.65;
         selRes.value = '1920x1080';
         applyResolution('1920x1080');
       }
+      rngJitter.value = String(Math.round(state.jitter * 100));
       selPath.value = state.pathId;
       rngDist.value = String(state.distanceIn);
       selFov.value = String(state.hfovDeg);

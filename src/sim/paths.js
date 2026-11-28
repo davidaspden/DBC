@@ -24,9 +24,11 @@ const RAD2DEG = 180 / Math.PI;
 
 /**
  * Generates the 16 canonical tote definitions (row 0 = top, col 0 = left).
- * Each payload is a 16-character Code 128 Set B string matching factory label specs.
+ * Default (`fcMode = false`): 16-char Code 128B (`TOTE-R1C1-000101`, 231 modules, 6 in).
+ * FC realism mode (`fcMode = true`): 12-char Code 128B (`tsX11A000101`, 187 modules, 3.5 in).
  */
-export function createWallCells() {
+export function createWallCells(opts = {}) {
+  const fcMode = Boolean(opts && opts.fcMode);
   const cells = [];
   for (let r = 0; r < GRID_ROWS; r++) {
     for (let c = 0; c < GRID_COLS; c++) {
@@ -39,7 +41,7 @@ export function createWallCells() {
         row: r,
         col: c,
         id: `R${r + 1}C${c + 1}`,
-        payload: `TOTE-R${r + 1}C${c + 1}-00${num}${num}`,
+        payload: fcMode ? `tsX${r + 1}${c + 1}A000${num}B` : `TOTE-R${r + 1}C${c + 1}-00${num}${num}`,
         cx,
         cy,
       });
@@ -50,17 +52,25 @@ export function createWallCells() {
 
 /**
  * Computes physical field-of-view footprint at `distanceIn` and pixels-per-module (ppm)
- * for a vertical 6 in Code 128 barcode.
+ * for a vertical Code 128 barcode of height `labelHeightIn` (default 6 in).
  *
  * @param {{
  *   distanceIn: number,
  *   hfovDeg: number,
  *   widthPx: number,
  *   heightPx: number,
- *   totalModules?: number
+ *   totalModules?: number,
+ *   labelHeightIn?: number
  * }} params
  */
-export function computeOptics({ distanceIn, hfovDeg, widthPx, heightPx, totalModules = 231 }) {
+export function computeOptics({
+  distanceIn,
+  hfovDeg,
+  widthPx,
+  heightPx,
+  totalModules = 231,
+  labelHeightIn = BARCODE_HEIGHT_IN,
+}) {
   const aspect = widthPx / heightPx;
   const halfHfovRad = (hfovDeg * 0.5) * DEG2RAD;
   const halfTanH = Math.tan(halfHfovRad);
@@ -70,7 +80,7 @@ export function computeOptics({ distanceIn, hfovDeg, widthPx, heightPx, totalMod
   const visibleWidthIn = 2 * distanceIn * halfTanH;
   const visibleHeightIn = 2 * distanceIn * halfTanV;
   const pxPerInch = widthPx / visibleWidthIn;
-  const barcodeHeightPx = BARCODE_HEIGHT_IN * pxPerInch;
+  const barcodeHeightPx = labelHeightIn * pxPerInch;
   const barcodeWidthPx = BARCODE_WIDTH_IN * pxPerInch;
   const ppm = barcodeHeightPx / totalModules;
 
@@ -83,6 +93,7 @@ export function computeOptics({ distanceIn, hfovDeg, widthPx, heightPx, totalMod
     pxPerInch,
     barcodeHeightPx,
     barcodeWidthPx,
+    labelHeightIn,
     ppm,
     nyquistOk: ppm >= 2.0,
   };

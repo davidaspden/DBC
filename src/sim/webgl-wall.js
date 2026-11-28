@@ -75,6 +75,7 @@ varying vec3 vWorldPos;
   return `${header}
 uniform sampler2D uBarcodeTex;
 uniform float uTotalModules;
+uniform float uBarcodeHeightIn;
 uniform float uShadowStrength;
 uniform float uNoiseStrength;
 uniform float uGlareStrength;
@@ -171,9 +172,9 @@ void main() {
   vec3 albedo = toteBase;
   float isLabel = 0.0;
 
-  // Centered vertical barcode label: EXACTLY 2.0 in wide x 6.0 in tall
+  // Centered vertical barcode label: 2.0 in wide x uBarcodeHeightIn tall (default 6.0 in; 3.5 in in FC presets)
   float halfBW = ${BARCODE_WIDTH_IN * 0.5}.0;
-  float halfBH = ${BARCODE_HEIGHT_IN * 0.5}.0;
+  float halfBH = uBarcodeHeightIn * 0.5;
 
   if (abs(lx) <= halfBW && abs(ly) <= halfBH) {
     isLabel = 1.0;
@@ -184,8 +185,8 @@ void main() {
     // 0.12 in crisp white side margin on left/right of the 2 in label
     float barHalfW = halfBW - 0.12;
     if (abs(lx) <= barHalfW) {
-      // Top-to-bottom along the 6 in vertical barcode: v01 in [0, 1]
-      float v01 = (halfBH - ly) / ${BARCODE_HEIGHT_IN}.0;
+      // Top-to-bottom along the vertical barcode: v01 in [0, 1]
+      float v01 = (halfBH - ly) / uBarcodeHeightIn;
       float dv = length(vec2(dFdx(v01), dFdy(v01)));
       float barCov = sampleBarcodeIntegrated(cellIdx, v01, dv);
       float lum = mix(paper, ink, barCov);
@@ -343,34 +344,37 @@ export function createWebGLWallRenderer(canvas, cells) {
     gl.getExtension('OES_standard_derivatives');
   }
 
-  // 1. Encode all 16 Code 128B barcodes into a 256 x 16 RGBA NEAREST data texture
-  const texData = new Uint8Array(MODULE_TEX_W * MODULE_TEX_H * 4);
+  const barcodeTex = gl.createTexture();
   let totalModules = 0;
-  for (let i = 0; i < cells.length && i < MODULE_TEX_H; i++) {
-    const enc = encodeCode128(cells[i].payload, { subset: 'B', quietZoneModules: 10 });
-    totalModules = enc.totalModules;
-    if (enc.totalModules > MODULE_TEX_W) {
-      throw new Error(`Barcode ${cells[i].payload} has ${enc.totalModules} modules (> ${MODULE_TEX_W})`);
+
+  function uploadCellsTexture(cellList) {
+    const texData = new Uint8Array(MODULE_TEX_W * MODULE_TEX_H * 4);
+    for (let i = 0; i < cellList.length && i < MODULE_TEX_H; i++) {
+      const enc = encodeCode128(cellList[i].payload, { subset: 'B', quietZoneModules: 10 });
+      totalModules = enc.totalModules;
+      if (enc.totalModules > MODULE_TEX_W) {
+        throw new Error(`Barcode ${cellList[i].payload} has ${enc.totalModules} modules (> ${MODULE_TEX_W})`);
+      }
+      for (let m = 0; m < enc.totalModules; m++) {
+        const v = enc.modules[m] ? 255 : 0;
+        const off = (i * MODULE_TEX_W + m) * 4;
+        texData[off] = v;
+        texData[off + 1] = v;
+        texData[off + 2] = v;
+        texData[off + 3] = 255;
+      }
     }
-    for (let m = 0; m < enc.totalModules; m++) {
-      const v = enc.modules[m] ? 255 : 0;
-      const off = (i * MODULE_TEX_W + m) * 4;
-      texData[off] = v;
-      texData[off + 1] = v;
-      texData[off + 2] = v;
-      texData[off + 3] = 255;
-    }
+    gl.bindTexture(gl.TEXTURE_2D, barcodeTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MODULE_TEX_W, MODULE_TEX_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, texData);
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
-  const barcodeTex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, barcodeTex);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MODULE_TEX_W, MODULE_TEX_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, texData);
-  gl.bindTexture(gl.TEXTURE_2D, null);
+  uploadCellsTexture(cells);
 
   // 2. Compile shader programs
   const wallVert = isWebGL2
@@ -421,6 +425,7 @@ void main() {
     uMvp: gl.getUniformLocation(wallProg, 'uMvp'),
     uBarcodeTex: gl.getUniformLocation(wallProg, 'uBarcodeTex'),
     uTotalModules: gl.getUniformLocation(wallProg, 'uTotalModules'),
+    uBarcodeHeightIn: gl.getUniformLocation(wallProg, 'uBarcodeHeightIn'),
     uShadowStrength: gl.getUniformLocation(wallProg, 'uShadowStrength'),
     uNoiseStrength: gl.getUniformLocation(wallProg, 'uNoiseStrength'),
     uGlareStrength: gl.getUniformLocation(wallProg, 'uGlareStrength'),
@@ -489,6 +494,7 @@ void main() {
     gl.uniform1i(wallLoc.uBarcodeTex, 0);
     gl.uniformMatrix4fv(wallLoc.uMvp, false, mvpMat);
     gl.uniform1f(wallLoc.uTotalModules, totalModules);
+    gl.uniform1f(wallLoc.uBarcodeHeightIn, opts.labelHeightIn ?? BARCODE_HEIGHT_IN);
     gl.uniform1f(wallLoc.uShadowStrength, opts.shadowStrength ?? 0.35);
     gl.uniform1f(wallLoc.uNoiseStrength, opts.noiseStrength ?? 0.015);
     gl.uniform1f(wallLoc.uGlareStrength, opts.glareStrength ?? 0.15);
@@ -575,7 +581,8 @@ void main() {
 
   return {
     isWebGL2,
-    totalModules,
+    get totalModules() { return totalModules; },
+    setCells: uploadCellsTexture,
     renderFrame,
     getSize: () => ({ width: curW, height: curH }),
   };
