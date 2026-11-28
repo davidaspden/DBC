@@ -141,6 +141,9 @@ export function createCode128State() {
     hitStartPx: new Float32Array(MAX_LINE_HITS),
     hitEndPx: new Float32Array(MAX_LINE_HITS),
     prefixPosQ8: new Int32Array(514),
+    // B8 part 2: run indices (start pattern .. end of Stop) of the last single-hit decode, write-only
+    spanRunA: 0,
+    spanRunB: 0,
   };
 }
 
@@ -800,6 +803,8 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
           state.payloadLen = payloadLen;
 
           if (multiHit === 0) {
+            state.spanRunA = i;
+            state.spanRunB = (cursor + Math.imul(6, step)) | 0;
             return 2;
           }
 

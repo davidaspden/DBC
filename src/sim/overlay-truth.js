@@ -363,6 +363,7 @@ export function evaluateOverlayCase(c) {
       hfovDeg: camera.hfovDeg,
       frameSeed: c.seed ?? 1,
       ctx: createCpuRenderContext(scene.cells.length),
+      ...(c.renderOpts || {}),
     },
     null
   );

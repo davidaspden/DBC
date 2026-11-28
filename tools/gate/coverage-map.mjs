@@ -135,8 +135,11 @@ export const PRODUCT_FLAG_COVERAGE = Object.freeze({
   decodeAnchor: {
     registry: 'product',
     scenarios: [],
-    tests: [{ file: 'tests/decode-anchor.test.js', testName: 'R8 truth: decodeAnchor cuts the worst centre error from ~25% to <= 3.5% of label length in every case' }],
-    planned: 'B8',
+    tests: [
+      { file: 'tests/decode-anchor.test.js', testName: 'R8 truth: decodeAnchor cuts the worst centre error from ~25% to <= 3.5% of label length in every case' },
+      { file: 'tests/decode-anchor-default-path.test.js', testName: 'decodeAnchor: every crop centre within 12 px and span length within 3% of the true bars' },
+    ],
+    planned: 'B8/B8p2',
     reason: 'Only changes reported label geometry (centre/ROI/overlay line), never decodes, so decode-count SimGate scenarios cannot score it; scored against R8 overlay ground truth (also enabled by SimGate W-all).',
   },
 

@@ -40,3 +40,21 @@ Compare: `node tools/overlay-truth.mjs` vs `node tools/overlay-truth.mjs --ancho
 The remaining ~3% floor is perspective (the midpoint of a foreshortened span is not the projection
 of the 3D midpoint) plus the across-axis position, which comes from where the ROI cluster placed the
 scanlines.
+
+### B8 part 2 — default (non-vertical-mode) path
+
+On the real tote still the default path decodes via Tier C (aligned profile averaging) and used to
+report the Stage 1 RoI-cluster box and centre. `decodeAnchor` now records the decoded start/stop
+positions of the winning Tier C profile, slides the RoI box/centre along the scan axis onto the
+decoded bars (the across-axis position stays the RoI's), trims the box length to the decoded span
+and reports the decoded span length. `node tools/still-anchor-check.mjs` prints the real-image table
+(bars truth measured by eye: y 897..1345, centre (530, 1121)).
+
+| real still, 6 crops | default | `decodeAnchor` |
+|---|---|---|
+| worst centre error | 98 px | 7 px |
+| span length reported (true 448) | 531-756 | 445 |
+| box along the scan axis | 552-776 | 470 |
+
+The sim never routes through Tier C (even with noise or blur), so this path is verified on the real
+still only.

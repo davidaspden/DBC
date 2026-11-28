@@ -83,6 +83,11 @@ export function createConsensusState() {
     slotMidSumX: new Float64Array(MAX_EXACT_SLOTS),
     slotMidSumY: new Float64Array(MAX_EXACT_SLOTS),
     slotMidN: new Int32Array(MAX_EXACT_SLOTS),
+    // B8 part 2 (`decodeAnchor`): decoded span of the last Tier C profile decode, as [startPx, endPx] along
+    // `tcLine` (scanline sample coordinates); `tcValid` is reset per consensus call
+    tcValid: 0,
+    tcLine: 0,
+    tcSpan: new Float64Array(2),
 
     // Tier B soft candidate bank (integer Q10 confidences)
     softCount: 0,
@@ -258,6 +263,29 @@ function tryTierBSoftVoting(cState, result) {
 }
 
 /**
+ * B8 part 2 (`decodeAnchor`): after a Tier C profile decode, converts the decoded symbol's start and stop
+ * run positions into scanline sample coordinates on `lineIdx` (`profileOffset` = scanline index of the
+ * profile's sample 0) so the reported box can sit on the decoded bars. Runs only on a successful decode.
+ */
+function recordTierCSpan(scanState, cState, lineIdx, profileOffset) {
+  if ((scanState.flags & FLAG_DECODE_ANCHOR) === 0) return;
+  const c128 = cState.c128;
+  const a = c128.spanRunA | 0;
+  const b = c128.spanRunB | 0;
+  const lo = a < b ? a : b;
+  const hi = a < b ? b : a;
+  const widths = scanState.runWidthsQ8;
+  let acc = scanState.runOriginQ8 | 0;
+  for (let r = 0; r < lo; r++) acc = (acc + widths[r]) | 0;
+  const startQ8 = acc;
+  for (let r = lo; r <= hi; r++) acc = (acc + widths[r]) | 0;
+  cState.tcSpan[0] = profileOffset + startQ8 / 256.0;
+  cState.tcSpan[1] = profileOffset + acc / 256.0;
+  cState.tcLine = lineIdx | 0;
+  cState.tcValid = 1;
+}
+
+/**
  * W5 (flagged `prefixStack`): Aligns scanlines where W3 detected the `tsX` crib on their
  * exact sub-pixel start-bar edge, weights inversely by crib error, and decodes the composite.
  * Pure integer math, zero heap allocations.
@@ -350,6 +378,7 @@ function tryPrefixAlignedStacking(scanState, cState, result) {
         continue;
       }
       cState.lastLineIdx = refLine;
+      recordTierCSpan(scanState, cState, refLine, iStart);
       emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, mCount);
       return 1;
     }
@@ -441,6 +470,7 @@ function tryTierCProfileAveraging(scanState, cState, result) {
         const votes = recordExactVote(cState, c128.payloadBytes, c128.payloadLen);
         if (votes >= MIN_CONSENSUS_AGREEMENT) {
           cState.lastLineIdx = b;
+          recordTierCSpan(scanState, cState, b, iStart);
           emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, votes);
           return 1;
         }
@@ -661,6 +691,7 @@ function recordMultiLineHit(cState, scanState, lineIdx, hitIdx) {
  */
 export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState, cState, result) {
   cState.slotCount = 0;
+  cState.tcValid = 0;
   cState.softCount = 0;
   cState.lastLineIdx = 0;
 
@@ -754,7 +785,45 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
       cState.slotMaxX[0] = result.roiX + result.roiW;
       cState.slotMaxY[0] = result.roiY + result.roiH;
       cState.slotSpanSum[0] = result.roiMajorLen * result.consensusCount;
-      cState.slotMidN[0] = 0; // Tier C: no per-line decoded span, keep the RoI-box centre
+      cState.slotMidN[0] = 0; // Tier C: keep the RoI-box centre unless the decoded span is anchored below
+      if (cState.tcValid === 1 && (flags & FLAG_DECODE_ANCHOR) !== 0) {
+        // B8 part 2: slide the RoI box/centre along the scan axis onto the decoded start-stop span and use
+        // the decoded span length. The across-axis position stays the RoI cluster's.
+        const tl = cState.tcLine | 0;
+        const ux = scanState.lineStepXQ16[tl] / 65536.0;
+        const uy = scanState.lineStepYQ16[tl] / 65536.0;
+        const tMid = (cState.tcSpan[0] + cState.tcSpan[1]) * 0.5;
+        const mx = scanState.lineStartXQ16[tl] / 65536.0 + ux * tMid;
+        const my = scanState.lineStartYQ16[tl] / 65536.0 + uy * tMid;
+        const rcx = result.roiCenterX;
+        const rcy = result.roiCenterY;
+        const along = (mx - rcx) * ux + (my - rcy) * uy;
+        const dx = ux * along;
+        const dy = uy * along;
+        cState.slotMinX[0] += dx;
+        cState.slotMaxX[0] += dx;
+        cState.slotMinY[0] += dy;
+        cState.slotMaxY[0] += dy;
+        // Near-axis-aligned labels: trim the box along the scan axis to the decoded span itself
+        const sA = cState.tcSpan[0];
+        const sB = cState.tcSpan[1];
+        const ax0 = scanState.lineStartXQ16[tl] / 65536.0 + ux * sA;
+        const ay0 = scanState.lineStartYQ16[tl] / 65536.0 + uy * sA;
+        const bx0 = scanState.lineStartXQ16[tl] / 65536.0 + ux * sB;
+        const by0 = scanState.lineStartYQ16[tl] / 65536.0 + uy * sB;
+        if (uy >= 0.9 || uy <= -0.9) {
+          cState.slotMinY[0] = ay0 < by0 ? ay0 : by0;
+          cState.slotMaxY[0] = ay0 < by0 ? by0 : ay0;
+        } else if (ux >= 0.9 || ux <= -0.9) {
+          cState.slotMinX[0] = ax0 < bx0 ? ax0 : bx0;
+          cState.slotMaxX[0] = ax0 < bx0 ? bx0 : ax0;
+        }
+        cState.slotMidSumX[0] = rcx + dx;
+        cState.slotMidSumY[0] = rcy + dy;
+        cState.slotMidN[0] = 1;
+        const spanLen = cState.tcSpan[1] - cState.tcSpan[0];
+        cState.slotSpanSum[0] = (spanLen < 0 ? -spanLen : spanLen) * result.consensusCount;
+      }
       cState.slotCount = 1;
       return 1;
     }
