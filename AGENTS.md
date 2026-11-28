@@ -100,7 +100,8 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 │   │   ├── exposure.js         # Max safe along-scan speed & exposure HUD formatter
 │   │   ├── crop.js             # Even-aligned VideoFrame rect crop & predicted 4K label crop (C5/C7)
 │   │   └── lensprobe.js        # Rear lens capability probe & standback profile selector (C6)
-│   ├── ui/                     # Main-page UI helpers (U2/U4)
+│   ├── ui/                     # Main-page UI helpers (U2/U4/overlayAlign)
+│   │   ├── frame-map.js        # Unified mapFrameToScreen(x,y), DPR sizing & live frame-size reader
 │   │   ├── overlay-dim.js      # Flagged Normal/Dim/Min overlay & auto-fade controller
 │   │   └── pause.js            # Hold-to-pause & face-down gravity pause controller (U4)
 │   ├── tape/                   # Frame/sensor `.dbct` recorder (GR3)
@@ -150,6 +151,7 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
     ├── exposure.test.js        # Unit tests for C4 exposure info, two-step setter & speed budget
     ├── flags.test.js           # Unit tests for GR1 feature flags & worker bitmask
     ├── flow.test.js            # Unit tests for W13 downsampled optical flow (accuracy & <=3 ms)
+    ├── overlay-align.test.js   # Unit tests for unified mapFrameToScreen(x,y) overlay alignment
     ├── panmodel.test.js        # Unit & 200-run Monte-Carlo tests for A8 panKalman & A9 allocCleanup
     ├── sim.test.js             # Unit tests for WebGL simulator geometry, F1 FC realism & F2 paths
     ├── tape.test.js            # Unit tests for GR3 `.dbct` gzip record & Node replay

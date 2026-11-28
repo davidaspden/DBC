@@ -528,6 +528,7 @@
     import { createSlideWallMapper } from './src/wallmap.js?v=6';
     import { computeBlurModules } from './src/array/blur.js?v=6';
     import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=6';
+    import { createFrameToScreenMapper, readRealFrameSize, syncOverlayCanvasSize } from './src/ui/frame-map.js?v=6';
     import { pxPerModule } from './src/array/optics.js?v=6';
     import { classifyHold, solveAxisRemap } from './src/array/setup.js?v=6';
     import { formatExposureLabel } from './src/capture/exposure.js?v=6';
@@ -620,6 +621,7 @@
 
     // Core modules (all new Wave 1/2/3 features strictly behind flags, default OFF)
     const flagCamAlign = isOn('camAlign');
+    const flagOverlayAlign = isOn('overlayAlign');
     const flagBlurGateV2 = isOn('blurGateV2');
     const flagFcDefaults = isOn('fcLabelDefaults');
     const flagGravityZero = isOn('orientGravityZero');
@@ -1006,7 +1008,21 @@
       let w;
       let h;
       let xform = null;
-      if (flagCamAlign) {
+      let fm = null;
+      if (flagOverlayAlign) {
+        const sz = syncOverlayCanvasSize(camHud, videoEl);
+        if (!sz.ok) return;
+        camHudCtx.setTransform(sz.dpr, 0, 0, sz.dpr, 0, 0);
+        camHudCtx.clearRect(0, 0, sz.cssW, sz.cssH);
+        w = sz.cssW;
+        h = sz.cssH;
+        const real = readRealFrameSize(videoEl, app.cam ? app.cam.track : null, null, app.frameW, app.frameH);
+        const fW = real.width || app.frameW;
+        const fH = real.height || app.frameH;
+        const cs = typeof getComputedStyle === 'function' ? getComputedStyle(videoEl).objectFit : 'cover';
+        const fit = cs === 'contain' ? 'contain' : 'cover';
+        fm = createFrameToScreenMapper({ frameW: fW, frameH: fH, cssW: sz.cssW, cssH: sz.cssH, fit });
+      } else if (flagCamAlign) {
         const dpr = window.devicePixelRatio || 1;
         const cssW = camHud.clientWidth | 0;
         const cssH = camHud.clientHeight | 0;
@@ -1029,12 +1045,26 @@
         camHudCtx.clearRect(0, 0, w, h);
       }
 
-      // Subtle vertical label guide in center (1:1.75 when camAlign ON, 1:3 legacy when OFF)
-      const guideAspect = flagCamAlign ? 1.75 : 3;
-      const guideH = h * 0.44;
-      const guideW = guideH / guideAspect;
-      const gx = (w - guideW) * 0.5;
-      const gy = (h - guideH) * 0.5;
+      // Subtle vertical label guide in center (mapped via mapFrameToScreen when overlayAlign ON)
+      let gx;
+      let gy;
+      let guideW;
+      let guideH;
+      if (fm) {
+        const fGuideH = fm.frameH * 0.44;
+        const fGuideW = fGuideH / 1.75;
+        const rg = fm.mapRectToScreen((fm.frameW - fGuideW) * 0.5, (fm.frameH - fGuideH) * 0.5, fGuideW, fGuideH);
+        gx = rg.x;
+        gy = rg.y;
+        guideW = rg.w;
+        guideH = rg.h;
+      } else {
+        const guideAspect = flagCamAlign ? 1.75 : 3;
+        guideH = h * 0.44;
+        guideW = guideH / guideAspect;
+        gx = (w - guideW) * 0.5;
+        gy = (h - guideH) * 0.5;
+      }
       camHudCtx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
       camHudCtx.lineWidth = Math.max(2, w / 480);
       camHudCtx.setLineDash([8, 6]);
@@ -1045,25 +1075,44 @@
       camHudCtx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
       camHudCtx.lineWidth = 1.5;
       camHudCtx.beginPath();
-      camHudCtx.moveTo(w * 0.12, h * 0.5);
-      camHudCtx.lineTo(w * 0.88, h * 0.5);
+      if (fm) {
+        const rl0 = fm.mapFrameToScreen(fm.frameW * 0.12, fm.frameH * 0.5);
+        const rl1 = fm.mapFrameToScreen(fm.frameW * 0.88, fm.frameH * 0.5);
+        camHudCtx.moveTo(rl0.x, rl0.y);
+        camHudCtx.lineTo(rl1.x, rl1.y);
+      } else {
+        camHudCtx.moveTo(w * 0.12, h * 0.5);
+        camHudCtx.lineTo(w * 0.88, h * 0.5);
+      }
       camHudCtx.stroke();
 
-      // Target cell badge near center crosshair
+      // Target cell badge near center crosshair (+ projected cell reticle in frame space when overlayAlign ON)
       if (footprint.targetCell) {
+        if (fm && !slideModeActive) {
+          const pred = mapper.predictLabelPixel(orient.getRelativeQuaternion(), footprint.targetCell.row, footprint.targetCell.col, fm.frameW, fm.frameH);
+          if (pred.ok && pred.inFrame) {
+            const pp = fm.mapFrameToScreen(pred.uPx, pred.vPx);
+            camHudCtx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+            camHudCtx.lineWidth = 1.5;
+            camHudCtx.beginPath();
+            camHudCtx.arc(pp.x, pp.y, 7, 0, Math.PI * 2);
+            camHudCtx.stroke();
+          }
+        }
         const tag = `${footprint.targetCell.id}${footprint.targetCell.state === 'READ' ? ' ✓' : ''}`;
         const fs = Math.max(12, Math.round(w / 32));
         camHudCtx.font = `800 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
         const tw = camHudCtx.measureText(tag).width;
+        const badgeCenterX = gx + guideW * 0.5;
         camHudCtx.fillStyle = footprint.targetCell.state === 'READ'
           ? 'rgba(6, 40, 24, 0.85)'
           : 'rgba(15, 23, 42, 0.82)';
-        camHudCtx.fillRect(w * 0.5 - tw * 0.5 - 8, gy - fs - 12, tw + 16, fs + 8);
+        camHudCtx.fillRect(badgeCenterX - tw * 0.5 - 8, gy - fs - 12, tw + 16, fs + 8);
         camHudCtx.fillStyle = footprint.targetCell.state === 'READ' ? '#86efac' : '#7dd3fc';
-        camHudCtx.fillText(tag, w * 0.5 - tw * 0.5, gy - 8);
+        camHudCtx.fillText(tag, badgeCenterX - tw * 0.5, gy - 8);
       }
 
-      // Decoded barcode boxes from worker
+      // Decoded barcode boxes (+ scanlines & raw RoI fallback mapped via mapFrameToScreen when overlayAlign ON)
       const msg = app.lastResult;
       if (msg) {
         const dets = Array.isArray(msg.detections) && msg.detections.length > 0
@@ -1072,12 +1121,32 @@
         const fs = Math.max(11, Math.round(w / 42));
         camHudCtx.font = `700 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
         for (const d of dets) {
-          const box = xform
-            ? mapRectToHud({ x: d.roiX, y: d.roiY, w: d.roiW, h: d.roiH }, xform)
-            : { x: d.roiX, y: d.roiY, w: d.roiW, h: d.roiH };
+          const box = fm
+            ? fm.mapRectToScreen(d.roiX, d.roiY, d.roiW, d.roiH)
+            : (xform
+                ? mapRectToHud({ x: d.roiX, y: d.roiY, w: d.roiW, h: d.roiH }, xform)
+                : { x: d.roiX, y: d.roiY, w: d.roiW, h: d.roiH });
           camHudCtx.strokeStyle = '#22c55e';
           camHudCtx.lineWidth = Math.max(2.5, w / 360);
           camHudCtx.strokeRect(box.x, box.y, box.w, box.h);
+
+          if (fm) {
+            const rad = ((d.thetaDeg || 0) * Math.PI) / 180;
+            const halfLen = Math.max(24, (d.roiMajorLen || 60) * 0.5);
+            const fx0 = d.x0 !== undefined ? d.x0 : (d.roiCenterX - Math.cos(rad) * halfLen);
+            const fy0 = d.y0 !== undefined ? d.y0 : (d.roiCenterY - Math.sin(rad) * halfLen);
+            const fx1 = d.x1 !== undefined ? d.x1 : (d.roiCenterX + Math.cos(rad) * halfLen);
+            const fy1 = d.y1 !== undefined ? d.y1 : (d.roiCenterY + Math.sin(rad) * halfLen);
+            const s0 = fm.mapFrameToScreen(fx0, fy0);
+            const s1 = fm.mapFrameToScreen(fx1, fy1);
+            camHudCtx.strokeStyle = '#ff33cc';
+            camHudCtx.lineWidth = 2;
+            camHudCtx.beginPath();
+            camHudCtx.moveTo(s0.x, s0.y);
+            camHudCtx.lineTo(s1.x, s1.y);
+            camHudCtx.stroke();
+          }
+
           const tw = camHudCtx.measureText(d.payload).width;
           const bx = Math.max(4, Math.min(w - tw - 10, box.x));
           const by = Math.max(fs + 8, box.y - 4);
@@ -1085,6 +1154,13 @@
           camHudCtx.fillRect(bx, by - fs - 4, tw + 10, fs + 8);
           camHudCtx.fillStyle = '#86efac';
           camHudCtx.fillText(d.payload, bx + 5, by - 2);
+        }
+
+        if (fm && dets.length === 0 && msg.roiConfidence >= 0.55 && msg.roiW > 0 && msg.roiH > 0) {
+          const rBox = fm.mapRectToScreen(msg.roiX, msg.roiY, msg.roiW, msg.roiH);
+          camHudCtx.strokeStyle = '#38bdf8';
+          camHudCtx.lineWidth = 2;
+          camHudCtx.strokeRect(rBox.x, rBox.y, rBox.w, rBox.h);
         }
       }
 
@@ -1117,15 +1193,27 @@
 
     // Draw interactive Array Wall canvas with live projected camera FOV quad & aim reticle
     function drawArrayCanvas(footprint) {
-      const cw = arrayCanvas.width;
-      const ch = arrayCanvas.height;
-      arrayCtx.clearRect(0, 0, cw, ch);
+      let cw;
+      let ch;
+      if (flagOverlayAlign) {
+        const sz = syncOverlayCanvasSize(arrayCanvas, arrayCanvas);
+        if (!sz.ok) return;
+        arrayCtx.setTransform(sz.dpr, 0, 0, sz.dpr, 0, 0);
+        cw = sz.cssW;
+        ch = sz.cssH;
+        arrayCtx.clearRect(0, 0, cw, ch);
+      } else {
+        arrayCtx.setTransform(1, 0, 0, 1, 0, 0);
+        cw = arrayCanvas.width;
+        ch = arrayCanvas.height;
+        arrayCtx.clearRect(0, 0, cw, ch);
+      }
 
       const cols = mapper.cfg.cols;
       const rows = mapper.cfg.rows;
       const wallW = cols * mapper.cfg.pitchXIn;
       const wallH = rows * mapper.cfg.pitchYIn;
-      const pad = 26;
+      const pad = Math.min(26, Math.round(Math.min(cw, ch) * 0.06));
       const scale = Math.min((cw - pad * 2) / wallW, (ch - pad * 2) / wallH);
       const originX = cw * 0.5;
       const originY = ch * 0.5;
@@ -1134,7 +1222,7 @@
       const toY = (wy) => originY - wy * scale;
 
       // Save coordinate transform for tap-to-anchor hit testing
-      arrayCanvas._geom = { scale, originX, originY };
+      arrayCanvas._geom = { scale, originX, originY, cssCoords: flagOverlayAlign };
 
       const cells = slideModeActive ? slideMapper.getCells() : mapper.getCells();
       const slideCenterX = (cols - 1) * 0.5 * mapper.cfg.pitchXIn;
@@ -1248,6 +1336,14 @@
       const blurMods = computeCurrentBlurModules(st);
       if (app.blurGate && blurMods > 0.85) return;
 
+      // Re-read real live frame dimensions each frame (handles portrait 1080x1920 / 1080x2400 & rotations)
+      if (flagOverlayAlign) {
+        const real = readRealFrameSize(videoEl, app.cam ? app.cam.track : null, null, app.frameW, app.frameH);
+        if (real.width > 0 && real.height > 0 && (real.width !== app.frameW || real.height !== app.frameH)) {
+          ensureBuffers(real.width, real.height);
+        }
+      }
+
       app.workerBusy = true;
       const w = app.frameW;
       const h = app.frameH;
@@ -1286,6 +1382,14 @@
           if (!vf.format || !YUV_Y_FIRST_FORMATS.has(vf.format)) {
             app.useWebCodecs = false;
           } else {
+            if (flagOverlayAlign && !cropRect) {
+              const vfSize = readRealFrameSize(videoEl, null, vf, w, h);
+              if (vfSize.width > 0 && vfSize.height > 0 && (vfSize.width !== w || vfSize.height !== h)) {
+                ensureBuffers(vfSize.width, vfSize.height);
+                app.workerBusy = false;
+                return;
+              }
+            }
             const copyOpts = cropRect ? { rect: cropRect } : undefined;
             const allocSize = copyOpts ? vf.allocationSize(copyOpts) : vf.allocationSize();
             if (!app.webcodecsBuf || app.webcodecsBuf.byteLength < allocSize) {
@@ -1826,8 +1930,8 @@
       const geom = arrayCanvas._geom;
       if (!geom) return;
       const rect = arrayCanvas.getBoundingClientRect();
-      const cx = (e.clientX - rect.left) * (arrayCanvas.width / rect.width);
-      const cy = (e.clientY - rect.top) * (arrayCanvas.height / rect.height);
+      const cx = geom.cssCoords ? (e.clientX - rect.left) : ((e.clientX - rect.left) * (arrayCanvas.width / rect.width));
+      const cy = geom.cssCoords ? (e.clientY - rect.top) : ((e.clientY - rect.top) * (arrayCanvas.height / rect.height));
       const wx = (cx - geom.originX) / geom.scale;
       const wy = (geom.originY - cy) / geom.scale;
       const col = Math.round(wx / mapper.cfg.pitchXIn + (mapper.cfg.cols - 1) * 0.5);
@@ -1978,6 +2082,23 @@
         handleStartStop();
       }
     });
+
+    function redrawOverlaysNow() {
+      const qRel = orient.getRelativeQuaternion();
+      const st = orient.getStatus();
+      const fp = mapper.getCameraFootprint(qRel, app.frameW, app.frameH);
+      drawArrayCanvas(fp);
+      drawCameraHud(fp, st);
+    }
+    if (flagOverlayAlign) {
+      window.addEventListener('resize', redrawOverlaysNow);
+      window.addEventListener('orientationchange', () => setTimeout(redrawOverlaysNow, 80));
+      if (typeof ResizeObserver === 'function') {
+        const ro = new ResizeObserver(redrawOverlaysNow);
+        ro.observe(camStage);
+        ro.observe(arrayCanvas);
+      }
+    }
 
     updateStartCornerButtons();
     applyZeroAtCorner('top-left');

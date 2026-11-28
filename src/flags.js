@@ -79,6 +79,7 @@ export const FLAG_DEFS = Object.freeze([
   // Stream B — Array Page UI
   { name: 'blurGateV2',          bit: null,                                  default: false, item: 'B1',   desc: 'Scan-angle-aware blur gate with real/assumed exposure & 3.5 in constants' },
   { name: 'camAlign',            bit: null,                                  default: false, item: 'B2',   desc: 'Exact aspect-matched contain transform for array camera HUD boxes' },
+  { name: 'overlayAlign',        bit: null,                                  default: false, item: 'B2/U3',desc: 'Unified mapFrameToScreen(x,y) DPR-sized overlay alignment for live camera & uploaded images' },
   { name: 'arrayDim',            bit: null,                                  default: false, item: 'B3',   desc: 'Dimmable overlay modes on array.html' },
   { name: 'arrayFullBleed',      bit: null,                                  default: false, item: 'B3',   desc: 'Full-bleed camera with 120px picture-in-picture array inset' },
   { name: 'orientPreflight',     bit: null,                                  default: false, item: 'B4',   desc: 'Hold-attitude preflight banner & mis-zero recovery UI' },
