@@ -1,0 +1,42 @@
+{
+  "format": "dbc-photo-wall",
+  "version": 1,
+  "name": "tote-tsX07wz7py1",
+  "source": "tote-tsX07wz7py1-gray.pgm.gz",
+  "corners": [
+    [
+      90,
+      800
+    ],
+    [
+      990,
+      800
+    ],
+    [
+      990,
+      1440
+    ],
+    [
+      90,
+      1440
+    ]
+  ],
+  "width": 448,
+  "height": 512,
+  "toteWidthIn": 14,
+  "toteHeightIn": 16,
+  "stats": {
+    "toteAlbedo": 0.1323,
+    "toteStd": 0.0427,
+    "localContrast": 0.0067,
+    "paperAlbedo": 0.8549,
+    "inkAlbedo": 0.0784,
+    "labelContrast": 0.7765,
+    "labelRect": {
+      "u0": 0.2,
+      "v0": 0,
+      "u1": 0.78,
+      "v1": 1
+    }
+  }
+}

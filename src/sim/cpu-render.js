@@ -20,6 +20,7 @@ import {
   DEFAULT_LABEL_SPEC,
 } from './label.js';
 import { normalizeLipsSpec } from './lips.js';
+import { preparePhotoWall, samplePhotoWall } from './photo-wall.js';
 import {
   normalizeDefectsSpec,
   buildCellDefectsTable,
@@ -68,6 +69,23 @@ const LIGHT_Z = 0.89 / LIGHT_LEN;
 
 // Precomputed flat-wall illumination (N = (0, 0, 1))
 const FLAT_ILLUM = 0.38 + 0.62 * LIGHT_Z;
+
+// L5: photo-wall texel luma (0..255) -> albedo, so a head-on render with no gradient/glare/noise reproduces the photo
+const PHOTO_ALBEDO_SCALE = 1.0 / (255.0 * FLAT_ILLUM);
+
+/**
+ * L5: size of one screen pixel on the wall plane, in inches (isotropic: the larger of the x and y steps).
+ * Same derivative terms the label code uses for its bar footprint. Pure, no allocation.
+ */
+function pixelFootprintIn(t, Dx, Dy, invDz, dDx_x, dDy_x, dDz_x, dDx_y, dDy_y, dDz_y) {
+  const ax = dDx_x - Dx * invDz * dDz_x;
+  const bx = dDy_x - Dy * invDz * dDz_x;
+  const ay = dDx_y - Dx * invDz * dDz_y;
+  const by = dDy_y - Dy * invDz * dDz_y;
+  const fx2 = ax * ax + bx * bx;
+  const fy2 = ay * ay + by * by;
+  return t * Math.sqrt(fx2 > fy2 ? fx2 : fy2);
+}
 
 // Precomputed bevel normals normalize((±0.35, 0, 1)) and normalize((0, ±0.35, 1))
 const BEVEL_INV_LEN = 1.0 / Math.hypot(0.35, 1.0);
@@ -172,6 +190,7 @@ function getEncodedScene(scene) {
     cellDefects,
     quietModules,
     toteLuma,
+    photo: preparePhotoWall(scene.wallTexture),   // L5: null unless scene.wallTexture is a photo wall
   };
   sceneCacheMap.set(scene, cached);
   return cached;
@@ -456,6 +475,8 @@ function renderFullFrameSinglePose(
   const quietModules = enc.quietModules;
   const maxCol = cols - 1;
   const maxRow = rows - 1;
+  const photo = enc.photo;               // L5: photo wall (null = procedural tote)
+  const hasPhoto = photo !== null;
 
   // L4: Optional recessed tote lip & parallax occlusion parameters (null when simLips is off)
   const lips = normalizeLipsSpec(scene.lips);
@@ -548,7 +569,8 @@ function renderFullFrameSinglePose(
           if (edgeDistLip < 0.22) {
             albedo = SEAM_LUMA;
           } else {
-            albedo = toteLuma[lipCellIdx] * 0.84;
+            const fpLip = hasPhoto ? pixelFootprintIn(t, Dx, Dy, invDz, dDx_x, dDy_x, dDz_x, dDx_y, dDy_y, dDz_y) : 0.0;
+            albedo = (hasPhoto ? samplePhotoWall(photo, lxLip, lyLip, fpLip) * PHOTO_ALBEDO_SCALE : toteLuma[lipCellIdx]) * 0.84;
             const dOpenX = absLxLip - openHalfW;
             const dOpenTop = lyLip - openTopY;
             const dOpenBot = openBotY - lyLip;
@@ -678,6 +700,8 @@ function renderFullFrameSinglePose(
               }
             }
           }
+        } else if (hasPhoto) {
+          albedo = samplePhotoWall(photo, lx, ly, pixelFootprintIn(t, Dx, Dy, invDz, dDx_x, dDy_x, dDz_x, dDx_y, dDy_y, dDz_y)) * PHOTO_ALBEDO_SCALE;
         } else {
           const edgeX = halfToteW - absLx;
           const edgeY = halfToteH - absLy;
@@ -851,6 +875,8 @@ function renderLabelBoxMultiPose(
   const quietModules = enc.quietModules;
   const maxCol = cols - 1;
   const maxRow = rows - 1;
+  const photo = enc.photo;               // L5: photo wall (null = procedural tote)
+  const hasPhoto = photo !== null;
 
   // L4: Optional recessed tote lip & parallax occlusion parameters (null when simLips is off)
   const lips = normalizeLipsSpec(scene.lips);
@@ -955,7 +981,8 @@ function renderLabelBoxMultiPose(
             if (edgeDistLip < 0.22) {
               albedo = SEAM_LUMA;
             } else {
-              albedo = toteLuma[lipCellIdx] * 0.84;
+              const fpLip = hasPhoto ? pixelFootprintIn(t, Dx, Dy, invDz, dDx_x, dDy_x, dDz_x, dDx_y, dDy_y, dDz_y) : 0.0;
+              albedo = (hasPhoto ? samplePhotoWall(photo, lxLip, lyLip, fpLip) * PHOTO_ALBEDO_SCALE : toteLuma[lipCellIdx]) * 0.84;
               const dOpenX = absLxLip - openHalfW;
               const dOpenTop = lyLip - openTopY;
               const dOpenBot = openBotY - lyLip;
@@ -1080,6 +1107,8 @@ function renderLabelBoxMultiPose(
                 }
               }
             }
+          } else if (hasPhoto) {
+            albedo = samplePhotoWall(photo, lx, ly, pixelFootprintIn(t, Dx, Dy, invDz, dDx_x, dDy_x, dDz_x, dDx_y, dDy_y, dDz_y)) * PHOTO_ALBEDO_SCALE;
           } else {
             const edgeX = halfToteW - absLx;
             const edgeY = halfToteH - absLy;
@@ -1237,8 +1266,9 @@ export function renderFrame(scene, poses, opts, out = null) {
   const orientation = opts.labelOrientation ?? lbl.orientation ?? DEFAULT_LABEL_SPEC.orientation;
   const isPicket = orientation === 'picket';
   const sideMarginIn = lbl.sideMarginIn ?? DEFAULT_LABEL_SPEC.sideMarginIn;
-  const paperAlbedo = lbl.paperAlbedo ?? DEFAULT_LABEL_SPEC.paperAlbedo;
-  const inkAlbedo = lbl.inkAlbedo ?? DEFAULT_LABEL_SPEC.inkAlbedo;
+  // L5: with a photo wall the barcode is drawn at the measured paper/ink albedos (photo brightness / flat illumination)
+  const paperAlbedo = enc.photo ? enc.photo.paperAlbedo / FLAT_ILLUM : (lbl.paperAlbedo ?? DEFAULT_LABEL_SPEC.paperAlbedo);
+  const inkAlbedo = enc.photo ? enc.photo.inkAlbedo / FLAT_ILLUM : (lbl.inkAlbedo ?? DEFAULT_LABEL_SPEC.inkAlbedo);
   const printGain = opts.printGain ?? lbl.printGain ?? 1.0;
 
   const shadowStrength = opts.shadowStrength ?? scene.shadowStrength ?? 0.35;

@@ -433,9 +433,12 @@ export const SIM_FLAG_COVERAGE = Object.freeze({
   simPhotoWall: {
     registry: 'sim',
     scenarios: [],
-    tests: [{ file: 'tests/simflags.test.js', testName: 'All declared sim and AR flags default to false' }],
-    planned: 'L5/S10',
-    reason: 'Wave 3 item L5 (photo-textured tote walls); registry tested in simflags.test.js.',
+    tests: [
+      { file: 'tests/simflags.test.js', testName: 'All declared sim and AR flags default to false' },
+      { file: 'tests/photo-wall.test.js', testName: 'L5 flag off: no wall texture, or the flag false, renders bit-for-bit like before' },
+    ],
+    planned: 'S10 (gate scenario on photo walls, after David supplies head-on tote photos)',
+    reason: 'Wave 3 item L5 (photo-textured tote walls); tests/photo-wall.test.js covers texture build, lookup, head-on match and decode.',
   },
   simDefects: {
     registry: 'sim',

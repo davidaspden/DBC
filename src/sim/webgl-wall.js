@@ -54,7 +54,7 @@ void main() {
 }
 `;
 
-function buildWallFragSrc(isWebGL2) {
+export function buildWallFragSrc(isWebGL2) {
   const header = isWebGL2
     ? `#version 300 es
 precision highp float;
@@ -93,6 +93,12 @@ uniform float uInterlockOffsetIn;
 uniform float uShadowBandIn;
 uniform float uShadowDarken;
 uniform float uLipHighlight;
+// L5: photo-textured tote faces (0 = disabled, bit-identical legacy). Texture is luma in .r (0..1), mip-mapped on WebGL2.
+uniform sampler2D uPhotoTex;
+uniform float uPhotoEnabled;
+uniform float uPhotoGain;   // 1 / flat illumination: a head-on render with no gradient/glare/noise reproduces the photo
+uniform float uLabelPaper;  // label paper albedo (0.93 default; measured when a photo wall is on)
+uniform float uLabelInk;    // bar ink albedo (0.06 default)
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -191,6 +197,13 @@ void main() {
     }
   }
 
+  // L5: photo wall replaces the procedural tote face (seam, bevel and ribs come from the photo)
+  if (uPhotoEnabled > 0.5) {
+    vec2 uvTote = clamp(vec2(lx / ${TOTE_WIDTH_IN}.0 + 0.5, 0.5 - ly / ${TOTE_HEIGHT_IN}.0), 0.0, 1.0);
+    toteBase = vec3(TEX2D(uPhotoTex, uvTote).r * uPhotoGain);
+    N = normalize(vNorm);
+  }
+
   vec3 albedo = toteBase;
   float isLabel = 0.0;
   float lipShadowFactor = 1.0;
@@ -216,6 +229,10 @@ void main() {
       hitLip = true;
       float lipTone = 0.92 + 0.14 * hash12(vec2(colLip * 7.1, rowLip * 13.7));
       vec3 lipBase = vec3(0.24, 0.29, 0.36) * lipTone;
+      if (uPhotoEnabled > 0.5) {
+        vec2 uvLip = clamp(vec2(lxLip / ${TOTE_WIDTH_IN}.0 + 0.5, 0.5 - lyLip / ${TOTE_HEIGHT_IN}.0), 0.0, 1.0);
+        lipBase = vec3(TEX2D(uPhotoTex, uvLip).r * uPhotoGain);
+      }
       float edgeXLip = ${TOTE_WIDTH_IN * 0.5}.0 - abs(lxLip);
       float edgeYLip = ${TOTE_HEIGHT_IN * 0.5}.0 - abs(lyLip);
       float edgeDistLip = min(edgeXLip, edgeYLip);
@@ -247,8 +264,8 @@ void main() {
   if (!hitLip && abs(lx) <= halfBW && abs(ly) <= halfBH) {
     isLabel = 1.0;
     // White thermal label stock (reflectance ~0.93)
-    float paper = 0.93;
-    float ink = 0.06;
+    float paper = uLabelPaper;
+    float ink = uLabelInk;
 
     // 0.12 in crisp white side margin along the bar edges
     bool inBars = (uLabelOrientation < 0.5)
@@ -418,6 +435,32 @@ export function createWebGLWallRenderer(canvas, cells) {
   const barcodeTex = gl.createTexture();
   let totalModules = 0;
 
+  // L5: photo wall texture (unit 1). A 1x1 texture is bound while no photo wall is set (the shader ignores it).
+  const photoTex = gl.createTexture();
+  let photoWall = null;
+  const photoFlatIllum = 0.38 + 0.62 * (0.89 / Math.hypot(0.18, 0.42, 0.89)); // same as the shader's flat `ndl` term
+  function setPhotoWall(wall) {
+    gl.bindTexture(gl.TEXTURE_2D, photoTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (wall && wall.data) {
+      // WebGL2: any size can be mip-mapped (trilinear = mip by pixel footprint, like the CPU renderer).
+      // WebGL1 cannot mip-map a non-power-of-two texture, so it falls back to plain bilinear.
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, isWebGL2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, wall.width, wall.height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, wall.data);
+      if (isWebGL2) gl.generateMipmap(gl.TEXTURE_2D);
+      photoWall = wall;
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 1, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, new Uint8Array([255]));
+      photoWall = null;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+  setPhotoWall(null);
+
   function uploadCellsTexture(cellList, opts = {}) {
     const quietModules = Number.isFinite(opts.quietModules) ? opts.quietModules : 10;
     const texData = new Uint8Array(MODULE_TEX_W * MODULE_TEX_H * 4);
@@ -513,6 +556,11 @@ void main() {
     uShadowBandIn: gl.getUniformLocation(wallProg, 'uShadowBandIn'),
     uShadowDarken: gl.getUniformLocation(wallProg, 'uShadowDarken'),
     uLipHighlight: gl.getUniformLocation(wallProg, 'uLipHighlight'),
+    uPhotoTex: gl.getUniformLocation(wallProg, 'uPhotoTex'),
+    uPhotoEnabled: gl.getUniformLocation(wallProg, 'uPhotoEnabled'),
+    uPhotoGain: gl.getUniformLocation(wallProg, 'uPhotoGain'),
+    uLabelPaper: gl.getUniformLocation(wallProg, 'uLabelPaper'),
+    uLabelInk: gl.getUniformLocation(wallProg, 'uLabelInk'),
   };
   const blitLoc = {
     aQuad: gl.getAttribLocation(blitProg, 'aQuad'),
@@ -598,6 +646,23 @@ void main() {
       gl.uniform1f(wallLoc.uLipsEnabled, 0.0);
     }
 
+    // L5: photo wall on unit 1; label paper/ink are the measured albedos while it is on (defaults otherwise)
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, photoTex);
+    gl.uniform1i(wallLoc.uPhotoTex, 1);
+    if (photoWall) {
+      gl.uniform1f(wallLoc.uPhotoEnabled, 1.0);
+      gl.uniform1f(wallLoc.uPhotoGain, 1.0 / photoFlatIllum);
+      gl.uniform1f(wallLoc.uLabelPaper, photoWall.stats.paperAlbedo / photoFlatIllum);
+      gl.uniform1f(wallLoc.uLabelInk, photoWall.stats.inkAlbedo / photoFlatIllum);
+    } else {
+      gl.uniform1f(wallLoc.uPhotoEnabled, 0.0);
+      gl.uniform1f(wallLoc.uPhotoGain, 1.0);
+      gl.uniform1f(wallLoc.uLabelPaper, 0.93);
+      gl.uniform1f(wallLoc.uLabelInk, 0.06);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     if (wallLoc.aPos >= 0) gl.disableVertexAttribArray(wallLoc.aPos);
     if (wallLoc.aNorm >= 0) gl.disableVertexAttribArray(wallLoc.aNorm);
@@ -680,6 +745,7 @@ void main() {
     isWebGL2,
     get totalModules() { return totalModules; },
     setCells: uploadCellsTexture,
+    setPhotoWall,   // L5: pass a `dbc-photo-wall` object (simPhotoWall on) or null (off, the default)
     renderFrame,
     getSize: () => ({ width: curW, height: curH }),
   };
