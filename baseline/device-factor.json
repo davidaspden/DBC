@@ -1,0 +1,14 @@
+{
+  "deviceFactorA53": 8.43,
+  "phoneMs": 38,
+  "nodeP50Ms": 4.51,
+  "nodeP95Ms": 4.68,
+  "flagsOnP50Ms": 4.51,
+  "flagsOnP95Ms": 4.73,
+  "fixture": "tests/fixtures-sim/tote-tsX07wz7py1-gray.pgm.gz",
+  "resolution": "1080x2400",
+  "payload": "tsX07wz7py1",
+  "phoneModel": "SM-A536B",
+  "provenance": "single phone sample, provisional",
+  "recordedUtc": "2026-11-28T09:35:00.000Z"
+}

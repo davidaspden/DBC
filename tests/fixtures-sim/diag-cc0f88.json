@@ -1,0 +1,653 @@
+{
+  "version": 1,
+  "reportId": "cc0f88",
+  "timestampUtc": "2026-11-28T04:51:05.099Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/160.0.0.0 Mobile Safari/537.36",
+    "brands": [
+      {
+        "brand": "Chromium",
+        "version": "160"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "160"
+      },
+      {
+        "brand": "Not)A;Brand",
+        "version": "99"
+      }
+    ],
+    "highEntropy": {
+      "architecture": "",
+      "bitness": "",
+      "brands": [
+        {
+          "brand": "Chromium",
+          "version": "160"
+        },
+        {
+          "brand": "Google Chrome",
+          "version": "160"
+        },
+        {
+          "brand": "Not)A;Brand",
+          "version": "99"
+        }
+      ],
+      "fullVersionList": [
+        {
+          "brand": "Chromium",
+          "version": "160.0.8181.0"
+        },
+        {
+          "brand": "Google Chrome",
+          "version": "160.0.8181.0"
+        },
+        {
+          "brand": "Not)A;Brand",
+          "version": "99.0.0.0"
+        }
+      ],
+      "mobile": true,
+      "model": "SM-A536B",
+      "platform": "Android",
+      "platformVersion": "16.0.0",
+      "uaFullVersion": "160.0.8181.0"
+    },
+    "osGuess": "Android 10",
+    "browserGuess": "Chrome 160",
+    "uaModelGuess": null,
+    "screenWidth": 412,
+    "screenHeight": 915,
+    "innerWidth": 411,
+    "innerHeight": 776,
+    "devicePixelRatio": 2.625,
+    "visualViewport": {
+      "width": 411,
+      "height": 777,
+      "scale": 1
+    },
+    "screenOrientation": {
+      "type": "portrait-primary",
+      "angle": 0,
+      "lockSupported": true
+    },
+    "isSecureContext": true,
+    "protocol": "https:",
+    "supportedConstraints": {
+      "zoom": true,
+      "exposureMode": true,
+      "exposureTime": true,
+      "iso": true,
+      "focusMode": true,
+      "focusDistance": true,
+      "torch": true,
+      "facingMode": true,
+      "frameRate": true,
+      "pointsOfInterest": true,
+      "whiteBalanceMode": true
+    }
+  },
+  "cameraPermission": {
+    "granted": true,
+    "error": null
+  },
+  "cameras": [
+    {
+      "index": 0,
+      "label": "camera 1, facing front",
+      "idHash": "cbd98026c3de",
+      "groupHash": "9d6e6dbb448b",
+      "facing": "user",
+      "roleGuess": "FRONT",
+      "suitable": true,
+      "unsuitableReason": null,
+      "capabilities": {
+        "width": {
+          "max": 3264,
+          "min": 1
+        },
+        "height": {
+          "max": 2448,
+          "min": 1
+        },
+        "frameRate": {
+          "max": 30,
+          "min": 0
+        },
+        "aspectRatio": {
+          "max": 3264,
+          "min": 0
+        },
+        "zoom": {
+          "max": 4,
+          "min": 1,
+          "step": 0.1
+        },
+        "focusMode": [
+          "manual"
+        ],
+        "focusDistance": {
+          "max": 9223372036854776000,
+          "min": 0,
+          "step": 0.01
+        },
+        "exposureMode": [
+          "continuous",
+          "manual"
+        ],
+        "exposureTime": {
+          "max": 1000,
+          "min": 0.42,
+          "step": 0.1
+        },
+        "exposureCompensation": {
+          "max": 2,
+          "min": -2,
+          "step": 0.1
+        },
+        "iso": {
+          "max": 3200,
+          "min": 50,
+          "step": 1
+        },
+        "torch": "n/a",
+        "whiteBalanceMode": [
+          "continuous",
+          "manual"
+        ],
+        "pointsOfInterest": "n/a",
+        "facingMode": [
+          "user"
+        ]
+      },
+      "settings": {
+        "width": 1080,
+        "height": 1920,
+        "frameRate": 30,
+        "zoom": 1,
+        "focusMode": "continuous",
+        "facingMode": "user",
+        "deviceIdHash": "cbd98026c3de"
+      },
+      "resolutions": {},
+      "zoomSweep": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "label": "camera 3, facing front",
+      "idHash": "63a1d161a2cc",
+      "groupHash": "3b757b1a3fe5",
+      "facing": "user",
+      "roleGuess": "FRONT",
+      "suitable": true,
+      "unsuitableReason": null,
+      "capabilities": {
+        "width": {
+          "max": 2640,
+          "min": 1
+        },
+        "height": {
+          "max": 1980,
+          "min": 1
+        },
+        "frameRate": {
+          "max": 30,
+          "min": 0
+        },
+        "aspectRatio": {
+          "max": 2640,
+          "min": 0.001
+        },
+        "zoom": {
+          "max": 4,
+          "min": 1,
+          "step": 0.1
+        },
+        "focusMode": [
+          "manual"
+        ],
+        "focusDistance": {
+          "max": 9223372036854776000,
+          "min": 0,
+          "step": 0.01
+        },
+        "exposureMode": [
+          "continuous",
+          "manual"
+        ],
+        "exposureTime": {
+          "max": 1000,
+          "min": 0.42,
+          "step": 0.1
+        },
+        "exposureCompensation": {
+          "max": 2,
+          "min": -2,
+          "step": 0.1
+        },
+        "iso": {
+          "max": 3200,
+          "min": 50,
+          "step": 1
+        },
+        "torch": "n/a",
+        "whiteBalanceMode": [
+          "continuous",
+          "manual"
+        ],
+        "pointsOfInterest": "n/a",
+        "facingMode": [
+          "user"
+        ]
+      },
+      "settings": {
+        "width": 1080,
+        "height": 1920,
+        "frameRate": 30,
+        "zoom": 1,
+        "focusMode": "continuous",
+        "facingMode": "user",
+        "deviceIdHash": "63a1d161a2cc"
+      },
+      "resolutions": {},
+      "zoomSweep": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "label": "camera 2, facing back",
+      "idHash": "52a24ec8dac6",
+      "groupHash": "18f174271131",
+      "facing": "environment",
+      "roleGuess": "REAR-AUX?",
+      "suitable": false,
+      "unsuitableReason": null,
+      "capabilities": {
+        "width": {
+          "max": 4000,
+          "min": 1
+        },
+        "height": {
+          "max": 3000,
+          "min": 1
+        },
+        "frameRate": {
+          "max": 30,
+          "min": 0
+        },
+        "aspectRatio": {
+          "max": 4000,
+          "min": 0
+        },
+        "zoom": {
+          "max": 8,
+          "min": 1,
+          "step": 0.1
+        },
+        "focusMode": [
+          "manual"
+        ],
+        "focusDistance": {
+          "max": 3.6,
+          "min": 0,
+          "step": 0.01
+        },
+        "exposureMode": [
+          "continuous",
+          "manual"
+        ],
+        "exposureTime": {
+          "max": 1000,
+          "min": 0.6,
+          "step": 0.1
+        },
+        "exposureCompensation": {
+          "max": 2,
+          "min": -2,
+          "step": 0.1
+        },
+        "iso": {
+          "max": 3200,
+          "min": 50,
+          "step": 1
+        },
+        "torch": "n/a",
+        "whiteBalanceMode": [
+          "continuous",
+          "manual"
+        ],
+        "pointsOfInterest": "n/a",
+        "facingMode": [
+          "environment"
+        ]
+      },
+      "settings": {
+        "width": 1080,
+        "height": 1920,
+        "frameRate": 30,
+        "zoom": 1,
+        "focusMode": "continuous",
+        "facingMode": "environment",
+        "deviceIdHash": "52a24ec8dac6"
+      },
+      "resolutions": {
+        "720p": {
+          "ok": true,
+          "width": 720,
+          "height": 1280,
+          "frameRate": 30
+        },
+        "1080p": {
+          "ok": true,
+          "width": 1080,
+          "height": 1920,
+          "frameRate": 30
+        },
+        "4K": {
+          "ok": true,
+          "width": 2160,
+          "height": 3840,
+          "frameRate": 30
+        }
+      },
+      "zoomSweep": {
+        "steps": [
+          {
+            "requested": 1,
+            "achieved": 1,
+            "meanLuma": 20.547,
+            "frameDiff": 0,
+            "capDelta": false
+          },
+          {
+            "requested": 2,
+            "achieved": 2,
+            "meanLuma": 22.401,
+            "frameDiff": 2.063,
+            "capDelta": false
+          },
+          {
+            "requested": 3,
+            "achieved": 2.999,
+            "meanLuma": 23.19,
+            "frameDiff": 0.888,
+            "capDelta": false
+          },
+          {
+            "requested": 4.5,
+            "achieved": 4.505,
+            "meanLuma": 49.945,
+            "frameDiff": 30.151,
+            "capDelta": false
+          },
+          {
+            "requested": 5,
+            "achieved": 5,
+            "meanLuma": 62.497,
+            "frameDiff": 21.755,
+            "capDelta": false
+          }
+        ],
+        "framingJumpDetected": true,
+        "capsChangedDetected": false,
+        "logicalZoomLikely": true
+      },
+      "error": null
+    },
+    {
+      "index": 3,
+      "label": "camera 0, facing back",
+      "idHash": "004839289298",
+      "groupHash": "b31d218982f0",
+      "facing": "environment",
+      "roleGuess": "MAIN?",
+      "suitable": true,
+      "unsuitableReason": null,
+      "capabilities": {
+        "width": {
+          "max": 4624,
+          "min": 1
+        },
+        "height": {
+          "max": 3468,
+          "min": 1
+        },
+        "frameRate": {
+          "max": 30,
+          "min": 0
+        },
+        "aspectRatio": {
+          "max": 4624,
+          "min": 0
+        },
+        "zoom": {
+          "max": 8,
+          "min": 1,
+          "step": 0.1
+        },
+        "focusMode": [
+          "manual",
+          "single-shot",
+          "continuous"
+        ],
+        "focusDistance": {
+          "max": 3.6,
+          "min": 0.1,
+          "step": 0.01
+        },
+        "exposureMode": [
+          "continuous",
+          "manual"
+        ],
+        "exposureTime": {
+          "max": 1000,
+          "min": 0.42,
+          "step": 0.1
+        },
+        "exposureCompensation": {
+          "max": 2,
+          "min": -2,
+          "step": 0.1
+        },
+        "iso": {
+          "max": 3200,
+          "min": 50,
+          "step": 1
+        },
+        "torch": true,
+        "whiteBalanceMode": [
+          "continuous",
+          "manual"
+        ],
+        "pointsOfInterest": "n/a",
+        "facingMode": [
+          "environment"
+        ]
+      },
+      "settings": {
+        "width": 1080,
+        "height": 1920,
+        "frameRate": 30,
+        "zoom": 1,
+        "focusMode": "continuous",
+        "facingMode": "environment",
+        "deviceIdHash": "004839289298"
+      },
+      "resolutions": {
+        "720p": {
+          "ok": true,
+          "width": 720,
+          "height": 1280,
+          "frameRate": 30
+        },
+        "1080p": {
+          "ok": true,
+          "width": 1080,
+          "height": 1920,
+          "frameRate": 30
+        },
+        "4K": {
+          "ok": true,
+          "width": 2160,
+          "height": 3840,
+          "frameRate": 30
+        }
+      },
+      "zoomSweep": {
+        "steps": [
+          {
+            "requested": 1,
+            "achieved": 1,
+            "meanLuma": 37.208,
+            "frameDiff": 0,
+            "capDelta": false
+          },
+          {
+            "requested": 2,
+            "achieved": 2,
+            "meanLuma": 50.255,
+            "frameDiff": 13.099,
+            "capDelta": false
+          },
+          {
+            "requested": 3,
+            "achieved": 2.999,
+            "meanLuma": 54.88,
+            "frameDiff": 4.63,
+            "capDelta": false
+          },
+          {
+            "requested": 4.5,
+            "achieved": 4.498,
+            "meanLuma": 79.773,
+            "frameDiff": 35.357,
+            "capDelta": false
+          },
+          {
+            "requested": 5,
+            "achieved": 5.004,
+            "meanLuma": 87.818,
+            "frameDiff": 21.617,
+            "capDelta": false
+          }
+        ],
+        "framingJumpDetected": true,
+        "capsChangedDetected": false,
+        "logicalZoomLikely": true
+      },
+      "error": null
+    }
+  ],
+  "capture": {
+    "rVfcSupported": true,
+    "measuredFps": 10.1,
+    "frameCount": 24,
+    "videoFrameSupported": true,
+    "videoFrameFormat": "I420",
+    "yuvDirectCopy": true,
+    "copyToOk": true,
+    "tCaptureMs": 7.1,
+    "videoFrameError": null,
+    "workerTransferOk": true,
+    "workerTransferError": null
+  },
+  "sensors": {
+    "generic": {
+      "Gyroscope": {
+        "name": "Gyroscope",
+        "present": true,
+        "constructed": true,
+        "measuredHz": 59.8,
+        "sampleCount": 56,
+        "error": null
+      },
+      "Accelerometer": {
+        "name": "Accelerometer",
+        "present": true,
+        "constructed": true,
+        "measuredHz": 60.4,
+        "sampleCount": 57,
+        "error": null
+      },
+      "GravitySensor": {
+        "name": "GravitySensor",
+        "present": true,
+        "constructed": true,
+        "measuredHz": 1,
+        "sampleCount": 1,
+        "error": null
+      },
+      "RelativeOrientationSensor": {
+        "name": "RelativeOrientationSensor",
+        "present": true,
+        "constructed": true,
+        "measuredHz": 1,
+        "sampleCount": 1,
+        "error": null
+      },
+      "AbsoluteOrientationSensor": {
+        "name": "AbsoluteOrientationSensor",
+        "present": true,
+        "constructed": true,
+        "measuredHz": 60.3,
+        "sampleCount": 56,
+        "error": null
+      }
+    },
+    "deviceMotion": {
+      "present": true,
+      "measuredHz": 60,
+      "hasRotationRate": true,
+      "sampleCount": 57
+    },
+    "deviceOrientationPresent": true,
+    "gyroAvailable": true,
+    "gyroSource": "Gyroscope",
+    "gyroHz": 59.8,
+    "orientFrames": {
+      "relScreenOk": true,
+      "relDeviceOk": true,
+      "framesDiffer": false,
+      "gravityAvailable": true,
+      "gravityVec": {
+        "x": 0.5,
+        "y": 9.8,
+        "z": 0.1
+      },
+      "gravityPitchDeg": 0.584,
+      "gravityRollDeg": 2.921
+    },
+    "atRest": {
+      "source": "Gyroscope",
+      "durationMs": 2000,
+      "n": 118,
+      "biasDps": {
+        "x": -0.071,
+        "y": -0.279,
+        "z": 0.147
+      },
+      "maxAbsBiasDps": 0.279,
+      "rmsDps": 1.92,
+      "pass": false,
+      "movedDuringTest": true,
+      "error": null
+    },
+    "permission": {
+      "granted": true,
+      "path": "devicemotion-ios",
+      "error": null
+    }
+  },
+  "labelTests": {},
+  "recommendation": {
+    "mode": "part3-tele",
+    "confidence": "medium",
+    "reason": "reachable-tele-with-gyro",
+    "blurb": "Use Part 3 (stand-back pan at ~30 in): a telephoto-capable rear lens (camera 0, facing back) and gyro (59.8 Hz) were detected with 30 in focus support. Manual exposure is available for crisp 1/250–1/500 s pan shots. Re-run the 2 s stationary gyro check holding steady before calibrating.",
+    "secondaryOption": "part2-slide",
+    "recommendedCameraHash": "004839289298"
+  }
+}
