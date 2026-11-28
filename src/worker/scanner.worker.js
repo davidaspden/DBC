@@ -19,6 +19,7 @@ import {
   MAX_SCANLINE_LEN,
   FLAG_VERT_FALLBACK,
   FLAG_VERTICAL_MODE,
+  FLAG_FLOW_ON,
   buildScanlinePlan,
   sampleScanlineLuma,
   extractRunsFromScanline,
@@ -31,6 +32,7 @@ import {
   SYMBOLOGY_NONE,
 } from './consensus.js';
 import { MAX_CODE128_PAYLOAD, MAX_CODE128_SYMBOLS } from './decoders/code128.js';
+import { createFlowState, computeOpticalFlow } from './flow.js';
 
 export const MAX_DETECTIONS = MAX_ROI_CLUSTERS;
 
@@ -38,13 +40,17 @@ export const MAX_DETECTIONS = MAX_ROI_CLUSTERS;
  * Pre-allocates the complete Stage 1–5 pipeline memory pool once for `(width, height)`.
  */
 export function createPipelineState(width = 1280, height = 720) {
+  const roi = createRoiState(width, height);
   return {
     width: width | 0,
     height: height | 0,
     flags: 0,
-    roi: createRoiState(width, height),
+    predFlowDxDs: 0,
+    predFlowDyDs: 0,
+    roi,
     scanline: createScanlineState(),
     consensus: createConsensusState(),
+    flow: createFlowState(roi.dsW, roi.dsH),
 
     // Pre-allocated multi-barcode per-frame detection bank (zero hot-loop allocations)
     detCount: 0,
@@ -90,7 +96,12 @@ export function createPipelineResult() {
     tRoiMs: 0,
     tScanMs: 0,
     tDecodeMs: 0,
+    tFlowMs: 0,
     tTotalMs: 0,
+    flowDx: 0,
+    flowDy: 0,
+    flowConf: 0,
+    flowTiles: 0,
   };
 }
 
@@ -155,9 +166,28 @@ function storeUniqueFrameDetection(state, result) {
  */
 export function processFrame(luma, width, height, state, result, measureStages = false) {
   const t0 = measureStages ? performance.now() : 0;
-  state.scanline.flags = state.flags | 0;
+  const activeFlags = state.flags | 0;
+  state.scanline.flags = activeFlags;
+  state.roi.flags = activeFlags;
 
   const hasRoi = estimateRoi(luma, width, height, state.roi, result);
+  if ((activeFlags & FLAG_FLOW_ON) !== 0) {
+    computeOpticalFlow(
+      state.roi.downsampled,
+      state.roi.dsW,
+      state.roi.dsH,
+      state.roi.dsShift,
+      state.predFlowDxDs,
+      state.predFlowDyDs,
+      state.flow,
+      measureStages
+    );
+    result.flowDx = state.flow.dxFullPx;
+    result.flowDy = state.flow.dyFullPx;
+    result.flowConf = state.flow.conf;
+    result.flowTiles = state.flow.tilesAccepted;
+    result.tFlowMs = state.flow.tFlowMs;
+  }
   const t1 = measureStages ? performance.now() : 0;
 
   let decoded = 0;
@@ -200,6 +230,9 @@ export function processFrame(luma, width, height, state, result, measureStages =
       state.consensus,
       result
     );
+  }
+  if (decoded === 1) {
+    state.roi.noRoiStreak = 0;
   }
   const t2 = measureStages ? performance.now() : 0;
 
@@ -272,6 +305,7 @@ export function processFrameMulti(luma, width, height, state, result, measureSta
   state.detCount = 0;
   const activeFlags = state.flags | 0;
   state.scanline.flags = activeFlags;
+  state.roi.flags = activeFlags;
 
   // W10 (flagged `verticalMode`): try 11-line vertical plan BEFORE estimateRoi (skips t_roi on decode!)
   const useVertFast = (activeFlags & FLAG_VERTICAL_MODE) !== 0 && (state.scanline.mode | 0) === 1;
@@ -325,6 +359,23 @@ export function processFrameMulti(luma, width, height, state, result, measureSta
   }
 
   const hasRoi = estimateRoi(luma, width, height, state.roi, result);
+  if ((activeFlags & FLAG_FLOW_ON) !== 0) {
+    computeOpticalFlow(
+      state.roi.downsampled,
+      state.roi.dsW,
+      state.roi.dsH,
+      state.roi.dsShift,
+      state.predFlowDxDs,
+      state.predFlowDyDs,
+      state.flow,
+      measureStages
+    );
+    result.flowDx = state.flow.dxFullPx;
+    result.flowDy = state.flow.dyFullPx;
+    result.flowConf = state.flow.conf;
+    result.flowTiles = state.flow.tilesAccepted;
+    result.tFlowMs = state.flow.tFlowMs;
+  }
   const t1 = measureStages ? performance.now() : 0;
 
   if (hasRoi === 1) {
@@ -409,6 +460,9 @@ export function processFrameMulti(luma, width, height, state, result, measureSta
     }
   }
 
+  if (state.detCount > 0) {
+    state.roi.noRoiStreak = 0;
+  }
   const t2 = measureStages ? performance.now() : 0;
   if (measureStages) {
     result.tRoiMs = t1 - t0;
@@ -654,7 +708,11 @@ if (
         workerState.flags = msg.flags | 0;
       }
       workerState.scanline.flags = workerState.flags | 0;
+      workerState.roi.flags = workerState.flags | 0;
       workerState.scanline.mode = msg.vertical ? 1 : 0;
+      workerState.scanline.blurPx = Number.isFinite(msg.blurPx) ? msg.blurPx : 0;
+      workerState.predFlowDxDs = Number.isFinite(msg.predFlowDxDs) ? msg.predFlowDxDs : 0;
+      workerState.predFlowDyDs = Number.isFinite(msg.predFlowDyDs) ? msg.predFlowDyDs : 0;
 
       workerResult.detected = 0;
       workerResult.consensusCount = 0;
@@ -663,7 +721,12 @@ if (
       workerResult.symbolCount = 0;
       workerResult.tRoiMs = 0;
       workerResult.tDecodeMs = 0;
+      workerResult.tFlowMs = 0;
       workerResult.tTotalMs = 0;
+      workerResult.flowDx = 0;
+      workerResult.flowDy = 0;
+      workerResult.flowConf = 0;
+      workerResult.flowTiles = 0;
 
       const luma = new Uint8Array(buffer, msg.byteOffset | 0, Math.imul(width, height));
       const useMulti = msg.multi !== false;
@@ -709,7 +772,12 @@ if (
           consensusCount: workerResult.consensusCount,
           tRoiMs: workerResult.tRoiMs,
           tDecodeMs: workerResult.tDecodeMs,
+          tFlowMs: workerResult.tFlowMs,
           tTotalMs: workerResult.tTotalMs,
+          flowDx: workerResult.flowDx,
+          flowDy: workerResult.flowDy,
+          flowConf: workerResult.flowConf,
+          flowTiles: workerResult.flowTiles,
           debug,
           buffer,
         },

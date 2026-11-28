@@ -34,9 +34,14 @@ export const FLAG_EXTRA_LINES = 1 << 1;
 export const FLAG_CRIB_MATCH = 1 << 2;
 export const FLAG_REQUIRE_PREFIX = 1 << 3;
 export const FLAG_REQUIRE_PREFIX_STRICT = 1 << 4;
+export const FLAG_PREFIX_STACK = 1 << 5;
 export const FLAG_ILLUM_NORM = 1 << 6;
 export const FLAG_SUBPIX_EDGES = 1 << 7;
+export const FLAG_SCAN_SMOOTH = 1 << 8;
+export const FLAG_ROI_SMALL_CODES = 1 << 9;
 export const FLAG_VERTICAL_MODE = 1 << 10;
+export const FLAG_DEBLUR_1D = 1 << 11;
+export const FLAG_FLOW_ON = 1 << 12;
 
 const DEG_TO_RAD = Math.PI / 180;
 
@@ -50,9 +55,10 @@ const FALLBACK_OFFSETS_PX = new Int32Array([0, 36, -36]);
  */
 export function createScanlineState() {
   return {
-    // Runtime mode (0 = auto, 1 = vertical) & worker feature-flag bitmask (zero allocation)
+    // Runtime mode (0 = auto, 1 = vertical), worker bitmask & W12 blur length (zero allocation)
     mode: 0,
     flags: 0,
+    blurPx: 0,
 
     // Generated scanline descriptors in 16.16 fixed-point integers (zero float boxing!)
     lineCount: 0,
@@ -64,8 +70,9 @@ export function createScanlineState() {
 
     // Pre-allocated luma cache for all lines: lineIndex * MAX_SCANLINE_LEN + sampleIndex
     lumaBank: new Uint8Array(MAX_SCANLINES * MAX_SCANLINE_LEN),
-    // Scratch single-line buffer for Tier C denoised composite profiles
+    // Scratch single-line buffers for Tier C, W8 sharpening & W12 deblur (zero allocation)
     avgLumaBuf: new Uint8Array(MAX_SCANLINE_LEN),
+    scratchLuma: new Uint8Array(MAX_SCANLINE_LEN),
 
     // Scratch integer prefix-sum buffer for W6 O(N) illumination normalisation (zero allocation)
     illumPrefix: new Int32Array(MAX_SCANLINE_LEN + 1),
@@ -346,6 +353,52 @@ export function sampleScanlineLuma(luma, width, state, lineIdx) {
   const stepX = state.lineStepXQ16[lineIdx] | 0;
   const stepY = state.lineStepYQ16[lineIdx] | 0;
 
+  if ((state.flags & FLAG_SCAN_SMOOTH) !== 0 && len >= 3) {
+    // W8 (flagged `scanSmooth`): 3-tap box average perpendicular to scan direction (along bars)
+    // followed by light 3-tap integer sharpening [-1, 6, -1] / 4 across bars. Zero allocations.
+    const h = (luma.length / w) | 0;
+    const maxX = (w - 2) | 0;
+    const maxY = (h - 2) | 0;
+    const perpX = (-stepY) | 0;
+    const perpY = stepX | 0;
+    const scratch = state.scratchLuma;
+
+    for (let i = 0; i < len; i++) {
+      let sum3 = 0;
+      for (let t = -1; t <= 1; t++) {
+        let sx = (fx + Math.imul(perpX, t)) | 0;
+        let sy = (fy + Math.imul(perpY, t)) | 0;
+        let ix = sx >> 16;
+        let iy = sy >> 16;
+        if (ix < 0) { ix = 0; sx = 0; } else if (ix > maxX) { ix = maxX; sx = maxX << 16; }
+        if (iy < 0) { iy = 0; sy = 0; } else if (iy > maxY) { iy = maxY; sy = maxY << 16; }
+        const wx = (sx >> 8) & 255;
+        const wy = (sy >> 8) & 255;
+        const iwx = (256 - wx) | 0;
+        const iwy = (256 - wy) | 0;
+        const row0 = (Math.imul(iy, w) + ix) | 0;
+        const row1 = (row0 + w) | 0;
+        const top = (Math.imul(luma[row0], iwx) + Math.imul(luma[row0 + 1], wx)) | 0;
+        const bot = (Math.imul(luma[row1], iwx) + Math.imul(luma[row1 + 1], wx)) | 0;
+        sum3 = (sum3 + ((Math.imul(top, iwy) + Math.imul(bot, wy) + 32768) >> 16)) | 0;
+      }
+      scratch[i] = ((sum3 + 1) / 3) | 0;
+      fx = (fx + stepX) | 0;
+      fy = (fy + stepY) | 0;
+    }
+
+    dst[dstBase] = scratch[0];
+    const last = (len - 1) | 0;
+    for (let i = 1; i < last; i++) {
+      let v = ((Math.imul(scratch[i], 6) - scratch[i - 1] - scratch[i + 1] + 2) >> 2) | 0;
+      if (v < 0) v = 0;
+      else if (v > 255) v = 255;
+      dst[(dstBase + i) | 0] = v;
+    }
+    dst[(dstBase + last) | 0] = scratch[last];
+    return len;
+  }
+
   for (let i = 0; i < len; i++) {
     const ix = fx >> 16;
     const iy = fy >> 16;
@@ -366,6 +419,39 @@ export function sampleScanlineLuma(luma, width, state, lineIdx) {
   }
 
   return len;
+}
+
+/**
+ * W12 (flagged `deblur1d`): Optional 1D along-scan inverse-box / Wiener-style deblur pass
+ * in pure Q8 integer math when along-scan motion blur `blurPx` is in `[1.5, 8.0]`.
+ * Gain is capped (`<= 0.75`) to prevent noise amplification; no-op outside `[1.5, 8.0]`.
+ */
+export function deblurScanlineLuma(lumaBuf, offset, len, blurPx, state) {
+  if (!(blurPx >= 1.5 && blurPx <= 8.0)) return;
+  const n = len | 0;
+  if (n < 16) return;
+  const base = offset | 0;
+  const scratch = state.scratchLuma;
+  for (let i = 0; i < n; i++) {
+    scratch[i] = lumaBuf[(base + i) | 0];
+  }
+
+  let r = Math.round(blurPx * 0.5) | 0;
+  if (r < 1) r = 1;
+  else if (r > 4) r = 4;
+
+  let gainQ8 = Math.round(blurPx * 36) | 0;
+  if (gainQ8 > 192) gainQ8 = 192;
+
+  const end = (n - r) | 0;
+  for (let i = r; i < end; i++) {
+    const s = scratch[i];
+    const avg = (scratch[(i - r) | 0] + scratch[(i + r) | 0]) >> 1;
+    let v = (s + ((Math.imul((s - avg) | 0, gainQ8) + 128) >> 8)) | 0;
+    if (v < 0) v = 0;
+    else if (v > 255) v = 255;
+    lumaBuf[(base + i) | 0] = v;
+  }
 }
 
 /**

@@ -25,19 +25,14 @@ const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 
 export const MAX_ROI_CLUSTERS = 24;
+export const FLAG_ROI_SMALL_CODES = 1 << 9;
 
 /**
  * Default RoI confidence threshold separating real barcode clusters from background clutter.
  */
 export const ROI_CONFIDENCE_THRESHOLD = 0.55;
 
-/**
- * Pre-allocates all Stage 1 buffers once for a given frame resolution.
- * @param {number} width  Full-res luma width (default 1280)
- * @param {number} height Full-res luma height (default 720)
- */
-export function createRoiState(width = 1280, height = 720) {
-  const dsShift = (width >= 960 || height >= 960) ? 2 : 1; // 4x for 720p+, 2x for VGA
+function createRoiSubState(width, height, dsShift, cropX0, cropY0, minClusterBlocks, minActivePixels, minTrace) {
   const dsW = width >> dsShift;
   const dsH = height >> dsShift;
   const gridW = dsW >> BLOCK_SHIFT;
@@ -48,11 +43,21 @@ export function createRoiState(width = 1280, height = 720) {
     width: width | 0,
     height: height | 0,
     dsShift: dsShift | 0,
+    activeShift: dsShift | 0,
     dsW: dsW | 0,
     dsH: dsH | 0,
     gridW: gridW | 0,
     gridH: gridH | 0,
     gridSize: gridSize | 0,
+    cropX0: cropX0 | 0,
+    cropY0: cropY0 | 0,
+    flags: 0,
+    noRoiStreak: 0,
+    minClusterBlocks: minClusterBlocks | 0,
+    minActivePixels: minActivePixels | 0,
+    minTrace: minTrace | 0,
+    minCoherence: 0.56,
+    minBipolarity: 0.26,
 
     // Downsampled luma buffer (320x180 = 57,600 B for 720p; 320x240 = 76,800 B for VGA)
     downsampled: new Uint8Array(dsW * dsH),
@@ -88,7 +93,29 @@ export function createRoiState(width = 1280, height = 720) {
     clusterMinorLen: new Float32Array(MAX_ROI_CLUSTERS),
     clusterThetaDeg: new Float32Array(MAX_ROI_CLUSTERS),
     clusterConfidence: new Float32Array(MAX_ROI_CLUSTERS),
+    small2x: null,
   };
+}
+
+/**
+ * Pre-allocates all Stage 1 buffers once for a given frame resolution.
+ * @param {number} width  Full-res luma width (default 1280)
+ * @param {number} height Full-res luma height (default 720)
+ */
+export function createRoiState(width = 1280, height = 720) {
+  const dsShift = (width >= 960 || height >= 960) ? 2 : 1; // 4x for 720p+, 2x for VGA
+  const state = createRoiSubState(width, height, dsShift, 0, 0, 8, 22, 14000);
+  if (dsShift === 2) {
+    // W9 (`roiSmallCodes`): pre-allocate center 60% 2x pass once (zero hot-loop allocations)
+    const cw = Math.max(64, ((width * 0.6) | 0) & ~15);
+    const ch = Math.max(64, ((height * 0.6) | 0) & ~15);
+    const cx0 = ((width - cw) >> 1) & ~1;
+    const cy0 = ((height - ch) >> 1) & ~1;
+    state.small2x = createRoiSubState(cw, ch, 1, cx0, cy0, 6, 18, 10000);
+    state.small2x.minCoherence = 0.52;
+    state.small2x.minBipolarity = 0.24;
+  }
+  return state;
 }
 
 /**
@@ -142,6 +169,29 @@ function downsample2x(luma, width, state) {
 }
 
 /**
+ * Pass 1c (W9): 2x2 integer box downscaler over a cropped center region `(cropX0, cropY0)`.
+ */
+function downsample2xRegion(luma, fullWidth, cropX0, cropY0, subState) {
+  const dsW = subState.dsW | 0;
+  const dsH = subState.dsH | 0;
+  const dst = subState.downsampled;
+  const w = fullWidth | 0;
+  const x0 = cropX0 | 0;
+  const y0 = cropY0 | 0;
+
+  let dstIdx = 0;
+  for (let dy = 0; dy < dsH; dy++) {
+    const row0 = (Math.imul((y0 + (dy << 1)) | 0, w) + x0) | 0;
+    const row1 = (row0 + w) | 0;
+    for (let dx = 0; dx < dsW; dx++) {
+      const sx = dx << 1;
+      const sum = (luma[row0 + sx] + luma[row0 + sx + 1] + luma[row1 + sx] + luma[row1 + sx + 1]) | 0;
+      dst[dstIdx++] = (sum + 2) >> 2;
+    }
+  }
+}
+
+/**
  * Pass 2: Fused 3x3 Scharr gradient & 8x8 block 2D Structure Tensor evaluation.
  */
 function computeBlockTensors(state) {
@@ -164,10 +214,10 @@ function computeBlockTensors(state) {
   const maxY = (dsH - 2) | 0;
 
   const MIN_EDGE_MAG = 28;
-  const MIN_ACTIVE_PIXELS = 22;
-  const MIN_TRACE = 14000;
-  const MIN_COHERENCE = 0.56;
-  const MIN_BIPOLARITY = 0.26;
+  const MIN_ACTIVE_PIXELS = state.minActivePixels | 0;
+  const MIN_TRACE = state.minTrace | 0;
+  const MIN_COHERENCE = state.minCoherence;
+  const MIN_BIPOLARITY = state.minBipolarity;
 
   let bIdx = 0;
   for (let by = 0; by < gridH; by++) {
@@ -327,7 +377,7 @@ function extractTopClusters(state, result) {
   // Tighter orientation consistency (±20° -> cos(40°) ≈ 0.766) prevents barcode clusters
   // from bleeding into adjacent perpendicular text or packaging crimp lines.
   const ORIENT_DOT_MIN = 0.76;
-  const MIN_CLUSTER_BLOCKS = 8;
+  const MIN_CLUSTER_BLOCKS = state.minClusterBlocks | 0;
 
   let clusterCount = 0;
   state.bestCellCount = 0;
@@ -486,12 +536,12 @@ function extractTopClusters(state, result) {
     }
 
     clusterRankScore[insertPos] = rankScore;
-    clusterX[insertPos] = rx0;
-    clusterY[insertPos] = ry0;
+    clusterX[insertPos] = (rx0 + state.cropX0) | 0;
+    clusterY[insertPos] = (ry0 + state.cropY0) | 0;
     clusterW[insertPos] = (rx1 - rx0) | 0;
     clusterH[insertPos] = (ry1 - ry0) | 0;
-    clusterCenterX[insertPos] = cx;
-    clusterCenterY[insertPos] = cy;
+    clusterCenterX[insertPos] = cx + state.cropX0;
+    clusterCenterY[insertPos] = cy + state.cropY0;
     clusterMajorLen[insertPos] = (maxU - minU) + blockPx + padPx * 2;
     clusterMinorLen[insertPos] = (maxV - minV) + blockPx;
     clusterThetaDeg[insertPos] = thetaDeg;
@@ -535,6 +585,43 @@ export function estimateRoi(luma, width, height, state, result) {
   } else {
     downsample2x(luma, width, state);
   }
+  state.activeShift = state.dsShift;
   computeBlockTensors(state);
-  return extractTopClusters(state, result);
+  const found = extractTopClusters(state, result);
+  if (found === 1) {
+    state.noRoiStreak = 0;
+    return 1;
+  }
+
+  // W9 (flagged `roiSmallCodes`): after 3 consecutive frames with no 4x ROI, alternate a
+  // pre-allocated 2x center-60% pass (MIN_CLUSTER_BLOCKS = 6) to catch small/far labels.
+  if ((state.flags & FLAG_ROI_SMALL_CODES) !== 0 && state.small2x !== null) {
+    state.noRoiStreak = (state.noRoiStreak + 1) | 0;
+    if (state.noRoiStreak >= 3 && (state.noRoiStreak & 1) === 1) {
+      const sub = state.small2x;
+      downsample2xRegion(luma, width, sub.cropX0, sub.cropY0, sub);
+      computeBlockTensors(sub);
+      const subFound = extractTopClusters(sub, result);
+      if (subFound === 1) {
+        const cnt = sub.clusterCount | 0;
+        state.clusterCount = cnt;
+        for (let i = 0; i < cnt; i++) {
+          state.clusterRankScore[i] = sub.clusterRankScore[i];
+          state.clusterX[i] = sub.clusterX[i];
+          state.clusterY[i] = sub.clusterY[i];
+          state.clusterW[i] = sub.clusterW[i];
+          state.clusterH[i] = sub.clusterH[i];
+          state.clusterCenterX[i] = sub.clusterCenterX[i];
+          state.clusterCenterY[i] = sub.clusterCenterY[i];
+          state.clusterMajorLen[i] = sub.clusterMajorLen[i];
+          state.clusterMinorLen[i] = sub.clusterMinorLen[i];
+          state.clusterThetaDeg[i] = sub.clusterThetaDeg[i];
+          state.clusterConfidence[i] = sub.clusterConfidence[i];
+        }
+        state.activeShift = 1;
+        return 1;
+      }
+    }
+  }
+  return 0;
 }

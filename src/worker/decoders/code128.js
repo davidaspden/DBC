@@ -91,6 +91,9 @@ export function createCode128State() {
     flags: 0,
     cribMatched: 0,
     cribModulePxQ8: 0,
+    cribStartPxQ8: 0,
+    cribErrQ8: 0,
+    cribDir: 0,
 
     workSymbols: new Uint8Array(MAX_CODE128_SYMBOLS),
     workConfsQ10: new Int32Array(MAX_CODE128_SYMBOLS),
@@ -347,6 +350,15 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
         if (cribErr < 2200) { // ~0.48 modules avg L1 error across all 18 runs
           state.cribMatched = 1;
           state.cribModulePxQ8 = ((total44 + 22) / 44) | 0;
+          state.cribErrQ8 = cribErr;
+          state.cribDir = step;
+          // Sub-pixel Q8 start-bar offset along scanline (for W5 prefix-aligned stacking)
+          let posQ8 = 0;
+          const endIdx = step === 1 ? i : ((i + 1) | 0);
+          for (let r = 0; r < endIdx; r++) {
+            posQ8 = (posQ8 + runWidthsQ8[r]) | 0;
+          }
+          state.cribStartPxQ8 = posQ8;
           // Seed char width from 44-module average (total44 / 4 = 11 modules!)
           prevCharW = total44 >> 2;
         }
