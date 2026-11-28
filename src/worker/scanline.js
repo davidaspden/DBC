@@ -45,6 +45,7 @@ import {
   FLAG_FLOW_ON,
   FLAG_STOP_GUARD,
   FLAG_MODULE_EST,
+  FLAG_BLUR_EDGES,
 } from './flagbits.js';
 import { computeCode128Modules } from '../array/config.js';
 import { findTsxCribModuleWidthQ8 } from './decoders/code128.js';
@@ -65,6 +66,7 @@ export {
   FLAG_FLOW_ON,
   FLAG_STOP_GUARD,
   FLAG_MODULE_EST,
+  FLAG_BLUR_EDGES,
 };
 
 const DEFAULT_EXPECTED_MODULES = computeCode128Modules(11);   // 176 (FC 11-char + 2x10 quiet)
@@ -113,6 +115,14 @@ export function createScanlineState() {
     edgePosQ8: new Int32Array(MAX_RUNS + 2),
     edgePol: new Int8Array(MAX_RUNS + 2),   // -1 = space->bar (falling), +1 = bar->space (rising)
     edgeMag: new Int16Array(MAX_RUNS + 2),
+    edgeCount: 0,
+
+    // BL2 (`blurEdges`): pre-allocated secondary LoG edge bank & fallback trigger telemetry
+    edgePosQ8B: new Int32Array(MAX_RUNS + 2),
+    edgePolB: new Int8Array(MAX_RUNS + 2),
+    edgeMagB: new Int16Array(MAX_RUNS + 2),
+    edgeCountB: 0,
+    blurFallbackTriggered: 0,
 
     runWidthsQ8: new Int32Array(MAX_RUNS),  // Q8 fixed-point sub-pixel widths (256 = 1.0 px)
     // B8: scanline sample position (Q8) where run 0 starts. 0 when the runs tile the line from sample 0,
@@ -538,6 +548,7 @@ export function normaliseScanlineLuma(lumaBuf, offset, len, state, halfWin = 24)
 export function extractRunsFromScanline(lumaBuf, offset, len, state, relThreshQ8 = 72, minDeriv = 18) {
   const n = len | 0;
   if (n < 16) {
+    state.edgeCount = 0;
     state.runCount = 0;
     return 0;
   }
@@ -640,6 +651,7 @@ export function extractRunsFromScanline(lumaBuf, offset, len, state, relThreshQ8
     }
   }
 
+  state.edgeCount = edgeCount;
   if (edgeCount < 2) {
     state.runCount = 0;
     return 0;
@@ -781,6 +793,320 @@ export function extractRunsLocalMidCrossing(lumaBuf, offset, len, state, minCont
 
   state.runCount = rc;
   return rc;
+}
+
+/**
+ * BL2 (`blurEdges`): 1D integer 2nd-derivative / LoG zero-crossing edge extractor into
+ * pre-allocated Bank B (`edgePosQ8B`, `edgePolB`, `edgeMagB`).
+ *
+ * Under motion blur, defocus, or print-gain spread, narrow 1-module bars/spaces lose
+ * peak amplitude and often fail to cross the 50% mid-level or the primary 1st-derivative
+ * relative threshold, whereas the 2nd-derivative inflection point (`s''(x) = 0`) remains
+ * anchored to the true bar boundary.
+ *
+ * Kernel & independent composition with W12 (`deblur1d`):
+ *  - `smooth = 0` (default): 3-tap exact integer 2nd difference `[1, -2, 1]` with 2-tap
+ *    centered slope `s[i] - s[i-1]` right across the zero-crossing (no neighbor bleeding
+ *    on 2.0–2.5 px/mod blurred bars). When `deblur1d` is also ON, `deblurScanlineLuma`
+ *    has already sharpened `lumaBuf` in-place, so `smooth = 0` avoids double-filtering.
+ *  - `smooth = 1`: 3-tap binomial pre-smooth `[1, 2, 1] >> 2` into `state.scratchLuma`
+ *    followed by `[1, -2, 1]` (= 5-tap integer LoG `[1, 0, -2, 0, 1]`).
+ *
+ * Reuses `state.deriv` (2nd deriv), `state.absDeriv` (|2-tap slope|), `state.localEnv`
+ * (bidirectional envelope), and `state.scratchLuma` (when `smooth !== 0`).
+ * Pure 32-bit integer Q8 math, zero allocations.
+ *
+ * @returns {number} Number of 2nd-derivative zero-crossing edges extracted (`state.edgeCountB`)
+ */
+export function extractLogEdges(lumaBuf, offset, len, state, relThreshQ8 = 16, minSlope = 3, smooth = 0) {
+  const n = len | 0;
+  if (n < 16) {
+    state.edgeCountB = 0;
+    return 0;
+  }
+
+  let src = lumaBuf;
+  let srcBase = offset | 0;
+  if (smooth !== 0) {
+    const scratch = state.scratchLuma;
+    const base = offset | 0;
+    scratch[0] = lumaBuf[base];
+    const sLast = (n - 1) | 0;
+    for (let i = 1; i < sLast; i++) {
+      const idx = (base + i) | 0;
+      scratch[i] = (lumaBuf[idx - 1] + (lumaBuf[idx] << 1) + lumaBuf[idx + 1] + 2) >> 2;
+    }
+    scratch[sLast] = lumaBuf[(base + sLast) | 0];
+    src = scratch;
+    srcBase = 0;
+  }
+
+  const logBuf = state.deriv;
+  const absSlope = state.absDeriv;
+  const localEnv = state.localEnv;
+  const edgePosQ8B = state.edgePosQ8B;
+  const edgePolB = state.edgePolB;
+  const edgeMagB = state.edgeMagB;
+
+  logBuf[0] = 0;
+  absSlope[0] = 0;
+  localEnv[0] = 0;
+
+  // Pass 1: Integer 2nd difference [1, -2, 1] + 2-tap centered slope & forward envelope
+  let env = 0;
+  const last = (n - 1) | 0;
+  for (let i = 1; i < last; i++) {
+    const idx = (srcBase + i) | 0;
+    logBuf[i] = (src[idx - 1] - (src[idx] << 1) + src[idx + 1]) | 0;
+    const d1 = (src[idx] - src[idx - 1]) | 0;
+    const ad1 = d1 < 0 ? -d1 : d1;
+    absSlope[i] = ad1;
+    env = (Math.imul(env, 247) >> 8) | 0;
+    if (ad1 > env) env = ad1;
+    localEnv[i] = env;
+  }
+  logBuf[last] = 0;
+  absSlope[last] = 0;
+  localEnv[last] = 0;
+
+  // Pass 2: Backward max-envelope for shadow-invariant local contrast gating
+  env = 0;
+  for (let i = last - 1; i >= 1; i--) {
+    const ad1 = absSlope[i];
+    env = (Math.imul(env, 247) >> 8) | 0;
+    if (ad1 > env) env = ad1;
+    if (env > localEnv[i]) localEnv[i] = env;
+  }
+
+  // Pass 3: Sub-pixel Q8 2nd-derivative zero-crossings with slope polarity & adaptive gating
+  let countB = 0;
+  const maxEdges = (MAX_RUNS + 1) | 0;
+  const relQ8 = relThreshQ8 | 0;
+  const minS = minSlope | 0;
+  const minGapQ8 = 128; // 0.5 px minimum inter-edge spacing
+
+  for (let i = 2; i < last; i++) {
+    const Lm = logBuf[i - 1];
+    const L0 = logBuf[i];
+    let pol = 0;
+    if (Lm <= 0 && L0 > 0) pol = -1;      // space -> bar (falling edge)
+    else if (Lm >= 0 && L0 < 0) pol = 1;  // bar -> space (rising edge)
+    if (pol === 0) continue;
+
+    const idx = (srcBase + i) | 0;
+    const d1 = (src[idx] - src[idx - 1]) | 0;
+    if ((pol === -1 && d1 >= 0) || (pol === 1 && d1 <= 0)) continue;
+
+    const ad1 = d1 < 0 ? -d1 : d1;
+    let thresh = (Math.imul(localEnv[i], relQ8) >> 8) | 0;
+    if (thresh < minS) thresh = minS;
+    if (ad1 < thresh) continue;
+
+    const denom = (Lm - L0) | 0;
+    let fracQ8 = 128;
+    if (denom !== 0) {
+      fracQ8 = ((Lm << 8) / denom) | 0;
+      if (fracQ8 < 0) fracQ8 = 0;
+      else if (fracQ8 > 256) fracQ8 = 256;
+    }
+    const posQ8 = (((i - 1) << 8) + fracQ8) | 0;
+
+    if (countB === 0) {
+      edgePosQ8B[0] = posQ8;
+      edgePolB[0] = pol;
+      edgeMagB[0] = ad1;
+      countB = 1;
+    } else {
+      const prevIdx = (countB - 1) | 0;
+      if (edgePolB[prevIdx] === pol) {
+        if (ad1 > edgeMagB[prevIdx]) {
+          edgePosQ8B[prevIdx] = posQ8;
+          edgeMagB[prevIdx] = ad1;
+        }
+      } else if (((posQ8 - edgePosQ8B[prevIdx]) | 0) >= minGapQ8 && countB < maxEdges) {
+        edgePosQ8B[countB] = posQ8;
+        edgePolB[countB] = pol;
+        edgeMagB[countB] = ad1;
+        countB++;
+      }
+    }
+  }
+
+  state.edgeCountB = countB;
+  return countB;
+}
+
+/**
+ * BL2 (`blurEdges`): Proximity-fuses primary 1st-derivative edges (Bank A: `edgePosQ8[0..nA-1]`)
+ * with LoG 2nd-derivative zero-crossing edges (Bank B: `edgePosQ8B[0..nB-1]`) directly into
+ * `state.runWidthsQ8` / `state.runIsBar` using a single O(nA + nB) two-pointer pass with
+ * 1-edge lookahead.
+ *
+ * - Matched same-polarity edges within `proxQ8` are blended (50/50 when primary is strong;
+ *   25/75 LoG-weighted when primary is weak/blurred) to cancel bias and reduce jitter.
+ * - Unmatched LoG edges fill in narrow 1-module bars/spaces dropped by primary under blur.
+ * - Pass `nA = 0` for pure LoG-only run extraction from Bank B.
+ *
+ * Pure 32-bit integer arithmetic, zero heap allocations.
+ *
+ * @returns {number} Number of fused runs extracted (`state.runCount`)
+ */
+export function fuseEdgeBanksToRuns(len, state, nA, nB, proxQ8 = 320) {
+  const n = len | 0;
+  const countA = nA | 0;
+  const countB = nB | 0;
+  if (n < 16 || ((countA + countB) | 0) < 2) {
+    state.runCount = 0;
+    return 0;
+  }
+
+  const posA = state.edgePosQ8;
+  const polA = state.edgePol;
+  const magA = state.edgeMag;
+  const posB = state.edgePosQ8B;
+  const polB = state.edgePolB;
+  const magB = state.edgeMagB;
+  const runWidthsQ8 = state.runWidthsQ8;
+  const runIsBar = state.runIsBar;
+  const prox = proxQ8 | 0;
+
+  let a = 0;
+  let b = 0;
+  let rc = 0;
+  let hasPrev = 0;
+  let prevPosQ8 = 0;
+  let prevPol = 0;
+  let hasCur = 0;
+  let curPosQ8 = 0;
+  let curPol = 0;
+  let curMag = 0;
+
+  while (a < countA || b < countB) {
+    let candPos = 0;
+    let candPol = 0;
+    let candMag = 0;
+
+    if (a < countA && b < countB) {
+      const pA = posA[a];
+      const pB = posB[b];
+      const diff = (pA - pB) | 0;
+      const absDiff = diff < 0 ? -diff : diff;
+      if (absDiff <= prox && polA[a] === polB[b]) {
+        const mA = magA[a];
+        const mB = magB[b] << 1;
+        // Blend 50/50 on strong primary edges; favor LoG 75/25 on weak/blurred primary edges
+        candPos = mA >= 36
+          ? ((pA + pB + 1) >> 1)
+          : ((pA + Math.imul(pB, 3) + 2) >> 2);
+        candPol = polA[a];
+        candMag = (mA + mB) | 0;
+        a++;
+        b++;
+      } else if (pA <= pB) {
+        candPos = pA;
+        candPol = polA[a];
+        candMag = magA[a];
+        a++;
+      } else {
+        candPos = pB;
+        candPol = polB[b];
+        candMag = magB[b] << 1;
+        b++;
+      }
+    } else if (a < countA) {
+      candPos = posA[a];
+      candPol = polA[a];
+      candMag = magA[a];
+      a++;
+    } else {
+      candPos = posB[b];
+      candPol = polB[b];
+      candMag = magB[b] << 1;
+      b++;
+    }
+
+    if (hasCur === 0) {
+      curPosQ8 = candPos;
+      curPol = candPol;
+      curMag = candMag;
+      hasCur = 1;
+    } else if (candPol === curPol) {
+      if (candMag > curMag) {
+        curPosQ8 = candPos;
+        curMag = candMag;
+      }
+    } else {
+      // Polarity flipped: commit `cur` and emit run
+      if (hasPrev === 0) {
+        state.runOriginQ8 = curPol === -1 ? 0 : curPosQ8;
+        if (curPol === -1 && rc < MAX_RUNS) {
+          runWidthsQ8[rc] = curPosQ8 > 26 ? curPosQ8 : 26;
+          runIsBar[rc] = 0;
+          rc++;
+        }
+        hasPrev = 1;
+      } else if (rc < MAX_RUNS) {
+        const w = (curPosQ8 - prevPosQ8) | 0;
+        runWidthsQ8[rc] = w > 26 ? w : 26;
+        runIsBar[rc] = prevPol === -1 ? 1 : 0;
+        rc++;
+      }
+      prevPosQ8 = curPosQ8;
+      prevPol = curPol;
+      curPosQ8 = candPos;
+      curPol = candPol;
+      curMag = candMag;
+    }
+  }
+
+  // Finalize pending `cur` edge
+  if (hasPrev === 1 && hasCur === 1) {
+    if (rc < MAX_RUNS) {
+      const w = (curPosQ8 - prevPosQ8) | 0;
+      runWidthsQ8[rc] = w > 26 ? w : 26;
+      runIsBar[rc] = prevPol === -1 ? 1 : 0;
+      rc++;
+    }
+    if (curPol === 1 && rc < MAX_RUNS) {
+      const tail = (((n - 1) << 8) - curPosQ8) | 0;
+      runWidthsQ8[rc] = tail > 26 ? tail : 26;
+      runIsBar[rc] = 0;
+      rc++;
+    }
+  } else {
+    rc = 0;
+  }
+
+  state.runCount = rc;
+  return rc;
+}
+
+/**
+ * BL2 (`blurEdges`): Fallback blur-resilient run extractor combining integer LoG
+ * zero-crossings with proximity fusion against primary 1st-derivative edges (when
+ * `hasPrimaryEdges !== 0` and `state.edgeCount >= 2`).
+ *
+ * Pure 32-bit integer arithmetic, zero heap allocations.
+ *
+ * @returns {number} Number of runs extracted (`state.runCount`)
+ */
+export function extractRunsBlurResilient(lumaBuf, offset, len, state, hasPrimaryEdges = 0, smooth = 0) {
+  const nB = extractLogEdges(lumaBuf, offset, len, state, 16, 3, smooth);
+  const nA = hasPrimaryEdges !== 0 ? (state.edgeCount | 0) : 0;
+  if (((nA + nB) | 0) < 2) {
+    state.runCount = 0;
+    return 0;
+  }
+
+  let proxQ8 = 320; // 1.25 px default proximity fusion window
+  const modQ8 = state.moduleWidthQ8 | 0;
+  if (modQ8 >= 256) {
+    proxQ8 = modQ8 >> 1;
+    if (proxQ8 < 192) proxQ8 = 192;
+    else if (proxQ8 > 512) proxQ8 = 512;
+  }
+
+  return fuseEdgeBanksToRuns(len, state, nA, nB, proxQ8);
 }
 
 /**

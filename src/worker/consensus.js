@@ -33,16 +33,20 @@ import {
   FLAG_DEBLUR_1D,
   FLAG_DECODE_ANCHOR,
   FLAG_MODULE_EST,
+  FLAG_BLUR_EDGES,
 } from './flagbits.js';
 import {
   MAX_SCANLINES,
   MAX_SCANLINE_LEN,
+  MAX_RUNS,
   buildScanlinePlan,
   sampleScanlineLuma,
   normaliseScanlineLuma,
   deblurScanlineLuma,
   extractRunsFromScanline,
   extractRunsLocalMidCrossing,
+  extractRunsBlurResilient,
+  fuseEdgeBanksToRuns,
   estimateModuleWidthQ8,
 } from './scanline.js';
 import {
@@ -369,6 +373,7 @@ function tryPrefixAlignedStacking(scanState, cState, result) {
   }
 
   const c128 = cState.c128;
+  const useBlurEdges = (scanState.flags & FLAG_BLUR_EDGES) !== 0;
   for (let pass = 0; pass < 2; pass++) {
     const runCount = pass === 0
       ? extractRunsLocalMidCrossing(avgBuf, 0, span, scanState, 20)
@@ -383,6 +388,28 @@ function tryPrefixAlignedStacking(scanState, cState, result) {
       recordTierCSpan(scanState, cState, refLine, iStart);
       emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, mCount);
       return 1;
+    }
+  }
+  // BL2 (`blurEdges`): fallback LoG + proximity-fusion pass on prefix-stacked profile
+  if (useBlurEdges) {
+    scanState.blurFallbackTriggered = (scanState.blurFallbackTriggered + 1) | 0;
+    let rcBlur = extractRunsBlurResilient(avgBuf, 0, span, scanState, 1, 0);
+    for (let bPass = 0; bPass < 2; bPass++) {
+      if (bPass === 1) {
+        if ((scanState.edgeCountB | 0) < 24) break;
+        rcBlur = fuseEdgeBanksToRuns(span, scanState, 0, scanState.edgeCountB, 320);
+      }
+      if (rcBlur < 25) continue;
+      const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
+      if (status === 2) {
+        if ((c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen)) {
+          continue;
+        }
+        cState.lastLineIdx = refLine;
+        recordTierCSpan(scanState, cState, refLine, iStart);
+        emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, mCount);
+        return 1;
+      }
     }
   }
   return 0;
@@ -458,6 +485,7 @@ function tryTierCProfileAveraging(scanState, cState, result) {
 
     // Pass 0: local adaptive envelope zero-crossing on denoised profile (immune to blur width bloat)
     // Pass 1: derivative peaks on denoised profile
+    let groupDecoded = 0;
     for (let pass = 0; pass < 2; pass++) {
       const runCount = pass === 0
         ? extractRunsLocalMidCrossing(avgBuf, 0, span, scanState, 24)
@@ -476,7 +504,35 @@ function tryTierCProfileAveraging(scanState, cState, result) {
           emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, votes);
           return 1;
         }
+        groupDecoded = 1;
         break;
+      }
+    }
+
+    // BL2 (`blurEdges`): Tier C fallback LoG + proximity fusion when primary & mid-crossing miss
+    if (groupDecoded === 0 && (scanState.flags & FLAG_BLUR_EDGES) !== 0) {
+      scanState.blurFallbackTriggered = (scanState.blurFallbackTriggered + 1) | 0;
+      let rcBlur = extractRunsBlurResilient(avgBuf, 0, span, scanState, 1, 0);
+      for (let bPass = 0; bPass < 2; bPass++) {
+        if (bPass === 1) {
+          if ((scanState.edgeCountB | 0) < 24) break;
+          rcBlur = fuseEdgeBanksToRuns(span, scanState, 0, scanState.edgeCountB, 320);
+        }
+        if (rcBlur < 25) continue;
+        const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
+        if (status === 2) {
+          if ((c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen)) {
+            continue;
+          }
+          const votes = recordExactVote(cState, c128.payloadBytes, c128.payloadLen);
+          if (votes >= MIN_CONSENSUS_AGREEMENT) {
+            cState.lastLineIdx = b;
+            recordTierCSpan(scanState, cState, b, iStart);
+            emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, votes);
+            return 1;
+          }
+          break;
+        }
       }
     }
   }
@@ -507,6 +563,7 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
   const useReqPrefix = (flags & FLAG_REQUIRE_PREFIX) !== 0;
   const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
   const useModuleEst = (flags & FLAG_MODULE_EST) !== 0;
+  const useBlurEdges = (flags & FLAG_BLUR_EDGES) !== 0;
   if (useModuleEst) {
     scanState.roiMajorLen = hasRoi === 1 ? (result.roiMajorLen | 0) : 0;
   }
@@ -535,11 +592,24 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
     const runCount = useSubpixFirst
       ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
       : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
+    let blurEstHint = 0;
     if (useModuleEst) {
       scanState.linesEvaluated = (scanState.linesEvaluated + 1) | 0;
       if (estimateModuleWidthQ8(lumaBank, lumaOffset, len, scanState, useSubpixFirst ? 0 : 1, 0) === 0) {
-        scanState.linesRejectedEarly = (scanState.linesRejectedEarly + 1) | 0;
-        continue;
+        // When both moduleEst and blurEdges are ON, allow blur-weakened in-range periodic lines
+        // (strength >= 140) to fall through to BL2 instead of early-rejecting valid blurred codes.
+        const mQ8 = scanState.moduleWidthQ8 | 0;
+        const canBlurRescue = useBlurEdges &&
+          mQ8 >= (scanState.derivedMinModQ8 | 0) &&
+          mQ8 <= (scanState.derivedMaxModQ8 | 0) &&
+          (scanState.modulePeakStrength | 0) >= 140;
+        if (!canBlurRescue) {
+          scanState.linesRejectedEarly = (scanState.linesRejectedEarly + 1) | 0;
+          continue;
+        }
+        blurEstHint = 1;
+      } else if (useBlurEdges && (scanState.modulePeakStrength | 0) < 380) {
+        blurEstHint = 1;
       }
     }
     let status = 0;
@@ -548,13 +618,38 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
     }
 
     // Secondary complementary extractor pass
+    let runCount2 = 0;
     if (status < 2) {
-      const runCount2 = useSubpixFirst
+      runCount2 = useSubpixFirst
         ? extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18)
         : extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
       if (runCount2 >= 25) {
         const status2 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
         if (status2 > status) status = status2;
+      }
+    }
+
+    // BL2 (`blurEdges`): Fallback-only LoG + proximity fusion when primary + secondary fail to decode,
+    // produce a suspicious run count (< 19 or > MAX_RUNS - 4), or BL1 moduleEst reports blur.
+    // Note: when `deblur1d` is also ON, `lumaBank` was already sharpened above, so `smooth = 0`
+    // avoids double-filtering while exploiting the sharpened slope cleanly.
+    if (useBlurEdges && status < 2) {
+      const suspiciousRuns = runCount < 19 || runCount > (MAX_RUNS - 4) ||
+        runCount2 < 19 || runCount2 > (MAX_RUNS - 4);
+      if (blurEstHint === 1 || suspiciousRuns || status < 2) {
+        scanState.blurFallbackTriggered = (scanState.blurFallbackTriggered + 1) | 0;
+        let rcBlur = extractRunsBlurResilient(lumaBank, lumaOffset, len, scanState, 1, 0);
+        if (rcBlur >= 25) {
+          const status3 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
+          if (status3 > status) status = status3;
+        }
+        if (status < 2 && (scanState.edgeCountB | 0) >= 24) {
+          rcBlur = fuseEdgeBanksToRuns(len, scanState, 0, scanState.edgeCountB, 320);
+          if (rcBlur >= 25) {
+            const status4 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
+            if (status4 > status) status = status4;
+          }
+        }
       }
     }
 
@@ -715,6 +810,7 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
   const useSubpixFirst = (flags & FLAG_SUBPIX_EDGES) !== 0;
   const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
   const useModuleEst = (flags & FLAG_MODULE_EST) !== 0;
+  const useBlurEdges = (flags & FLAG_BLUR_EDGES) !== 0;
   if (useModuleEst) {
     scanState.roiMajorLen = hasRoi === 1 ? (result.roiMajorLen | 0) : 0;
   }
@@ -746,8 +842,15 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
     if (useModuleEst) {
       scanState.linesEvaluated = (scanState.linesEvaluated + 1) | 0;
       if (estimateModuleWidthQ8(lumaBank, lumaOffset, len, scanState, useSubpixFirst ? 0 : 1, isMergedCluster ? 1 : 0) === 0) {
-        scanState.linesRejectedEarly = (scanState.linesRejectedEarly + 1) | 0;
-        continue;
+        const mQ8 = scanState.moduleWidthQ8 | 0;
+        const canBlurRescue = useBlurEdges &&
+          mQ8 >= (scanState.derivedMinModQ8 | 0) &&
+          mQ8 <= (scanState.derivedMaxModQ8 | 0) &&
+          (scanState.modulePeakStrength | 0) >= 140;
+        if (!canBlurRescue) {
+          scanState.linesRejectedEarly = (scanState.linesRejectedEarly + 1) | 0;
+          continue;
+        }
       }
     }
     let hits1 = 0;
@@ -760,15 +863,41 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
     }
 
     // Run complementary pass if primary missed or on merged multi-carton columns
+    let hits2 = 0;
+    let runCount2 = 0;
     if (hits1 === 0 || isMergedCluster) {
-      const runCount2 = useSubpixFirst
+      runCount2 = useSubpixFirst
         ? extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18)
         : extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
       if (runCount2 >= 25) {
-        const hits2 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
+        hits2 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
         for (let h = 0; h < hits2; h++) {
           if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
           recordMultiLineHit(cState, scanState, i, h);
+        }
+      }
+    }
+
+    // BL2 (`blurEdges`): Fallback-only LoG + proximity fusion when primary + secondary miss
+    if (useBlurEdges && hits1 === 0 && hits2 === 0) {
+      scanState.blurFallbackTriggered = (scanState.blurFallbackTriggered + 1) | 0;
+      let rcBlur = extractRunsBlurResilient(lumaBank, lumaOffset, len, scanState, 1, 0);
+      let hits3 = 0;
+      if (rcBlur >= 25) {
+        hits3 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
+        for (let h = 0; h < hits3; h++) {
+          if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
+          recordMultiLineHit(cState, scanState, i, h);
+        }
+      }
+      if (hits3 === 0 && (scanState.edgeCountB | 0) >= 24) {
+        rcBlur = fuseEdgeBanksToRuns(len, scanState, 0, scanState.edgeCountB, 320);
+        if (rcBlur >= 25) {
+          const hits4 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, rcBlur, c128);
+          for (let h = 0; h < hits4; h++) {
+            if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
+            recordMultiLineHit(cState, scanState, i, h);
+          }
         }
       }
     }
