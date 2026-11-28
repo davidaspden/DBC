@@ -51,14 +51,15 @@ export function selectStandbackLens(cameras) {
     };
   }
 
-  // 2. Check for logical multi-lens handover with zoom >= 3 and verified capabilities/framing jump
+  // 2. PP1: Only accept logical tele when backed by verified tele evidence (separate device /
+  // measured magnification >= 2x at zoom=1 / known model) — NEVER a zoom-sweep jump alone.
   const logicalTele = rear.find(
     (c) =>
-      c.zoomSweep &&
-      c.zoomSweep.logicalZoomLikely &&
-      c.capabilities &&
-      c.capabilities.zoom &&
-      c.capabilities.zoom.max >= 3 &&
+      ((typeof c.measuredMagnification === 'number' && c.measuredMagnification >= 2.0) ||
+        (c.zoomSweep &&
+          (c.zoomSweep.teleEvidence === 'separate-device' ||
+            c.zoomSweep.teleEvidence === 'measured-mag' ||
+            c.zoomSweep.teleEvidence === 'known-model'))) &&
       supports30InFocus(c)
   );
   if (logicalTele) {

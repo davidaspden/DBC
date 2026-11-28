@@ -107,9 +107,9 @@ export function formatReportText(report) {
       }
       if (c.zoomSweep && Array.isArray(c.zoomSweep.steps) && c.zoomSweep.steps.length > 0) {
         const seq = c.zoomSweep.steps.map((s) => (s.error ? `${s.requested}(err)` : String(s.achieved))).join(' → ');
-        const note = c.zoomSweep.logicalZoomLikely
-          ? 'framing/caps jump; possible lens switch'
-          : 'no framing jump; likely digital';
+        const note = c.zoomSweep.teleEvidence === 'unknown-jump'
+          ? 'zoom jump observed (unverified — treated as unknown/digital)'
+          : (c.zoomSweep.logicalZoomLikely ? 'verified lens switch' : 'no framing jump; likely digital');
         lines.push(`    zoom sweep  ${seq}  (${note})`);
       }
     }

@@ -477,14 +477,16 @@ export async function probeCameras(previewEl, opts = {}) {
           await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] });
         } catch {}
 
-        // Only flag logical lens handover when capabilities actually change across a zoom step,
-        // OR when a sharp framing discontinuity occurs without a gradual monotonic brightness ramp
-        // (prevents hand-held auto-exposure ramp on single-sensor phones like A53 from mimicking tele).
+        // PP1: Never infer a tele lens from a zoom-sweep jump alone.
+        // Record observed deltas honestly, and mark `teleEvidence: 'unknown-jump'` when a jump occurs
+        // without a separate rear tele videoinput or measured zoom=1 magnification step.
+        const jumpObserved = framingJumpDetected || capsChangedDetected;
         entry.zoomSweep = {
           steps: sweepSteps,
           framingJumpDetected,
           capsChangedDetected,
-          logicalZoomLikely: caps.zoom.max >= 3 && (capsChangedDetected || (framingJumpDetected && sweepSteps.some((s) => s.frameDiff > 45))),
+          logicalZoomLikely: false,
+          teleEvidence: jumpObserved ? 'unknown-jump' : 'none',
         };
       }
 

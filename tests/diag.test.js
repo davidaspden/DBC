@@ -205,17 +205,26 @@ await test('recommend returns part2-slide on Galaxy A53 5G fixture (no tele, 108
   assert.match(rec.blurb, /8 in slide/i);
 });
 
-await test('recommend returns part3-tele when logical 3x zoom lens switch + gyro exist', async () => {
-  const report = a53Fixture();
-  report.cameras[0].zoomSweep.framingJumpDetected = true;
-  report.cameras[0].zoomSweep.capsChangedDetected = true;
-  report.cameras[0].zoomSweep.logicalZoomLikely = true;
-  report.cameras[0].capabilities.exposureMode = ['continuous', 'manual'];
-  report.cameras[0].capabilities.exposureTime = { min: 1, max: 1000 };
-  const rec = recommend(report);
-  assert.equal(rec.mode, 'part3-tele');
-  assert.equal(rec.secondaryOption, 'part2-slide');
-  assert.match(rec.blurb, /Part 3/i);
+await test('PP1 zoom-sweep jump alone NEVER triggers part3-tele; requires separate TELE? lens or measured mag >= 2x', async () => {
+  // Zoom-sweep framing + caps jump alone on unknown device -> treated as unknown -> part2-slide!
+  const unknownPhone = a53Fixture({
+    env: baseEnv({ uaModelGuess: 'UnknownPhone', highEntropy: { model: 'UnknownPhone', platform: 'Android', platformVersion: '16.0.0' } }),
+  });
+  unknownPhone.cameras[0].zoomSweep.framingJumpDetected = true;
+  unknownPhone.cameras[0].zoomSweep.capsChangedDetected = true;
+  unknownPhone.cameras[0].zoomSweep.logicalZoomLikely = true;
+  unknownPhone.cameras[0].zoomSweep.teleEvidence = 'unknown-jump';
+  unknownPhone.cameras[0].capabilities.exposureMode = ['continuous', 'manual'];
+  unknownPhone.cameras[0].capabilities.exposureTime = { min: 1, max: 1000 };
+  const recJumpOnly = recommend(unknownPhone);
+  assert.equal(recJumpOnly.mode, 'part2-slide', 'zoom-sweep jump alone must never infer tele');
+
+  // With measured magnification >= 2.0x at zoom=1 between devices -> part3-tele
+  unknownPhone.cameras[0].measuredMagnification = 3.0;
+  const recVerified = recommend(unknownPhone);
+  assert.equal(recVerified.mode, 'part3-tele');
+  assert.equal(recVerified.secondaryOption, 'part2-slide');
+  assert.match(recVerified.blurb, /Part 3/i);
 });
 
 await test('D2 real Galaxy A53 5G (SM-A536B) report recommends part2-slide and picks camera 0 (AF + torch)', async () => {

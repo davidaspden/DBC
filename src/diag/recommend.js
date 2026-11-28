@@ -47,16 +47,37 @@ function canFocusAt8In(cam, label8) {
   return true;
 }
 
-function looksLikeRealTele(cam) {
+// PP1: Known single-main-sensor models with NO optical telephoto lens (never recommend part3-tele).
+const KNOWN_NO_TELE_MODELS = [
+  /^SM-A536/i, // Samsung Galaxy A53 5G
+  /^SM-A52[568]/i,
+  /^SM-A546/i,
+  /^SM-A556/i,
+  /^SM-A3[345]6/i,
+];
+
+function isKnownNoTeleModel(env) {
+  const he = env && env.highEntropy ? env.highEntropy : {};
+  const model = he.model || (env && env.uaModelGuess) || '';
+  return KNOWN_NO_TELE_MODELS.some((re) => re.test(model));
+}
+
+/**
+ * PP1: Conservative optical telephoto detector.
+ * NEVER infers a tele lens from a zoom-sweep framing/caps jump alone.
+ * Requires one of:
+ *  1. A separate rear `videoinput` classified as `TELE?` (narrower native FOV / longer min focus)
+ *  2. A measured magnification step >= 2.0x at zoom=1 between two rear devices (`measuredMagnification`)
+ *  3. Explicit `teleEvidence === 'separate-device' | 'measured-mag' | 'known-model'`
+ * Treats uncertain zoom-sweep jumps as unknown (not tele).
+ */
+function looksLikeRealTele(cam, env) {
   if (!cam || cam.facing !== 'environment' || cam.error) return false;
   if (cam.roleGuess === 'TELE?') return true;
-  const zCap = cam.capabilities && typeof cam.capabilities.zoom === 'object' ? cam.capabilities.zoom : null;
-  const sweep = cam.zoomSweep;
-  // Require either an actual capability change on handover or a strong optical framing jump (>45 MAE)
-  if (zCap && zCap.max >= 3 && sweep && sweep.logicalZoomLikely) {
-    const strongJump = Array.isArray(sweep.steps) && sweep.steps.some((s) => (s.frameDiff || 0) > 45);
-    if (sweep.capsChangedDetected || strongJump) return true;
-  }
+  if (typeof cam.measuredMagnification === 'number' && cam.measuredMagnification >= 2.0) return true;
+  if (isKnownNoTeleModel(env)) return false;
+  const ev = cam.zoomSweep && cam.zoomSweep.teleEvidence;
+  if (ev === 'separate-device' || ev === 'measured-mag' || ev === 'known-model') return true;
   return false;
 }
 
@@ -99,7 +120,7 @@ export function recommend(report) {
   const rear = cameras.filter((c) => c.facing === 'environment' && !c.error);
   const usableRear = rear.filter((c) => c.suitable !== false && hasResAtLeast(c, 1280));
   const mainCam = usableRear.find((c) => c.roleGuess === 'MAIN?') || usableRear[0] || null;
-  const teleCam = usableRear.find((c) => looksLikeRealTele(c)) || null;
+  const teleCam = usableRear.find((c) => looksLikeRealTele(c, env)) || null;
   const hasGyro = Boolean(sensors.gyroAvailable);
 
   // Desktop / front-only webcam check
