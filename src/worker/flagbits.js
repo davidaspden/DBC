@@ -21,6 +21,11 @@ export const FLAG_DEBLUR_1D = 1 << 11;             // W12
 export const FLAG_FLOW_ON = 1 << 12;               // W13
 export const FLAG_STOP_GUARD = 1 << 13;            // F1
 export const FLAG_DECODE_ANCHOR = 1 << 14;         // B8
+export const FLAG_MODULE_EST = 1 << 15;            // BL1 - module width estimate (crib-first)
+export const FLAG_BLUR_EDGES = 1 << 16;            // BL2 - fallback blur-resilient edges
+export const FLAG_MATCH_FILTER = 1 << 17;          // BL3 - matched filter start/stop (extends cribMatch)
+export const FLAG_ROI_MULTISCALE = 1 << 18;        // BL4 - multi-scale structure tensor
+export const FLAG_SOFT_DECODE = 1 << 19;           // BL5 - soft/DP run decoding (guarded)
 
 export const WORKER_FLAG_BITS = Object.freeze({
   vertFallback:        FLAG_VERT_FALLBACK,
@@ -38,4 +43,9 @@ export const WORKER_FLAG_BITS = Object.freeze({
   flowOn:              FLAG_FLOW_ON,
   stopGuard:           FLAG_STOP_GUARD,
   decodeAnchor:        FLAG_DECODE_ANCHOR,
+  moduleEst:           FLAG_MODULE_EST,
+  blurEdges:           FLAG_BLUR_EDGES,
+  matchFilter:         FLAG_MATCH_FILTER,
+  roiMultiscale:       FLAG_ROI_MULTISCALE,
+  softDecode:          FLAG_SOFT_DECODE,
 });

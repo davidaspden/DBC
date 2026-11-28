@@ -38,6 +38,11 @@ export const FLAG_DEFS = Object.freeze([
   { name: 'flowOn',              bit: WORKER_FLAG_BITS.flowOn,               default: false, item: 'W13',  desc: 'Downsampled block-matching optical flow stage' },
   { name: 'decodeAnchor',        bit: WORKER_FLAG_BITS.decodeAnchor,         default: false, item: 'B8',   desc: 'Anchor reported label centre/overlay to the decoded start-stop span on the winning scanlines (fixes ROI-centre offset along the scan axis)' },
   { name: 'stopGuard',           bit: WORKER_FLAG_BITS.stopGuard,            default: false, item: 'F1',   desc: 'Stop width, trailing quiet-zone, span and tail-quality guard against oblique-tail false Code 128 decodes' },
+  { name: 'moduleEst',           bit: WORKER_FLAG_BITS.moduleEst,            default: false, item: 'BL1',  desc: 'Crib-first / autocorrelation module-width estimation & derived-range early reject' },
+  { name: 'blurEdges',           bit: WORKER_FLAG_BITS.blurEdges,            default: false, item: 'BL2',  desc: 'Fallback blur-resilient 2nd-derivative / LoG edge fusion in Q8' },
+  { name: 'matchFilter',         bit: WORKER_FLAG_BITS.matchFilter,          default: false, item: 'BL3',  desc: 'Pre-allocated Start B / Stop / tsX matched filter extending cribMatch & stopGuard' },
+  { name: 'roiMultiscale',       bit: WORKER_FLAG_BITS.roiMultiscale,        default: false, item: 'BL4',  desc: 'Energy-scored & conditional coarse multi-scale RoI Structure Tensor pass' },
+  { name: 'softDecode',          bit: WORKER_FLAG_BITS.softDecode,           default: false, item: 'BL5',  desc: 'Guarded fixed-point Viterbi/DP soft run decoder (requires stopGuard)' },
 
   // Stream C — Camera / Capture
   { name: 'camProfiles',         bit: null,                                  default: false, item: 'C2',   desc: 'Named camera profiles (far/wall), zoom & 4K presets (S1)' },

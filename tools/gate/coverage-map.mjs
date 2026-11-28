@@ -142,6 +142,41 @@ export const PRODUCT_FLAG_COVERAGE = Object.freeze({
     planned: 'B8/B8p2',
     reason: 'Only changes reported label geometry (centre/ROI/overlay line), never decodes, so decode-count SimGate scenarios cannot score it; scored against R8 overlay ground truth (also enabled by SimGate W-all).',
   },
+  moduleEst: {
+    registry: 'product',
+    scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
+    tests: [{ file: 'tests/flags.test.js' }],
+    planned: 'BL1',
+    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL1 module-width/early-reject tests added in BL1.',
+  },
+  blurEdges: {
+    registry: 'product',
+    scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
+    tests: [{ file: 'tests/flags.test.js' }],
+    planned: 'BL2',
+    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL2 fallback blur-edge tests added in BL2.',
+  },
+  matchFilter: {
+    registry: 'product',
+    scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
+    tests: [{ file: 'tests/flags.test.js' }],
+    planned: 'BL3',
+    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL3 matched-filter tests added in BL3.',
+  },
+  roiMultiscale: {
+    registry: 'product',
+    scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
+    tests: [{ file: 'tests/flags.test.js' }],
+    planned: 'BL4',
+    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL4 multi-scale tensor tests added in BL4.',
+  },
+  softDecode: {
+    registry: 'product',
+    scenarios: ['S02-a53-8-720', 'fc-8-3p5'],
+    tests: [{ file: 'tests/flags.test.js' }],
+    planned: 'BL5',
+    reason: 'Exercised by SimGate W-all worker flag set; dedicated BL5 guarded soft-DP tests added in BL5.',
+  },
 
   // Stream C — Camera / Capture (MediaStreamTrack APIs outside headless worker)
   camProfiles: {
