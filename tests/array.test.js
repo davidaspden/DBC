@@ -17,6 +17,7 @@ import { classifyHold, solveAxisRemap, AXIS_REMAPS, applyAxisRemap } from '../sr
 import { computeBlurModules } from '../src/array/blur.js';
 import { computeViewTransform, mapRectToHud } from '../src/array/viewmap.js';
 import { pxPerModule } from '../src/array/optics.js';
+import { FC_PROFILE, LEGACY_PROFILE, computeCode128Modules, resolveFcProfile } from '../src/array/config.js';
 import { createAutoZeroStateMachine } from '../src/array/autozero.js';
 
 let passed = 0;
@@ -185,7 +186,8 @@ test('OrientationTracker manual pan/tilt lookup works cleanly', () => {
 test('A1 fcLabelDefaults and toteOrientation config produce expected 3.5 in optics & swapped pitch', () => {
   const mapper = createPanArrayMapper({ fcLabelDefaults: true, toteOrientation: '16Wx14H' });
   assert.equal(mapper.cfg.labelLenIn, 3.5);
-  assert.equal(mapper.cfg.labelModules, 187);
+  assert.equal(mapper.cfg.payloadChars, 11);
+  assert.equal(mapper.cfg.labelModules, 176);
   assert.equal(mapper.cfg.pitchXIn, 16);
   assert.equal(mapper.cfg.pitchYIn, 14);
   assert.equal(mapper.cfg.distanceIn, 12);
@@ -194,8 +196,28 @@ test('A1 fcLabelDefaults and toteOrientation config produce expected 3.5 in opti
   assert.equal(rep12.status, 'ok');
   assert.ok(rep12.ppm > 2.0, `12 in ppm=${rep12.ppm}`);
 
-  const ppm30 = pxPerModule({ distanceIn: 30, hfovDeg: 70.7, zoom: 1, widthPx: 1920, heightPx: 1080, labelLenIn: 3.5, modules: 187 });
+  const ppm30 = pxPerModule({ distanceIn: 30, hfovDeg: 70.7, zoom: 1, widthPx: 1920, heightPx: 1080, labelLenIn: 3.5, modules: 176 });
   assert.ok(ppm30 < 1.0, `30 in 1x ppm=${ppm30}`);
+
+  const mapper12 = createPanArrayMapper({ fcLabelDefaults: true, payloadChars: 12 });
+  assert.equal(mapper12.cfg.labelModules, 187);
+});
+
+test('H4 FC_PROFILE marks OQ1/OQ2 unconfirmed and keeps flags-off legacy geometry untouched', () => {
+  assert.equal(FC_PROFILE.provenance, 'unconfirmed');
+  assert.equal(FC_PROFILE.payloadChars, 11);
+  assert.equal(FC_PROFILE.labelModules, 176);
+  assert.equal(computeCode128Modules('tsX07wz7py1'), 176);
+  assert.equal(resolveFcProfile({ payloadChars: 12 }).labelModules, 187);
+
+  const legacyMapper = createPanArrayMapper({});
+  assert.equal(legacyMapper.cfg.pitchXIn, LEGACY_PROFILE.pitchXIn);
+  assert.equal(legacyMapper.cfg.pitchYIn, LEGACY_PROFILE.pitchYIn);
+  assert.equal(legacyMapper.cfg.labelLenIn, LEGACY_PROFILE.labelLenIn);
+  assert.equal(legacyMapper.cfg.labelWidthIn, LEGACY_PROFILE.labelWidthIn);
+  assert.equal(legacyMapper.cfg.payloadChars, LEGACY_PROFILE.payloadChars);
+  assert.equal(legacyMapper.cfg.labelModules, LEGACY_PROFILE.labelModules);
+  assert.equal(legacyMapper.cfg.distanceIn, LEGACY_PROFILE.distanceIn);
 });
 
 test('A7 orientGravityZero preserves absolute gravity pitch/roll at 15 deg roll + 20 deg pitch & screen rotations', () => {

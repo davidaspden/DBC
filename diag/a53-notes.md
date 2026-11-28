@@ -20,7 +20,7 @@ Captured `2026-11-28 04:51 GMT` (`id:cc0f88`, Android 16.0.0, Chrome 160.0.8181.
    - `GravitySensor`: **1 sample / 1 Hz** — stalled on A53!
    - **Action taken:** `src/array/orient.js` now validates live streaming rate (`>= 3` samples in `450 ms`) before trusting `RelativeOrientationSensor`, falling through cleanly to **60 Hz `Gyroscope` + 60 Hz `Accelerometer` low-pass gravity fusion**!
 
-## Confirmed FC Floor Spec (OQ1–OQ3)
-- Tote face: **`16 in wide × 14 in high`** (`16Wx14H`, 4×4 wall = `64 in × 56 in`).
-- Barcodes: **Ladder** orientation (horizontal stripes, vertical `90°` scan), ~`2 in × 3.5 in`, all starting with **`tsX`**.
+## Provisional FC Floor Spec (UNCONFIRMED OQ1–OQ3)
+- Tote face: **`16 in wide × 14 in high`** (`16Wx14H`, 4×4 wall = `64 in × 56 in`, unconfirmed until measured on floor).
+- Barcodes: **Ladder** orientation (horizontal stripes, vertical `90°` scan), ~`2 in × 3.5 in`, sample **`tsX07wz7py1`** (11 chars / 176 modules).
 - Sweep strategy: **Horizontal row passes** (sideways across the stripes = near-zero scanline blur), quick vertical step between rows.

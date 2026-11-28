@@ -12,7 +12,7 @@
  */
 
 import { quatRotateVec, quatFromPanTiltRollDeg, quatConjugate } from './orient.js?v=6';
-import { FC_PROFILE, resolveTotePitch } from './config.js';
+import { FC_PROFILE, computeCode128Modules, resolveTotePitch } from './config.js';
 import { evaluateOptics, estimateModules } from './optics.js';
 import { AXIS_REMAPS, applyAxisRemap } from './setup.js';
 import {
@@ -38,7 +38,7 @@ export function createPanArrayMapper(opts = {}) {
     labelLenIn: opts.labelLenIn || (useFc ? FC_PROFILE.labelLenIn : 6),
     labelWidthIn: opts.labelWidthIn || (useFc ? FC_PROFILE.labelWidthIn : 2),
     payloadChars: opts.payloadChars || (useFc ? FC_PROFILE.payloadChars : 16),
-    labelModules: opts.labelModules || (useFc ? FC_PROFILE.labelModules : 231),
+    labelModules: opts.labelModules || (useFc ? computeCode128Modules(opts.payloadChars || FC_PROFILE.payloadChars) : 231),
     labelOrientation: opts.labelOrientation || 'ladder',
     hfovDeg: opts.hfovDeg || 70.7,       // 1x main lens horizontal FOV (long-axis)
     zoom: opts.zoom || 1,
