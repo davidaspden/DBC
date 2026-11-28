@@ -16,7 +16,13 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildWave1Scenarios, selectScenarios } from './gate/scenarios.mjs';
-import { runScenarios, getDeviceFactorA53 } from './gate/score.mjs';
+import { runScenarios } from './gate/score.mjs';
+import {
+  PHONE_MS_A53,
+  DEFAULT_ITERATIONS,
+  getDeviceFactorMeasurement,
+  getMachineInfo,
+} from './gate/device-factor.mjs';
 import {
   buildReport,
   formatTable,
@@ -39,6 +45,7 @@ export function parseCliArgs(argv) {
     durationSec: null,
     jobs: null,
     out: null,
+    deviceFactor: null,
     deterministicJson: false,
   };
 
@@ -61,6 +68,8 @@ export function parseCliArgs(argv) {
     else if (a.startsWith('--jobs=')) opts.jobs = Number(a.slice('--jobs='.length));
     else if (a === '--out' && argv[i + 1]) opts.out = argv[++i];
     else if (a.startsWith('--out=')) opts.out = a.slice('--out='.length);
+    else if (a === '--device-factor' && argv[i + 1]) opts.deviceFactor = Number(argv[++i]);
+    else if (a.startsWith('--device-factor=')) opts.deviceFactor = Number(a.slice('--device-factor='.length));
   }
 
   return opts;
@@ -88,12 +97,45 @@ async function main() {
 
   const t0 = performance.now();
   const scenarios = selectScenarios(opts);
-  const deviceFactor = getDeviceFactorA53();
 
+  let deviceFactor;
+  let deviceFactorMeta;
+  if (opts.deviceFactor !== null) {
+    if (!Number.isFinite(opts.deviceFactor) || opts.deviceFactor <= 0) {
+      throw new Error(`Invalid --device-factor value: ${opts.deviceFactor}`);
+    }
+    deviceFactor = opts.deviceFactor;
+    deviceFactorMeta = {
+      phoneMs: PHONE_MS_A53,
+      nodeP50Ms: null,
+      iterations: 0,
+      source: 'cli-override',
+      machine: getMachineInfo(),
+    };
+  } else {
+    const measured = getDeviceFactorMeasurement({ iterations: DEFAULT_ITERATIONS });
+    deviceFactor = measured.deviceFactorA53;
+    deviceFactorMeta = {
+      phoneMs: measured.phoneMs,
+      nodeP50Ms: measured.nodeP50Ms,
+      nodeP95Ms: measured.nodeP95Ms,
+      iterations: measured.iterations,
+      machine: measured.machine,
+    };
+  }
+
+  const mInfo = deviceFactorMeta.machine;
+  const dfDetail = deviceFactorMeta.nodeP50Ms !== null
+    ? `deviceFactorA53=${deviceFactor.toFixed(2)}x (nodeP50Ms=${deviceFactorMeta.nodeP50Ms.toFixed(2)}ms, phoneMs=${deviceFactorMeta.phoneMs}, iters=${deviceFactorMeta.iterations})`
+    : `deviceFactorA53=${deviceFactor.toFixed(2)}x (cli-override)`;
+
+  console.log(
+    `SimGate: machine=${mInfo.hostname} | cpu=${mInfo.cpuModel} (${mInfo.cpuCount} cores, ${mInfo.platform}/${mInfo.arch}, Node ${mInfo.nodeVersion})`
+  );
   console.log(
     `SimGate: running ${scenarios.length} scenario(s) ` +
     `(${opts.quick ? 'quick mode' : 'standard mode'}, profile=ideal, fidelity=uncalibrated, ` +
-    `deviceFactorA53=${deviceFactor})...`
+    `${dfDetail})...`
   );
 
   const results = await runScenarios(scenarios, {
@@ -107,6 +149,7 @@ async function main() {
     commit,
     machine,
     deviceFactorA53: deviceFactor,
+    deviceFactorMeta,
     includeTimings: !opts.deterministicJson,
   });
 

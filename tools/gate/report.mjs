@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { stripVolatileMetrics } from './score.mjs';
+import { getDeviceFactorA53 } from './device-factor.mjs';
 
 function pad(str, len, right = false) {
   const s = String(str);
@@ -32,13 +33,17 @@ export function getMachineSlug() {
  * produce byte-identical files.
  */
 export function buildReport(scenarioResults, meta = {}) {
+  const deviceFactorA53 = Number.isFinite(meta.deviceFactorA53) && meta.deviceFactorA53 > 0
+    ? meta.deviceFactorA53
+    : (scenarioResults[0]?.workerMs?.deviceFactorA53 ?? getDeviceFactorA53());
   const report = {
     schemaVersion: 1,
     commit: meta.commit || 'unknown',
     machine: meta.machine || getMachineSlug(),
     renderer: 'cpu',
     fidelityStatus: 'uncalibrated',
-    deviceFactorA53: meta.deviceFactorA53 ?? 5.8,
+    deviceFactorA53,
+    ...(meta.deviceFactorMeta ? { deviceFactorMeta: meta.deviceFactorMeta } : {}),
     scenarios: scenarioResults,
   };
   if (meta.includeTimings === false) {

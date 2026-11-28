@@ -8,10 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { sampleCameraPose } from '../../src/sim/paths.js';
 import { createCpuRenderContext, renderFrame, mulberry32 } from '../../src/sim/cpu-render.js';
@@ -22,25 +19,9 @@ import {
   extractMultiDetections,
 } from '../../src/worker/scanner.worker.js';
 import { FLAG_VERTICAL_MODE } from '../../src/worker/flagbits.js';
+import { getDeviceFactorA53 } from './device-factor.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-
-export const PROVISIONAL_DEVICE_FACTOR_A53 = 5.8;
-
-/**
- * Loads `baseline/device-factor.json` if present (populated by G4), else falls back to 5.8.
- */
-export function getDeviceFactorA53() {
-  const path = join(ROOT, 'baseline', 'device-factor.json');
-  if (existsSync(path)) {
-    try {
-      const data = JSON.parse(readFileSync(path, 'utf8'));
-      const f = Number(data.deviceFactorA53 ?? data.factor);
-      if (Number.isFinite(f) && f > 0) return f;
-    } catch {}
-  }
-  return PROVISIONAL_DEVICE_FACTOR_A53;
-}
+export { getDeviceFactorA53 };
 
 export function percentile(sorted, p) {
   if (!sorted.length) return 0;

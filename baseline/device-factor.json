@@ -1,14 +1,21 @@
 {
-  "deviceFactorA53": 8.43,
+  "deviceFactorA53": 8.72,
   "phoneMs": 38,
-  "nodeP50Ms": 4.51,
-  "nodeP95Ms": 4.68,
-  "flagsOnP50Ms": 4.51,
-  "flagsOnP95Ms": 4.73,
+  "nodeP50Ms": 4.36,
+  "nodeP95Ms": 4.53,
+  "iterations": 30,
   "fixture": "tests/fixtures-sim/tote-tsX07wz7py1-gray.pgm.gz",
   "resolution": "1080x2400",
   "payload": "tsX07wz7py1",
   "phoneModel": "SM-A536B",
-  "provenance": "single phone sample, provisional",
-  "recordedUtc": "2026-11-28T09:35:00.000Z"
+  "machine": {
+    "hostname": "LapDancer2026",
+    "platform": "win32",
+    "arch": "x64",
+    "cpuModel": "Intel(R) Core(TM) Ultra 9 275HX",
+    "cpuCount": 24,
+    "nodeVersion": "v24.19.0"
+  },
+  "provenance": "reference snapshot only; simgate measures deviceFactorA53 dynamically at startup (30 iterations, flags off) and does not rely on static constants",
+  "recordedUtc": "2026-11-28T10:30:00.000Z"
 }
