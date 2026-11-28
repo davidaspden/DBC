@@ -96,6 +96,14 @@ export async function probeEnvironment() {
     }
     : null;
 
+  const screenOri = typeof screen !== 'undefined' && screen.orientation
+    ? {
+      type: screen.orientation.type || 'unknown',
+      angle: typeof screen.orientation.angle === 'number' ? screen.orientation.angle : 0,
+      lockSupported: typeof screen.orientation.lock === 'function',
+    }
+    : { type: 'unavailable', angle: 0, lockSupported: false };
+
   return {
     userAgent: ua,
     brands,
@@ -107,6 +115,7 @@ export async function probeEnvironment() {
     innerHeight: typeof window !== 'undefined' ? window.innerHeight : 0,
     devicePixelRatio: typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1,
     visualViewport: vv,
+    screenOrientation: screenOri,
     isSecureContext: typeof window !== 'undefined' ? Boolean(window.isSecureContext) : true,
     protocol: typeof location !== 'undefined' ? location.protocol : 'unknown:',
     supportedConstraints: {

@@ -154,6 +154,101 @@ function probeDeviceMotionFallback(durationMs = 1000) {
 }
 
 /**
+ * Probes D1 orientation extras: Gravity vector pitch/roll + RelativeOrientationSensor
+ * referenceFrame ('screen' vs 'device') comparison.
+ */
+export async function probeOrientationFrames(durationMs = 600) {
+  const out = {
+    relScreenOk: false,
+    relDeviceOk: false,
+    framesDiffer: null,
+    gravityAvailable: false,
+    gravityVec: null,
+    gravityPitchDeg: null,
+    gravityRollDeg: null,
+  };
+
+  async function sampleQuat(refFrame) {
+    if (typeof globalThis.RelativeOrientationSensor !== 'function') return null;
+    return new Promise((resolve) => {
+      let s = null;
+      let done = false;
+      const fin = (q) => {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        if (s) { try { s.stop(); } catch {} }
+        resolve(q);
+      };
+      const t = setTimeout(() => fin(null), durationMs);
+      try {
+        s = new globalThis.RelativeOrientationSensor({ frequency: 60, referenceFrame: refFrame });
+        s.addEventListener('reading', () => {
+          if (s.quaternion && s.quaternion.length >= 4) fin(Array.from(s.quaternion));
+        });
+        s.addEventListener('error', () => fin(null));
+        s.start();
+      } catch {
+        fin(null);
+      }
+    });
+  }
+
+  async function sampleGravity() {
+    const Ctor = typeof globalThis.GravitySensor === 'function'
+      ? globalThis.GravitySensor
+      : (typeof globalThis.Accelerometer === 'function' ? globalThis.Accelerometer : null);
+    if (!Ctor) return null;
+    return new Promise((resolve) => {
+      let s = null;
+      let done = false;
+      const fin = (g) => {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        if (s) { try { s.stop(); } catch {} }
+        resolve(g);
+      };
+      const t = setTimeout(() => fin(null), durationMs);
+      try {
+        s = new Ctor({ frequency: 60 });
+        s.addEventListener('reading', () => {
+          if (typeof s.x === 'number' && typeof s.y === 'number' && typeof s.z === 'number') {
+            fin({ x: round3(s.x), y: round3(s.y), z: round3(s.z) });
+          }
+        });
+        s.addEventListener('error', () => fin(null));
+        s.start();
+      } catch {
+        fin(null);
+      }
+    });
+  }
+
+  const [qScr, qDev, grav] = await Promise.all([
+    sampleQuat('screen'),
+    sampleQuat('device'),
+    sampleGravity(),
+  ]);
+
+  out.relScreenOk = Boolean(qScr);
+  out.relDeviceOk = Boolean(qDev);
+  if (qScr && qDev) {
+    const dot = Math.abs(qScr[0] * qDev[0] + qScr[1] * qDev[1] + qScr[2] * qDev[2] + qScr[3] * qDev[3]);
+    out.framesDiffer = dot < 0.999;
+  }
+  if (grav) {
+    out.gravityAvailable = true;
+    out.gravityVec = grav;
+    const mag = Math.hypot(grav.x, grav.y, grav.z) || 1;
+    // Upright phone facing wall: gravity points down (-Y in screen/device), so +Y ~ +9.8
+    out.gravityRollDeg = round3(Math.atan2(grav.x, grav.y) * RAD_TO_DEG);
+    out.gravityPitchDeg = round3(Math.asin(Math.max(-1, Math.min(1, grav.z / mag))) * RAD_TO_DEG);
+  }
+  return out;
+}
+
+/**
  * Probes Generic Sensor APIs in parallel plus DeviceMotion / DeviceOrientation fallback.
  */
 export async function probeSensors() {
@@ -165,9 +260,10 @@ export async function probeSensors() {
     'AbsoluteOrientationSensor',
   ];
 
-  const [results, dmRes] = await Promise.all([
+  const [results, dmRes, orientFrames] = await Promise.all([
     Promise.all(names.map((n) => probeSingleGenericSensor(n, 1000))),
     probeDeviceMotionFallback(1000),
+    probeOrientationFrames(600),
   ]);
 
   const generic = {};
@@ -186,6 +282,7 @@ export async function probeSensors() {
     gyroAvailable,
     gyroSource,
     gyroHz,
+    orientFrames,
     atRest: null,
   };
 }

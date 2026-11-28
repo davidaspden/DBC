@@ -64,9 +64,11 @@ export function formatReportText(report) {
   lines.push(`DBC diag ${fmtUtcTimestamp(report.timestampUtc)}  id:${report.reportId || '000000'}`);
   lines.push(summarizeDeviceLine(env));
   const proto = env.isSecureContext ? (env.protocol === 'https:' ? 'HTTPS' : env.protocol || 'SECURE') : 'INSECURE';
+  const ori = env.screenOrientation;
+  const oriStr = ori ? ` · ${ori.type} (${ori.angle}deg${ori.lockSupported ? ', lock ok' : ''})` : '';
   lines.push(
     `${env.screenWidth || 0}x${env.screenHeight || 0} CSS px · ` +
-    `DPR ${env.devicePixelRatio || 1} · ${proto}`
+    `DPR ${env.devicePixelRatio || 1} · ${proto}${oriStr}`
   );
   lines.push('');
 
@@ -136,6 +138,17 @@ export function formatReportText(report) {
       lines.push(sLine);
     } else {
       lines.push('Sensors  gyro unavailable or permission denied');
+    }
+    if (sens.orientFrames) {
+      const of = sens.orientFrames;
+      const gStr = of.gravityAvailable
+        ? `grav roll=${of.gravityRollDeg}deg pitch=${of.gravityPitchDeg}deg`
+        : 'grav n/a';
+      lines.push(
+        `Orient   relScreen=${of.relScreenOk ? 'yes' : 'no'} · relDevice=${of.relDeviceOk ? 'yes' : 'no'}` +
+        (of.framesDiffer !== null ? ` · differ=${of.framesDiffer ? 'yes' : 'no'}` : '') +
+        ` · ${gStr}`
+      );
     }
   }
 

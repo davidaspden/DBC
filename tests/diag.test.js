@@ -324,4 +324,35 @@ await test('formatReportText and formatReportJson never leak raw deviceId and em
   assert.equal(parsed.cameras[0].idHash, hashed);
 });
 
+await test('D1 orientation extras format cleanly in v1 text and JSON reports', async () => {
+  const report = a53Fixture({
+    env: baseEnv({
+      screenOrientation: { type: 'portrait-primary', angle: 0, lockSupported: true },
+    }),
+    sensors: {
+      gyroAvailable: true,
+      gyroSource: 'Gyroscope',
+      gyroHz: 98.5,
+      orientFrames: {
+        relScreenOk: true,
+        relDeviceOk: true,
+        framesDiffer: false,
+        gravityAvailable: true,
+        gravityVec: { x: 0.12, y: 9.78, z: 0.34 },
+        gravityRollDeg: 0.7,
+        gravityPitchDeg: 1.99,
+      },
+      atRest: null,
+    },
+  });
+  report.recommendation = recommend(report);
+  const txt = formatReportText(report);
+  assert.ok(txt.includes('portrait-primary (0deg, lock ok)'));
+  assert.ok(txt.includes('relDevice=yes'));
+  assert.ok(txt.includes('grav roll=0.7deg'));
+  const parsed = JSON.parse(formatReportJson(report));
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.env.screenOrientation.type, 'portrait-primary');
+});
+
 console.log(`All ${passed} D0 diagnostics tests passed.`);
