@@ -15,9 +15,37 @@
 import {
   encodeCode128B,
   sampleBarcodeIntegrated1D,
+  warpLabelScanCoord,
+  warpLabelScanDeriv,
   DEFAULT_LABEL_SPEC,
 } from './label.js';
 import { normalizeLipsSpec } from './lips.js';
+import {
+  normalizeDefectsSpec,
+  buildCellDefectsTable,
+  DEFECT_STRIDE,
+  DEF_OFF_X,
+  DEF_OFF_Y,
+  DEF_COS_TILT,
+  DEF_SIN_TILT,
+  DEF_PEEL_WARP,
+  DEF_PRINT_GAIN,
+  DEF_STREAK_U,
+  DEF_STREAK_HALF_W,
+  DEF_SCUFF_U,
+  DEF_SCUFF_V,
+  DEF_SCUFF_INV_RU,
+  DEF_SCUFF_INV_RV,
+  DEF_SCUFF_STRENGTH,
+  DEF_COVER_FRAC,
+  DEF_COVER_SIDE,
+  DEF_SMUDGE_U,
+  DEF_SMUDGE_V,
+  DEF_SMUDGE_INV_RU,
+  DEF_SMUDGE_INV_RV,
+  DEF_SMUDGE_STRENGTH,
+  DEF_QUIET_CUT,
+} from './defects.js';
 import {
   mat4Perspective,
   mat4CameraView,
@@ -141,6 +169,10 @@ function getEncodedScene(scene) {
     toteLuma[i] = TOTE_BASE_LUMA * tone;
   }
 
+  const defectsSpec = normalizeDefectsSpec(scene.defects);
+  const basePrintGain = scene.label?.printGain ?? DEFAULT_LABEL_SPEC.printGain;
+  const cellDefects = defectsSpec ? buildCellDefectsTable(numCells, defectsSpec, basePrintGain) : null;
+
   cached = {
     numCells,
     cellModules,
@@ -150,6 +182,9 @@ function getEncodedScene(scene) {
     cellLabelOffX,
     cellLabelOffY,
     hasLabelOffset,
+    hasDefects: cellDefects !== null,
+    cellDefects,
+    quietModules,
     toteLuma,
   };
   sceneCacheMap.set(scene, cached);
@@ -287,9 +322,10 @@ function computeVisibleLabelBoxes(scene, enc, poses, numPoses, halfBW, halfBH, w
     boxVisible[i] = 0;
   }
 
-  // Add 0.2 in world pad so shutter edges and partial pixels stay well inside the union box
-  const padW = halfBW + 0.25;
-  const padH = halfBH + 0.25;
+  // Add world pad so shutter edges, partial pixels, and optional L7 tilt/offset stay inside the union box
+  const extraPad = enc.hasDefects ? 1.1 : 0.25;
+  const padW = halfBW + extraPad;
+  const padH = halfBH + extraPad;
 
   for (let k = 0; k < numPoses; k++) {
     mat4CameraView(poses[k], viewMat);
@@ -429,6 +465,9 @@ function renderFullFrameSinglePose(
   const cellLabelOffX = enc.cellLabelOffX;
   const cellLabelOffY = enc.cellLabelOffY;
   const hasLabelOffset = enc.hasLabelOffset;
+  const hasDefects = enc.hasDefects;
+  const cellDefects = enc.cellDefects;
+  const quietModules = enc.quietModules;
   const maxCol = cols - 1;
   const maxRow = rows - 1;
 
@@ -550,38 +589,108 @@ function renderFullFrameSinglePose(
       }
 
       if (!hitLip) {
-        const llx = hasLabelOffset ? (lx - cellLabelOffX[cellIdx]) : lx;
-        const lly = hasLabelOffset ? (ly - cellLabelOffY[cellIdx]) : ly;
+        let llx = hasLabelOffset ? (lx - cellLabelOffX[cellIdx]) : lx;
+        let lly = hasLabelOffset ? (ly - cellLabelOffY[cellIdx]) : ly;
+        let defOff = -1;
+        if (hasDefects) {
+          defOff = cellIdx * DEFECT_STRIDE;
+          const dxL = llx - cellDefects[defOff + DEF_OFF_X];
+          const dyL = lly - cellDefects[defOff + DEF_OFF_Y];
+          const cT = cellDefects[defOff + DEF_COS_TILT];
+          const sT = cellDefects[defOff + DEF_SIN_TILT];
+          llx = dxL * cT + dyL * sT;
+          lly = -dxL * sT + dyL * cT;
+        }
         const absLlx = llx < 0 ? -llx : llx;
         const absLly = lly < 0 ? -lly : lly;
 
         if (includeLabels && absLlx <= halfBW && absLly <= halfBH) {
           isLabel = true;
           const inBars = isPicket ? (absLly <= barHalfSpan) : (absLlx <= barHalfSpan);
+          let v01 = isPicket ? ((llx + halfBW) * invLabelW) : ((halfBH - lly) * invLabelH);
+          const uNorm = isPicket ? (lly / halfBH) : (llx / halfBW);
           if (inBars) {
-            let v01, dvDx, dvDy;
+            let dvDx, dvDy;
             if (!isPicket) {
-              v01 = (halfBH - lly) * invLabelH;
               const dyInvDz = Dy * invDz;
               dvDx = -t * (dDy_x - dyInvDz * dDz_x) * invLabelH;
               dvDy = -t * (dDy_y - dyInvDz * dDz_y) * invLabelH;
             } else {
-              v01 = (llx + halfBW) * invLabelW;
               const dxInvDz = Dx * invDz;
               dvDx = t * (dDx_x - dxInvDz * dDz_x) * invLabelW;
               dvDy = t * (dDx_y - dxInvDz * dDz_y) * invLabelW;
             }
-            const dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
+            let dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
+            let effPrintGain = printGain;
+            let sampleV = v01;
+            if (hasDefects) {
+              const peelWarp = cellDefects[defOff + DEF_PEEL_WARP];
+              if (peelWarp !== 0.0) {
+                sampleV = warpLabelScanCoord(v01, peelWarp);
+                dv *= warpLabelScanDeriv(v01, peelWarp);
+              }
+              effPrintGain = cellDefects[defOff + DEF_PRINT_GAIN];
+            }
             const barCov = sampleBarcodeIntegrated1D(
               cellModules[cellIdx],
               cellTotalModules[cellIdx],
-              v01,
+              sampleV,
               dv,
-              printGain
+              effPrintGain
             );
             albedo = paperAlbedo + inkMinusPaper * barCov;
           } else {
             albedo = paperAlbedo;
+          }
+
+          if (hasDefects) {
+            // 9. Missing / truncated quiet zone: dark border/clutter encroaching into quiet zone
+            const qCut = cellDefects[defOff + DEF_QUIET_CUT];
+            if (qCut > 0.0) {
+              const quietFrac = quietModules / cellTotalModules[cellIdx];
+              const cutBand = quietFrac * qCut;
+              if (v01 < cutBand || v01 > 1.0 - cutBand) {
+                albedo = inkAlbedo + 0.08;
+              }
+            }
+            // 5. Thermal-print dead-dot white streak along scan axis
+            const streakHalfW = cellDefects[defOff + DEF_STREAK_HALF_W];
+            if (streakHalfW > 0.0) {
+              const duS = uNorm - cellDefects[defOff + DEF_STREAK_U];
+              if (duS >= -streakHalfW && duS <= streakHalfW) {
+                albedo = paperAlbedo;
+              }
+            }
+            // 6. Abrasion scuff patch (washes ink toward bright paper/grey)
+            const scuffStr = cellDefects[defOff + DEF_SCUFF_STRENGTH];
+            if (scuffStr > 0.0) {
+              const du = (uNorm - cellDefects[defOff + DEF_SCUFF_U]) * cellDefects[defOff + DEF_SCUFF_INV_RU];
+              const dvS = (v01 - cellDefects[defOff + DEF_SCUFF_V]) * cellDefects[defOff + DEF_SCUFF_INV_RV];
+              const r2 = du * du + dvS * dvS;
+              if (r2 < 1.0) {
+                const w = scuffStr * (1.0 - r2);
+                albedo = albedo + (0.82 - albedo) * w;
+              }
+            }
+            // 8. Dark smudge blotch
+            const smudgeStr = cellDefects[defOff + DEF_SMUDGE_STRENGTH];
+            if (smudgeStr > 0.0) {
+              const du = (uNorm - cellDefects[defOff + DEF_SMUDGE_U]) * cellDefects[defOff + DEF_SMUDGE_INV_RU];
+              const dvM = (v01 - cellDefects[defOff + DEF_SMUDGE_V]) * cellDefects[defOff + DEF_SMUDGE_INV_RV];
+              const r2 = du * du + dvM * dvM;
+              if (r2 < 1.0) {
+                const w = smudgeStr * (1.0 - r2);
+                albedo *= (1.0 - w);
+              }
+            }
+            // 7. Partial tape / sticker occlusion covering one end of the label
+            const coverFrac = cellDefects[defOff + DEF_COVER_FRAC];
+            if (coverFrac > 0.0) {
+              const side = cellDefects[defOff + DEF_COVER_SIDE];
+              if ((side >= 0.0 && v01 >= 1.0 - coverFrac) || (side < 0.0 && v01 <= coverFrac)) {
+                albedo = 0.86;
+              }
+            }
           }
         } else {
           const edgeX = halfToteW - absLx;
@@ -751,6 +860,9 @@ function renderLabelBoxMultiPose(
   const cellLabelOffX = enc.cellLabelOffX;
   const cellLabelOffY = enc.cellLabelOffY;
   const hasLabelOffset = enc.hasLabelOffset;
+  const hasDefects = enc.hasDefects;
+  const cellDefects = enc.cellDefects;
+  const quietModules = enc.quietModules;
   const maxCol = cols - 1;
   const maxRow = rows - 1;
 
@@ -884,38 +996,103 @@ function renderLabelBoxMultiPose(
         }
 
         if (!hitLip) {
-          const llx = hasLabelOffset ? (lx - cellLabelOffX[cellIdx]) : lx;
-          const lly = hasLabelOffset ? (ly - cellLabelOffY[cellIdx]) : ly;
+          let llx = hasLabelOffset ? (lx - cellLabelOffX[cellIdx]) : lx;
+          let lly = hasLabelOffset ? (ly - cellLabelOffY[cellIdx]) : ly;
+          let defOff = -1;
+          if (hasDefects) {
+            defOff = cellIdx * DEFECT_STRIDE;
+            const dxL = llx - cellDefects[defOff + DEF_OFF_X];
+            const dyL = lly - cellDefects[defOff + DEF_OFF_Y];
+            const cT = cellDefects[defOff + DEF_COS_TILT];
+            const sT = cellDefects[defOff + DEF_SIN_TILT];
+            llx = dxL * cT + dyL * sT;
+            lly = -dxL * sT + dyL * cT;
+          }
           const absLlx = llx < 0 ? -llx : llx;
           const absLly = lly < 0 ? -lly : lly;
 
           if (absLlx <= halfBW && absLly <= halfBH) {
             isLabel = true;
             const inBars = isPicket ? (absLly <= barHalfSpan) : (absLlx <= barHalfSpan);
+            let v01 = isPicket ? ((llx + halfBW) * invLabelW) : ((halfBH - lly) * invLabelH);
+            const uNorm = isPicket ? (lly / halfBH) : (llx / halfBW);
             if (inBars) {
-              let v01, dvDx, dvDy;
+              let dvDx, dvDy;
               if (!isPicket) {
-                v01 = (halfBH - lly) * invLabelH;
                 const dyInvDz = Dy * invDz;
                 dvDx = -t * (dDy_x - dyInvDz * dDz_x) * invLabelH;
                 dvDy = -t * (dDy_y - dyInvDz * dDz_y) * invLabelH;
               } else {
-                v01 = (llx + halfBW) * invLabelW;
                 const dxInvDz = Dx * invDz;
                 dvDx = t * (dDx_x - dxInvDz * dDz_x) * invLabelW;
                 dvDy = t * (dDx_y - dxInvDz * dDz_y) * invLabelW;
               }
-              const dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
+              let dv = Math.sqrt(dvDx * dvDx + dvDy * dvDy);
+              let effPrintGain = printGain;
+              let sampleV = v01;
+              if (hasDefects) {
+                const peelWarp = cellDefects[defOff + DEF_PEEL_WARP];
+                if (peelWarp !== 0.0) {
+                  sampleV = warpLabelScanCoord(v01, peelWarp);
+                  dv *= warpLabelScanDeriv(v01, peelWarp);
+                }
+                effPrintGain = cellDefects[defOff + DEF_PRINT_GAIN];
+              }
               const barCov = sampleBarcodeIntegrated1D(
                 cellModules[cellIdx],
                 cellTotalModules[cellIdx],
-                v01,
+                sampleV,
                 dv,
-                printGain
+                effPrintGain
               );
               albedo = paperAlbedo + inkMinusPaper * barCov;
             } else {
               albedo = paperAlbedo;
+            }
+
+            if (hasDefects) {
+              const qCut = cellDefects[defOff + DEF_QUIET_CUT];
+              if (qCut > 0.0) {
+                const quietFrac = quietModules / cellTotalModules[cellIdx];
+                const cutBand = quietFrac * qCut;
+                if (v01 < cutBand || v01 > 1.0 - cutBand) {
+                  albedo = inkAlbedo + 0.08;
+                }
+              }
+              const streakHalfW = cellDefects[defOff + DEF_STREAK_HALF_W];
+              if (streakHalfW > 0.0) {
+                const duS = uNorm - cellDefects[defOff + DEF_STREAK_U];
+                if (duS >= -streakHalfW && duS <= streakHalfW) {
+                  albedo = paperAlbedo;
+                }
+              }
+              const scuffStr = cellDefects[defOff + DEF_SCUFF_STRENGTH];
+              if (scuffStr > 0.0) {
+                const du = (uNorm - cellDefects[defOff + DEF_SCUFF_U]) * cellDefects[defOff + DEF_SCUFF_INV_RU];
+                const dvS = (v01 - cellDefects[defOff + DEF_SCUFF_V]) * cellDefects[defOff + DEF_SCUFF_INV_RV];
+                const r2 = du * du + dvS * dvS;
+                if (r2 < 1.0) {
+                  const w = scuffStr * (1.0 - r2);
+                  albedo = albedo + (0.82 - albedo) * w;
+                }
+              }
+              const smudgeStr = cellDefects[defOff + DEF_SMUDGE_STRENGTH];
+              if (smudgeStr > 0.0) {
+                const du = (uNorm - cellDefects[defOff + DEF_SMUDGE_U]) * cellDefects[defOff + DEF_SMUDGE_INV_RU];
+                const dvM = (v01 - cellDefects[defOff + DEF_SMUDGE_V]) * cellDefects[defOff + DEF_SMUDGE_INV_RV];
+                const r2 = du * du + dvM * dvM;
+                if (r2 < 1.0) {
+                  const w = smudgeStr * (1.0 - r2);
+                  albedo *= (1.0 - w);
+                }
+              }
+              const coverFrac = cellDefects[defOff + DEF_COVER_FRAC];
+              if (coverFrac > 0.0) {
+                const side = cellDefects[defOff + DEF_COVER_SIDE];
+                if ((side >= 0.0 && v01 >= 1.0 - coverFrac) || (side < 0.0 && v01 <= coverFrac)) {
+                  albedo = 0.86;
+                }
+              }
             }
           } else {
             const edgeX = halfToteW - absLx;

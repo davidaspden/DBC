@@ -310,3 +310,34 @@ export function sampleBarcodeIntegrated1D(modules, totalModules, v01, dvPerPx, p
   if (cov >= 1.0) return 1.0;
   return cov;
 }
+
+/**
+ * L7 — Pure zero-allocation scan-axis coordinate warp for label curvature / corner peel.
+ * Maps normalized scan coordinate `v01` in [0, 1] by adding `peelWarp * v01 * (1 - v01) * (2 * v01 - 1)`.
+ * Returns warped `v01` clamped to [0, 1].
+ *
+ * @param {number} v01
+ * @param {number} peelWarp
+ * @returns {number}
+ */
+export function warpLabelScanCoord(v01, peelWarp) {
+  if (peelWarp === 0.0) return v01;
+  const w = v01 + peelWarp * v01 * (1.0 - v01) * (2.0 * v01 - 1.0);
+  if (w <= 0.0) return 0.0;
+  if (w >= 1.0) return 1.0;
+  return w;
+}
+
+/**
+ * L7 — Derivative scale |d(warpLabelScanCoord)/dv| for accurate box-filter pixel footprint.
+ *
+ * @param {number} v01
+ * @param {number} peelWarp
+ * @returns {number}
+ */
+export function warpLabelScanDeriv(v01, peelWarp) {
+  if (peelWarp === 0.0) return 1.0;
+  // d/dv [ v*(1-v)*(2v-1) ] = d/dv [ -2v^3 + 3v^2 - v ] = -6v^2 + 6v - 1
+  const d = 1.0 + peelWarp * (-6.0 * v01 * v01 + 6.0 * v01 - 1.0);
+  return d > 0.1 ? d : 0.1;
+}
