@@ -24,15 +24,20 @@ const BLOCK_SIZE = 1 << BLOCK_SHIFT;
 const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 
-import { FLAG_ROI_SMALL_CODES } from './flagbits.js';
+import { FLAG_ROI_SMALL_CODES, FLAG_ROI_MULTISCALE } from './flagbits.js';
 
 export const MAX_ROI_CLUSTERS = 24;
-export { FLAG_ROI_SMALL_CODES };
+export { FLAG_ROI_SMALL_CODES, FLAG_ROI_MULTISCALE };
 
 /**
  * Default RoI confidence threshold separating real barcode clusters from background clutter.
  */
 export const ROI_CONFIDENCE_THRESHOLD = 0.55;
+
+// BL4 (`roiMultiscale`) fast-path thresholds: primary clusters meeting both skip secondary scales.
+const WEAK_CONF_THRESHOLD = 0.72;
+const WEAK_ENERGY_THRESHOLD = 60000;
+const COARSE_STRONG_CONF = 0.65;
 
 function createRoiSubState(width, height, dsShift, cropX0, cropY0, minClusterBlocks, minActivePixels, minTrace) {
   const dsW = width >> dsShift;
@@ -58,8 +63,12 @@ function createRoiSubState(width, height, dsShift, cropX0, cropY0, minClusterBlo
     minClusterBlocks: minClusterBlocks | 0,
     minActivePixels: minActivePixels | 0,
     minTrace: minTrace | 0,
+    minEdgeMag: 28,
     minCoherence: 0.56,
     minBipolarity: 0.26,
+    minConfidence: ROI_CONFIDENCE_THRESHOLD,
+    multiscaleTriggered: 0,
+    lastMultiscaleUsed: 0,
 
     // Downsampled luma buffer (320x180 = 57,600 B for 720p; 320x240 = 76,800 B for VGA)
     downsampled: new Uint8Array(dsW * dsH),
@@ -71,6 +80,7 @@ function createRoiSubState(width, height, dsShift, cropX0, cropY0, minClusterBlo
 
     // Per-block normalized features & BFS state
     blockCoherence: new Float32Array(gridSize),
+    blockEnergy: new Float32Array(gridSize),
     blockScore: new Float32Array(gridSize),
     blockDirCos2: new Float32Array(gridSize),
     blockDirSin2: new Float32Array(gridSize),
@@ -95,7 +105,9 @@ function createRoiSubState(width, height, dsShift, cropX0, cropY0, minClusterBlo
     clusterMinorLen: new Float32Array(MAX_ROI_CLUSTERS),
     clusterThetaDeg: new Float32Array(MAX_ROI_CLUSTERS),
     clusterConfidence: new Float32Array(MAX_ROI_CLUSTERS),
+    clusterEnergy: new Float32Array(MAX_ROI_CLUSTERS),
     small2x: null,
+    coarse: null,
   };
 }
 
@@ -116,6 +128,15 @@ export function createRoiState(width = 1280, height = 720) {
     state.small2x = createRoiSubState(cw, ch, 1, cx0, cy0, 6, 18, 10000);
     state.small2x.minCoherence = 0.52;
     state.small2x.minBipolarity = 0.24;
+  }
+  // BL4 (`roiMultiscale`): pre-allocate one coarser scale (dsShift + 1) once
+  const coarseShift = (dsShift + 1) | 0;
+  if ((width >> coarseShift) >= 16 && (height >> coarseShift) >= 16) {
+    state.coarse = createRoiSubState(width, height, coarseShift, 0, 0, 3, 14, 2400);
+    state.coarse.minEdgeMag = 12;
+    state.coarse.minCoherence = 0.50;
+    state.coarse.minBipolarity = 0.22;
+    state.coarse.minConfidence = 0.42;
   }
   return state;
 }
@@ -194,6 +215,28 @@ function downsample2xRegion(luma, fullWidth, cropX0, cropY0, subState) {
 }
 
 /**
+ * Pass 1d (BL4): 2x2 integer box downscaler from an already-downsampled plane into `dstState`.
+ */
+function downsample2xFromDownsampled(srcState, dstState) {
+  const src = srcState.downsampled;
+  const srcW = srcState.dsW | 0;
+  const dst = dstState.downsampled;
+  const dstW = dstState.dsW | 0;
+  const dstH = dstState.dsH | 0;
+
+  let dstIdx = 0;
+  for (let dy = 0; dy < dstH; dy++) {
+    const row0 = Math.imul(dy << 1, srcW);
+    const row1 = (row0 + srcW) | 0;
+    for (let dx = 0; dx < dstW; dx++) {
+      const sx = dx << 1;
+      const sum = (src[row0 + sx] + src[row0 + sx + 1] + src[row1 + sx] + src[row1 + sx + 1]) | 0;
+      dst[dstIdx++] = (sum + 2) >> 2;
+    }
+  }
+}
+
+/**
  * Pass 2: Fused 3x3 Scharr gradient & 8x8 block 2D Structure Tensor evaluation.
  */
 function computeBlockTensors(state) {
@@ -202,11 +245,13 @@ function computeBlockTensors(state) {
   const dsH = state.dsH | 0;
   const gridW = state.gridW | 0;
   const gridH = state.gridH | 0;
+  const multiscaleOn = (state.flags & FLAG_ROI_MULTISCALE) !== 0;
 
   const blockJxx = state.blockJxx;
   const blockJyy = state.blockJyy;
   const blockJxy = state.blockJxy;
   const blockCoherence = state.blockCoherence;
+  const blockEnergy = state.blockEnergy;
   const blockScore = state.blockScore;
   const blockDirCos2 = state.blockDirCos2;
   const blockDirSin2 = state.blockDirSin2;
@@ -215,7 +260,7 @@ function computeBlockTensors(state) {
   const maxX = (dsW - 2) | 0;
   const maxY = (dsH - 2) | 0;
 
-  const MIN_EDGE_MAG = 28;
+  const MIN_EDGE_MAG = state.minEdgeMag | 0;
   const MIN_ACTIVE_PIXELS = state.minActivePixels | 0;
   const MIN_TRACE = state.minTrace | 0;
   const MIN_COHERENCE = state.minCoherence;
@@ -287,6 +332,7 @@ function computeBlockTensors(state) {
       const trace = jxx + jyy;
       if (trace < MIN_TRACE || activePx < MIN_ACTIVE_PIXELS) {
         blockCoherence[bIdx] = 0;
+        if (multiscaleOn) blockEnergy[bIdx] = 0;
         blockScore[bIdx] = 0;
         blockState[bIdx] = 0;
         continue;
@@ -302,6 +348,10 @@ function computeBlockTensors(state) {
       const bipolarity = sumAbsG > 0 ? 1.0 - absSumG / sumAbsG : 0.0;
 
       blockCoherence[bIdx] = coherence;
+      if (multiscaleOn) {
+        // Major eigenvalue lambda1 = 0.5 * (trace + mag): directional bar-axis energy
+        blockEnergy[bIdx] = 0.5 * (trace + mag);
+      }
 
       if (coherence >= MIN_COHERENCE && bipolarity >= MIN_BIPOLARITY && mag > 1e-6) {
         const invMag = 1.0 / mag;
@@ -349,13 +399,15 @@ function extractTopClusters(state, result) {
   const gridSize = state.gridSize | 0;
   const fullW = state.width | 0;
   const fullH = state.height | 0;
-  const blockPx = BLOCK_SIZE << state.dsShift; // 32 px for 4x, 16 px for 2x
-  const padPx = state.dsShift === 2 ? 24 : 16;
+  const blockPx = BLOCK_SIZE << state.dsShift; // 64 px for 8x, 32 px for 4x, 16 px for 2x
+  const padPx = state.dsShift >= 2 ? 24 : 16;
+  const multiscaleOn = (state.flags & FLAG_ROI_MULTISCALE) !== 0;
 
   const blockJxx = state.blockJxx;
   const blockJyy = state.blockJyy;
   const blockJxy = state.blockJxy;
   const blockCoherence = state.blockCoherence;
+  const blockEnergy = state.blockEnergy;
   const blockScore = state.blockScore;
   const blockDirCos2 = state.blockDirCos2;
   const blockDirSin2 = state.blockDirSin2;
@@ -375,11 +427,13 @@ function extractTopClusters(state, result) {
   const clusterMinorLen = state.clusterMinorLen;
   const clusterThetaDeg = state.clusterThetaDeg;
   const clusterConfidence = state.clusterConfidence;
+  const clusterEnergy = state.clusterEnergy;
 
   // Tighter orientation consistency (±20° -> cos(40°) ≈ 0.766) prevents barcode clusters
   // from bleeding into adjacent perpendicular text or packaging crimp lines.
   const ORIENT_DOT_MIN = 0.76;
   const MIN_CLUSTER_BLOCKS = state.minClusterBlocks | 0;
+  const MIN_CONFIDENCE = state.minConfidence;
 
   let clusterCount = 0;
   state.bestCellCount = 0;
@@ -394,6 +448,7 @@ function extractTopClusters(state, result) {
 
     let cellCount = 0;
     let totalScore = 0;
+    let totalEnergy = 0;
     let minBx = gridW;
     let maxBx = 0;
     let minBy = gridH;
@@ -422,6 +477,7 @@ function extractTopClusters(state, result) {
       const sc = blockScore[idx];
       const coh = blockCoherence[idx];
       totalScore += sc;
+      if (multiscaleOn) totalEnergy += blockEnergy[idx];
       sumCos2 += blockDirCos2[idx] * sc;
       sumSin2 += blockDirSin2[idx] * sc;
 
@@ -468,7 +524,7 @@ function extractTopClusters(state, result) {
     const scoreFactor = totalScore / (totalScore + 2.8);
     const confidence = clusterCoherence * scoreFactor;
 
-    if (confidence < ROI_CONFIDENCE_THRESHOLD) continue;
+    if (confidence < MIN_CONFIDENCE) continue;
 
     // Rank score favors high-coherence dense barcode clusters over sprawling mediocre text blocks
     const c2 = clusterCoherence * clusterCoherence;
@@ -497,6 +553,7 @@ function extractTopClusters(state, result) {
       clusterMinorLen[insertPos] = clusterMinorLen[prev];
       clusterThetaDeg[insertPos] = clusterThetaDeg[prev];
       clusterConfidence[insertPos] = clusterConfidence[prev];
+      if (multiscaleOn) clusterEnergy[insertPos] = clusterEnergy[prev];
       insertPos = prev;
     }
 
@@ -548,6 +605,7 @@ function extractTopClusters(state, result) {
     clusterMinorLen[insertPos] = (maxV - minV) + blockPx;
     clusterThetaDeg[insertPos] = thetaDeg;
     clusterConfidence[insertPos] = confidence;
+    if (multiscaleOn) clusterEnergy[insertPos] = totalEnergy / cellCount;
 
     if (insertPos === 0) {
       state.bestCellCount = cellCount;
@@ -578,6 +636,103 @@ function extractTopClusters(state, result) {
 }
 
 /**
+ * BL4 helper: merges candidate clusters from a secondary scale `srcState` into `dstState`
+ * in-place with zero allocations, keeping Top-K sorted descending by scale-normalized rank score.
+ */
+function mergeClusters(dstState, srcState) {
+  const srcCount = srcState.clusterCount | 0;
+  if (srcCount <= 0) return;
+
+  const shiftDelta = (srcState.dsShift - dstState.dsShift) | 0;
+  const rankScale = shiftDelta > 0 ? 2.5 : (shiftDelta < 0 ? 0.4 : 1.0);
+
+  let dstCount = dstState.clusterCount | 0;
+  const dRank = dstState.clusterRankScore;
+  const dX = dstState.clusterX;
+  const dY = dstState.clusterY;
+  const dW = dstState.clusterW;
+  const dH = dstState.clusterH;
+  const dCx = dstState.clusterCenterX;
+  const dCy = dstState.clusterCenterY;
+  const dMaj = dstState.clusterMajorLen;
+  const dMin = dstState.clusterMinorLen;
+  const dTheta = dstState.clusterThetaDeg;
+  const dConf = dstState.clusterConfidence;
+  const dEnergy = dstState.clusterEnergy;
+
+  for (let s = 0; s < srcCount; s++) {
+    const scx = srcState.clusterCenterX[s];
+    const scy = srcState.clusterCenterY[s];
+    const sTheta = srcState.clusterThetaDeg[s];
+    const sConf = srcState.clusterConfidence[s];
+    const sRank = srcState.clusterRankScore[s] * rankScale;
+
+    // Skip if an existing cluster already covers the same center & angle with equal/better confidence
+    let dup = 0;
+    for (let d = 0; d < dstCount; d++) {
+      if (
+        scx >= dX[d] && scx <= dX[d] + dW[d] &&
+        scy >= dY[d] && scy <= dY[d] + dH[d]
+      ) {
+        let angDiff = sTheta - dTheta[d];
+        if (angDiff < 0) angDiff = -angDiff;
+        if (angDiff > 90) angDiff = 180 - angDiff;
+        if (angDiff < 20 && dConf[d] >= sConf) {
+          dup = 1;
+          break;
+        }
+      }
+    }
+    if (dup === 1) continue;
+
+    let insertPos = -1;
+    if (dstCount < MAX_ROI_CLUSTERS) {
+      insertPos = dstCount;
+      dstCount = (dstCount + 1) | 0;
+    } else if (sRank > dRank[MAX_ROI_CLUSTERS - 1]) {
+      insertPos = MAX_ROI_CLUSTERS - 1;
+    }
+    if (insertPos < 0) continue;
+
+    while (insertPos > 0 && sRank > dRank[insertPos - 1]) {
+      const prev = insertPos - 1;
+      dRank[insertPos] = dRank[prev];
+      dX[insertPos] = dX[prev];
+      dY[insertPos] = dY[prev];
+      dW[insertPos] = dW[prev];
+      dH[insertPos] = dH[prev];
+      dCx[insertPos] = dCx[prev];
+      dCy[insertPos] = dCy[prev];
+      dMaj[insertPos] = dMaj[prev];
+      dMin[insertPos] = dMin[prev];
+      dTheta[insertPos] = dTheta[prev];
+      dConf[insertPos] = dConf[prev];
+      dEnergy[insertPos] = dEnergy[prev];
+      insertPos = prev;
+    }
+
+    dRank[insertPos] = sRank;
+    dX[insertPos] = srcState.clusterX[s];
+    dY[insertPos] = srcState.clusterY[s];
+    dW[insertPos] = srcState.clusterW[s];
+    dH[insertPos] = srcState.clusterH[s];
+    dCx[insertPos] = scx;
+    dCy[insertPos] = scy;
+    dMaj[insertPos] = srcState.clusterMajorLen[s];
+    dMin[insertPos] = srcState.clusterMinorLen[s];
+    dTheta[insertPos] = sTheta;
+    dConf[insertPos] = sConf;
+    dEnergy[insertPos] = srcState.clusterEnergy[s];
+
+    if (insertPos === 0) {
+      dstState.activeShift = srcState.dsShift;
+    }
+  }
+
+  dstState.clusterCount = dstCount;
+}
+
+/**
  * Executes Stage 1 (Fast RoI & Angle Estimation) in-place with zero heap allocations.
  * Populates Top-K candidate clusters in `state` and writes the top cluster into `result`.
  */
@@ -588,42 +743,119 @@ export function estimateRoi(luma, width, height, state, result) {
     downsample2x(luma, width, state);
   }
   state.activeShift = state.dsShift;
+  state.lastMultiscaleUsed = 0;
   computeBlockTensors(state);
   const found = extractTopClusters(state, result);
-  if (found === 1) {
+
+  if ((state.flags & FLAG_ROI_MULTISCALE) === 0) {
+    if (found === 1) {
+      state.noRoiStreak = 0;
+      return 1;
+    }
+
+    // W9 (flagged `roiSmallCodes`): after 3 consecutive frames with no 4x ROI, alternate a
+    // pre-allocated 2x center-60% pass (MIN_CLUSTER_BLOCKS = 6) to catch small/far labels.
+    if ((state.flags & FLAG_ROI_SMALL_CODES) !== 0 && state.small2x !== null) {
+      state.noRoiStreak = (state.noRoiStreak + 1) | 0;
+      if (state.noRoiStreak >= 3 && (state.noRoiStreak & 1) === 1) {
+        const sub = state.small2x;
+        downsample2xRegion(luma, width, sub.cropX0, sub.cropY0, sub);
+        computeBlockTensors(sub);
+        const subFound = extractTopClusters(sub, result);
+        if (subFound === 1) {
+          const cnt = sub.clusterCount | 0;
+          state.clusterCount = cnt;
+          for (let i = 0; i < cnt; i++) {
+            state.clusterRankScore[i] = sub.clusterRankScore[i];
+            state.clusterX[i] = sub.clusterX[i];
+            state.clusterY[i] = sub.clusterY[i];
+            state.clusterW[i] = sub.clusterW[i];
+            state.clusterH[i] = sub.clusterH[i];
+            state.clusterCenterX[i] = sub.clusterCenterX[i];
+            state.clusterCenterY[i] = sub.clusterCenterY[i];
+            state.clusterMajorLen[i] = sub.clusterMajorLen[i];
+            state.clusterMinorLen[i] = sub.clusterMinorLen[i];
+            state.clusterThetaDeg[i] = sub.clusterThetaDeg[i];
+            state.clusterConfidence[i] = sub.clusterConfidence[i];
+          }
+          state.activeShift = 1;
+          return 1;
+        }
+      }
+    }
+    return 0;
+  }
+
+  // BL4 (`roiMultiscale`): fast exit when primary 8x8 pass already has a strong, high-energy RoI
+  if (
+    found === 1 &&
+    state.clusterConfidence[0] >= WEAK_CONF_THRESHOLD &&
+    state.clusterEnergy[0] >= WEAK_ENERGY_THRESHOLD
+  ) {
     state.noRoiStreak = 0;
     return 1;
   }
 
-  // W9 (flagged `roiSmallCodes`): after 3 consecutive frames with no 4x ROI, alternate a
-  // pre-allocated 2x center-60% pass (MIN_CLUSTER_BLOCKS = 6) to catch small/far labels.
-  if ((state.flags & FLAG_ROI_SMALL_CODES) !== 0 && state.small2x !== null) {
-    state.noRoiStreak = (state.noRoiStreak + 1) | 0;
-    if (state.noRoiStreak >= 3 && (state.noRoiStreak & 1) === 1) {
-      const sub = state.small2x;
-      downsample2xRegion(luma, width, sub.cropX0, sub.cropY0, sub);
-      computeBlockTensors(sub);
-      const subFound = extractTopClusters(sub, result);
-      if (subFound === 1) {
-        const cnt = sub.clusterCount | 0;
-        state.clusterCount = cnt;
-        for (let i = 0; i < cnt; i++) {
-          state.clusterRankScore[i] = sub.clusterRankScore[i];
-          state.clusterX[i] = sub.clusterX[i];
-          state.clusterY[i] = sub.clusterY[i];
-          state.clusterW[i] = sub.clusterW[i];
-          state.clusterH[i] = sub.clusterH[i];
-          state.clusterCenterX[i] = sub.clusterCenterX[i];
-          state.clusterCenterY[i] = sub.clusterCenterY[i];
-          state.clusterMajorLen[i] = sub.clusterMajorLen[i];
-          state.clusterMinorLen[i] = sub.clusterMinorLen[i];
-          state.clusterThetaDeg[i] = sub.clusterThetaDeg[i];
-          state.clusterConfidence[i] = sub.clusterConfidence[i];
-        }
-        state.activeShift = 1;
-        return 1;
-      }
+  // Primary clusters missing or weak -> run conditional secondary multi-scale pass
+  state.multiscaleTriggered = (state.multiscaleTriggered + 1) | 0;
+  let usedMask = 0;
+  let bestSecondaryConf = 0;
+
+  // Secondary scale A: coarser grid (dsShift + 1) built from already-downsampled luma
+  if (state.coarse !== null) {
+    const coarse = state.coarse;
+    coarse.flags = state.flags;
+    downsample2xFromDownsampled(state, coarse);
+    computeBlockTensors(coarse);
+    const coarseFound = extractTopClusters(coarse, result);
+    usedMask |= 1;
+    if (coarseFound === 1) {
+      bestSecondaryConf = coarse.clusterConfidence[0];
+      mergeClusters(state, coarse);
     }
   }
+
+  // Secondary scale B: finer center-60% 2x grid (`small2x`) if coarse did not yield a strong hit
+  if (state.small2x !== null && bestSecondaryConf < COARSE_STRONG_CONF) {
+    const sub = state.small2x;
+    const prevFlags = sub.flags;
+    const prevMinEdge = sub.minEdgeMag;
+    const prevMinTrace = sub.minTrace;
+    const prevMinConf = sub.minConfidence;
+    sub.flags = state.flags;
+    sub.minEdgeMag = 16;
+    sub.minTrace = 5000;
+    sub.minConfidence = 0.45;
+    downsample2xRegion(luma, width, sub.cropX0, sub.cropY0, sub);
+    computeBlockTensors(sub);
+    const subFound = extractTopClusters(sub, result);
+    sub.flags = prevFlags;
+    sub.minEdgeMag = prevMinEdge;
+    sub.minTrace = prevMinTrace;
+    sub.minConfidence = prevMinConf;
+    usedMask |= 2;
+    if (subFound === 1) {
+      mergeClusters(state, sub);
+    }
+  }
+
+  state.lastMultiscaleUsed = usedMask;
+  if (state.clusterCount > 0) {
+    selectRoiCluster(state, 0, result);
+    state.noRoiStreak = 0;
+    return 1;
+  }
+
+  result.roiX = 0;
+  result.roiY = 0;
+  result.roiW = 0;
+  result.roiH = 0;
+  result.roiCenterX = 0;
+  result.roiCenterY = 0;
+  result.roiMajorLen = 0;
+  result.roiMinorLen = 0;
+  result.roiConfidence = 0;
+  result.thetaDeg = 0;
+  state.noRoiStreak = (state.noRoiStreak + 1) | 0;
   return 0;
 }
