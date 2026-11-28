@@ -7,6 +7,7 @@
  */
 
 import { createScene } from './scene.js';
+import { createFcLabelSpec } from './label.js';
 
 export const ORIGINAL_PRESET_IDS = Object.freeze([
   'a53-8-720',
@@ -269,4 +270,71 @@ export function createSceneForPreset(id, overrides = {}) {
       ...(overrides.label || {}),
     },
   });
+}
+
+/**
+ * L2 — Flag-gated helper that applies the FC 2x3.5 in 11-char `tsX` label spec
+ * (`simFcLabel`) to a scene, preset object, or preset ID without mutating any
+ * frozen preset or altering legacy 12-char/16-char payloads when `simFcLabel` is false.
+ *
+ * @param {object | string} sceneOrPreset
+ * @param {{ seed?: number, simFcLabel?: boolean }} [opts]
+ */
+export function applySimFcLabel(sceneOrPreset, opts = {}) {
+  const simFcLabel = Boolean(opts && opts.simFcLabel);
+  const seed = opts && opts.seed !== undefined ? opts.seed : 1;
+
+  if (typeof sceneOrPreset === 'string') {
+    const baseScene = createSceneForPreset(sceneOrPreset);
+    return simFcLabel ? applySimFcLabel(baseScene, { seed, simFcLabel: true }) : baseScene;
+  }
+
+  if (!simFcLabel || !sceneOrPreset || typeof sceneOrPreset !== 'object') {
+    return sceneOrPreset;
+  }
+
+  // Scene object (has `cells` array)
+  if (Array.isArray(sceneOrPreset.cells)) {
+    const count = Math.max(16, (sceneOrPreset.cols | 0) * (sceneOrPreset.rows | 0));
+    const fcSpec = createFcLabelSpec({ seed, count });
+    return createScene({
+      cols: sceneOrPreset.cols,
+      rows: sceneOrPreset.rows,
+      pitchXIn: sceneOrPreset.pitchXIn,
+      pitchYIn: sceneOrPreset.pitchYIn,
+      tote: sceneOrPreset.tote,
+      fcMode: true,
+      label: {
+        ...sceneOrPreset.label,
+        widthIn: fcSpec.widthIn,
+        heightIn: fcSpec.heightIn,
+        quietModules: fcSpec.quietModules,
+        printGain: fcSpec.printGain,
+        orientation: fcSpec.orientation,
+        payloadFn: fcSpec.payloadFn,
+      },
+      labelOffset: sceneOrPreset.labelOffset,
+      lips: sceneOrPreset.lips,
+      negatives: sceneOrPreset.negatives,
+      defects: sceneOrPreset.defects,
+      wallTexture: sceneOrPreset.wallTexture,
+      shadowStrength: sceneOrPreset.shadowStrength,
+      noiseStrength: sceneOrPreset.noiseStrength,
+      glareStrength: sceneOrPreset.glareStrength,
+    });
+  }
+
+  // Preset object (never mutate frozen SIM_PRESETS entry; return a new object)
+  const fcSpec = createFcLabelSpec({ seed, count: 16 });
+  return {
+    ...sceneOrPreset,
+    fcMode: true,
+    labelWidthIn: fcSpec.widthIn,
+    labelHeightIn: fcSpec.heightIn,
+    labelOrientation: fcSpec.orientation,
+    printGain: fcSpec.printGain,
+    label: fcSpec,
+    simFcLabel: true,
+    seed,
+  };
 }

@@ -36,6 +36,100 @@ export function FC_12_PAYLOAD_FN(row, col, index) {
   return `tsX${row + 1}${col + 1}A000${num}B`;
 }
 
+const BASE36_LOWER = '0123456789abcdefghijklmnopqrstuvwxyz';
+
+/**
+ * Deterministic mulberry32 PRNG returning floats in [0, 1).
+ * Never uses Math.random.
+ *
+ * @param {number} seed
+ */
+export function mulberry32(seed) {
+  let a = (seed >>> 0) || 0x6d2b79f5;
+  return function next() {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * L2 — Generates a deterministic array of unique 11-char FC `tsX` payloads
+ * matching the real tote label pattern `tsX07wz7py1` (`tsX` + 2 digits + 6 base-36 lowercase chars).
+ * 11 characters -> 176 modules with 2x10 quiet zones.
+ *
+ * @param {number} [count=16]
+ * @param {number} [seed=1]
+ * @returns {string[]}
+ */
+export function generateFcTsxPayloads(count = 16, seed = 1) {
+  const n = Math.max(1, count | 0);
+  const rng = mulberry32((seed >>> 0) ^ 0x51f15e1d);
+  const used = new Set();
+  const list = new Array(n);
+
+  for (let i = 0; i < n; i++) {
+    let payload = '';
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const d0 = (rng() * 10) | 0;
+      const d1 = (rng() * 10) | 0;
+      let suffix = '';
+      for (let k = 0; k < 6; k++) {
+        suffix += BASE36_LOWER[(rng() * 36) | 0];
+      }
+      payload = `tsX${d0}${d1}${suffix}`;
+      if (!used.has(payload)) {
+        used.add(payload);
+        break;
+      }
+    }
+    list[i] = payload;
+  }
+  return list;
+}
+
+/**
+ * L2 — Creates a seeded `payloadFn(row, col, index)` yielding unique 11-char `tsX` payloads.
+ *
+ * @param {{ seed?: number, count?: number }} [opts]
+ */
+export function createFcLabelPayloadFn(opts = {}) {
+  const seed = opts.seed ?? 1;
+  const baseCount = Math.max(16, (opts.count ?? 64) | 0);
+  const cache = generateFcTsxPayloads(baseCount, seed);
+  return function fcTsxPayloadFn(row, col, index) {
+    const idx = index >= 0 ? (index | 0) : ((row * 4 + col) | 0);
+    if (idx < cache.length) return cache[idx];
+    const extra = generateFcTsxPayloads(idx + 1, seed);
+    return extra[idx];
+  };
+}
+
+/**
+ * L2 — Builds a seeded FC 2x3.5 in ladder label specification (`simFcLabel`):
+ *  - 2.0 in x 3.5 in ladder orientation
+ *  - 11-char `tsX` payloads (176 modules with quiet 10)
+ *  - seeded printGain in [0.95, 1.05] (1.0 +/- 5%)
+ *
+ * @param {{ seed?: number, count?: number, printGain?: number }} [opts]
+ */
+export function createFcLabelSpec(opts = {}) {
+  const seed = opts.seed ?? 1;
+  const rng = mulberry32((seed >>> 0) ^ 0x2c1b3c6d);
+  const printGain = Number.isFinite(opts.printGain)
+    ? opts.printGain
+    : (0.95 + rng() * 0.10);
+  return normalizeLabelSpec({
+    widthIn: 2.0,
+    heightIn: 3.5,
+    quietModules: 10,
+    printGain,
+    orientation: 'ladder',
+    payloadFn: createFcLabelPayloadFn({ seed, count: opts.count ?? 64 }),
+  }, true);
+}
+
 /**
  * Computes exact Code 128 module count:
  * `11 * chars + 11 (Start) + 11 (Check) + 13 (Stop) + 2 * quietModules`.

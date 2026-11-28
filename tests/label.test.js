@@ -12,8 +12,23 @@ import {
   encodeCode128B,
   normalizeLabelSpec,
   sampleBarcodeIntegrated1D,
+  generateFcTsxPayloads,
+  createFcLabelPayloadFn,
+  createFcLabelSpec,
 } from '../src/sim/label.js';
 import { createWallCells, computeOptics } from '../src/sim/paths.js';
+import {
+  SIM_PRESETS,
+  createSceneForPreset,
+  applySimFcLabel,
+} from '../src/sim/presets.js';
+import { renderFrame, createCpuRenderContext } from '../src/sim/cpu-render.js';
+import {
+  createPipelineState,
+  createPipelineResult,
+  processFrameMulti,
+  extractMultiDetections,
+} from '../src/worker/scanner.worker.js';
 import { encodeCode128 } from './harness.js';
 
 let passed = 0;
@@ -139,4 +154,94 @@ test('createWallCells supports custom pitch/payloadFn while keeping defaults ide
   assert.equal(custom[0].payload, 'CUSTOM-0-0');
 });
 
-console.log(`All ${passed} L1 label tests passed.`);
+test('L2 simFcLabel generates 16 unique 11-char tsX payloads (176 modules) with seeded printGain +/-5%', () => {
+  const payloadsA = generateFcTsxPayloads(16, 42);
+  const payloadsB = generateFcTsxPayloads(16, 42);
+  const payloadsC = generateFcTsxPayloads(16, 43);
+
+  assert.deepEqual(payloadsA, payloadsB, 'same seed must be deterministic');
+  assert.notDeepEqual(payloadsA, payloadsC, 'distinct seeds must produce distinct payloads');
+  assert.equal(new Set(payloadsA).size, 16, 'all 16 payloads must be unique');
+
+  const pattern = /^tsX\d{2}[0-9a-z]{6}$/;
+  for (const p of payloadsA) {
+    assert.ok(p.startsWith('tsX'), `must start with tsX: ${p}`);
+    assert.equal(p.length, 11, `must be 11 chars: ${p}`);
+    assert.match(p, pattern, `must match tsX + 2 digits + 6 base36 lowercase chars: ${p}`);
+    const enc = encodeCode128B(p, 10);
+    assert.equal(enc.totalModules, 176, `expected 176 modules for ${p}`);
+  }
+
+  const specA = createFcLabelSpec({ seed: 101 });
+  const specB = createFcLabelSpec({ seed: 101 });
+  const specC = createFcLabelSpec({ seed: 202 });
+  assert.equal(specA.widthIn, 2.0);
+  assert.equal(specA.heightIn, 3.5);
+  assert.equal(specA.orientation, 'ladder');
+  assert.equal(specA.quietModules, 10);
+  assert.ok(specA.printGain >= 0.95 && specA.printGain <= 1.05, `printGain out of +/-5% range: ${specA.printGain}`);
+  assert.equal(specA.printGain, specB.printGain);
+  assert.notEqual(specA.printGain, specC.printGain);
+
+  const fn = createFcLabelPayloadFn({ seed: 42 });
+  assert.equal(fn(0, 0, 0), payloadsA[0]);
+  assert.equal(fn(3, 3, 15), payloadsA[15]);
+});
+
+test('L2 applySimFcLabel leaves presets/scenes unchanged when flag off and decodes all 16 cells when flag on', () => {
+  // Flag off: existing 16-char and 12-char scenes and frozen presets stay bit-for-bit unchanged
+  const baseLegacy = createSceneForPreset('a53-8-720');
+  const offLegacy = applySimFcLabel(baseLegacy, { seed: 7, simFcLabel: false });
+  assert.strictEqual(offLegacy, baseLegacy);
+  assert.equal(offLegacy.cells[0].payload, 'TOTE-R1C1-000101');
+  assert.equal(offLegacy.label.heightIn, 6);
+
+  const baseFc12 = createSceneForPreset('fc-8-3p5');
+  const offFc12 = applySimFcLabel(baseFc12, { seed: 7, simFcLabel: false });
+  assert.strictEqual(offFc12, baseFc12);
+  assert.equal(offFc12.cells[0].payload, 'tsX11A00001B');
+  assert.equal(offFc12.cells[0].payload.length, 12);
+
+  // Preset object stays frozen and untouched
+  const presetOff = applySimFcLabel(SIM_PRESETS['fc-8-3p5'], { seed: 7, simFcLabel: false });
+  assert.strictEqual(presetOff, SIM_PRESETS['fc-8-3p5']);
+  const presetOn = applySimFcLabel(SIM_PRESETS['a53-8-720'], { seed: 7, simFcLabel: true });
+  assert.notStrictEqual(presetOn, SIM_PRESETS['a53-8-720']);
+  assert.equal(SIM_PRESETS['a53-8-720'].labelHeightIn, 6);
+  assert.equal(presetOn.labelHeightIn, 3.5);
+  assert.equal(presetOn.fcMode, true);
+
+  // Flag on: all 16 cells render via CPU renderer and decode via processFrameMulti
+  const fcScene = applySimFcLabel(baseFc12, { seed: 7, simFcLabel: true });
+  assert.equal(fcScene.cells.length, 16);
+  const expectedSet = new Set(fcScene.cells.map((c) => c.payload));
+  assert.equal(expectedSet.size, 16);
+  for (const p of expectedSet) {
+    assert.ok(p.startsWith('tsX') && p.length === 11);
+  }
+
+  const width = 1280;
+  const height = 720;
+  const out = new Uint8Array(width * height);
+  const ctx = createCpuRenderContext();
+  const state = createPipelineState(width, height);
+  state.flags = 0;
+  const result = createPipelineResult();
+
+  const decodedSet = new Set();
+  let fp = 0;
+  for (const cell of fcScene.cells) {
+    const pose = { x: cell.cx, y: cell.cy, z: 8, yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+    renderFrame(fcScene, [pose], { width, height, hfovDeg: 70.7, seed: cell.index + 1, ctx }, out);
+    processFrameMulti(out, width, height, state, result, false);
+    const dets = extractMultiDetections(state);
+    for (const d of dets) {
+      if (expectedSet.has(d.payload)) decodedSet.add(d.payload);
+      else fp++;
+    }
+  }
+  assert.equal(fp, 0, `unexpected false positives: ${fp}`);
+  assert.equal(decodedSet.size, 16, `expected 16/16 FC tsX cells decoded, got ${decodedSet.size}`);
+});
+
+console.log(`All ${passed} L1/L2 label tests passed.`);
