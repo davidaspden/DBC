@@ -185,7 +185,16 @@ export function createOrientationTracker(opts = {}) {
   // Active sensor handles
   let relSensor = null;
   let gyroSensor = null;
+  let accelSensor = null;
   let dmListener = null;
+
+  // Low-pass filtered gravity vector (from 60 Hz Accelerometer on devices where
+  // GravitySensor / RelativeOrientationSensor stalls at 1 Hz, e.g. Galaxy A53 5G)
+  let gravReady = false;
+  let gravX = 0;
+  let gravY = 9.81;
+  let gravZ = 0;
+  let gravSeededQuat = false;
 
   // Calibration accumulator (for 2 s stationary bias/noise check)
   let calActive = false;
@@ -434,17 +443,18 @@ export function createOrientationTracker(opts = {}) {
       }
     }
 
-    // Path 1: RelativeOrientationSensor (OS fused gyro+accel, no magnetometer)
+    // Path 1: RelativeOrientationSensor — verify it actually streams (>= 4 readings in 450 ms);
+    // on Galaxy A53 5G (Chrome 160), RelativeOrientationSensor stalls at 1 Hz while Gyroscope streams at 60 Hz!
     if (typeof globalThis.RelativeOrientationSensor === 'function') {
       const okRel = await new Promise((resolve) => {
         let settled = false;
+        let relReadings = 0;
         const finish = (ok) => { if (!settled) { settled = true; resolve(ok); } };
         try {
           relSensor = new globalThis.RelativeOrientationSensor({
             frequency: 60,
             referenceFrame: gravityZeroMode ? 'device' : 'screen',
           });
-          let gotFirst = false;
           relSensor.addEventListener('reading', () => {
             const q = relSensor.quaternion;
             if (!q || q.length < 4) return;
@@ -454,14 +464,16 @@ export function createOrientationTracker(opts = {}) {
             qPrev[0] = qCur[0]; qPrev[1] = qCur[1]; qPrev[2] = qCur[2]; qPrev[3] = qCur[3];
             qCur[0] = q[0]; qCur[1] = q[1]; qCur[2] = q[2]; qCur[3] = q[3];
             quatNormalize(qCur, qCur);
-            if (!gotFirst) {
-              gotFirst = true;
+            relReadings++;
+            if (relReadings === 1) {
               zeroNow();
-              finish(true);
             } else {
               updateRatesFromQuats((ts - lastSampleTs) * 0.001);
             }
             recordSample(ts);
+            if (relReadings >= 4) {
+              finish(true);
+            }
           });
           relSensor.addEventListener('error', () => {
             try { relSensor.stop(); } catch {}
@@ -470,12 +482,12 @@ export function createOrientationTracker(opts = {}) {
           });
           relSensor.start();
           setTimeout(() => {
-            if (!gotFirst) {
+            if (relReadings < 4) {
               try { relSensor.stop(); } catch {}
               relSensor = null;
               finish(false);
             }
-          }, 900);
+          }, 450);
         } catch {
           relSensor = null;
           finish(false);
@@ -487,9 +499,65 @@ export function createOrientationTracker(opts = {}) {
         source = 'RelativeOrientationSensor';
         return { ok: true, source, error: null };
       }
+      // Reset quaternion before falling through to 60 Hz Gyroscope + Accelerometer
+      sampleCount = 0;
+      lastSampleTs = 0;
+      firstSampleTs = 0;
+      ringCount = 0;
+      ringHead = 0;
+      quatIdentity(qCur);
+      quatIdentity(qZeroInv);
+      quatIdentity(qRel);
     }
 
-    // Path 2: Generic Sensor Gyroscope (screen referenceFrame)
+    // Start 60 Hz Accelerometer alongside Gyroscope to provide gravity-levelled pitch & roll
+    // (critical on devices like A53 where GravitySensor & RelativeOrientationSensor stall at 1 Hz)
+    gravReady = false;
+    gravSeededQuat = false;
+    if (typeof globalThis.Accelerometer === 'function') {
+      try {
+        accelSensor = new globalThis.Accelerometer({
+          frequency: 60,
+          referenceFrame: gravityZeroMode ? 'device' : 'screen',
+        });
+        accelSensor.addEventListener('reading', () => {
+          const ax = accelSensor.x || 0;
+          const ay = accelSensor.y || 0;
+          const az = accelSensor.z || 0;
+          const mag = Math.hypot(ax, ay, az);
+          if (mag < 2 || mag > 25) return;
+          if (!gravReady) {
+            gravX = ax; gravY = ay; gravZ = az;
+            gravReady = true;
+            if (gravityZeroMode && !gravSeededQuat) {
+              gravSeededQuat = true;
+              // Seed qCur (world +Z up) from gravity-derived pitch & roll (upright phone = Rx(+90 deg))
+              const pitchDeg = Math.asin(Math.max(-1, Math.min(1, az / mag))) * RAD_TO_DEG;
+              const rollDeg = Math.atan2(ax, ay) * RAD_TO_DEG;
+              const qRx90 = [Math.SQRT1_2, 0, 0, Math.SQRT1_2];
+              const qPR = quatFromPanTiltRollDeg(0, pitchDeg, rollDeg);
+              quatMultiply(qRx90, qPR, qCur);
+              quatNormalize(qCur, qCur);
+              computeRelFromCur();
+            }
+          } else {
+            const alpha = 0.08;
+            gravX += alpha * (ax - gravX);
+            gravY += alpha * (ay - gravY);
+            gravZ += alpha * (az - gravZ);
+          }
+        });
+        accelSensor.addEventListener('error', () => {
+          try { accelSensor.stop(); } catch {}
+          accelSensor = null;
+        });
+        accelSensor.start();
+      } catch {
+        accelSensor = null;
+      }
+    }
+
+    // Path 2: Generic Sensor Gyroscope (60 Hz!)
     if (typeof globalThis.Gyroscope === 'function') {
       const okGyro = await new Promise((resolve) => {
         let settled = false;
@@ -506,6 +574,10 @@ export function createOrientationTracker(opts = {}) {
               : performance.now();
             if (!gotFirst) {
               gotFirst = true;
+              // Seed upright world orientation for gravityZeroMode if accel hasn't fired yet
+              if (gravityZeroMode && !gravSeededQuat) {
+                qCur[0] = Math.SQRT1_2; qCur[1] = 0; qCur[2] = 0; qCur[3] = Math.SQRT1_2;
+              }
               finish(true);
             }
             ingestRawGyro(gyroSensor.x || 0, gyroSensor.y || 0, gyroSensor.z || 0, ts);
@@ -531,7 +603,7 @@ export function createOrientationTracker(opts = {}) {
 
       if (okGyro) {
         active = true;
-        source = 'Gyroscope';
+        source = accelSensor ? 'Gyro+Accel' : 'Gyroscope';
         return { ok: true, source, error: null };
       }
     }
@@ -583,6 +655,7 @@ export function createOrientationTracker(opts = {}) {
     active = false;
     if (relSensor) { try { relSensor.stop(); } catch {} relSensor = null; }
     if (gyroSensor) { try { gyroSensor.stop(); } catch {} gyroSensor = null; }
+    if (accelSensor) { try { accelSensor.stop(); } catch {} accelSensor = null; }
     if (dmListener && typeof window !== 'undefined') {
       window.removeEventListener('devicemotion', dmListener);
       dmListener = null;

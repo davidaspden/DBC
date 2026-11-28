@@ -21,16 +21,16 @@ export const LEGACY_PROFILE = Object.freeze({
 });
 
 export const FC_PROFILE = Object.freeze({
-  toteOrientation: '14Wx16H',
-  pitchXIn: 14,
-  pitchYIn: 16,
+  toteOrientation: '16Wx14H', // Confirmed OQ1: 16 in wide x 14 in high (wall 64 x 56 in)
+  pitchXIn: 16,
+  pitchYIn: 14,
   labelLenIn: 3.5,
   labelWidthIn: 2.0,
   payloadChars: 12,
   labelModules: 187, // 11 * 12 + 35 + 20 quiet zones
-  labelOrientation: 'ladder',
+  labelOrientation: 'ladder', // Confirmed OQ2: horizontal bars, vertical 90 deg scan
   expectedScanDeg: 90,
-  distanceIn: 12, // A53 1x optically infeasible at 30 in (< 1 ppm)
+  distanceIn: 12, // A53 1x optically infeasible at 30 in (< 1 ppm); use 12 in or 2x ISP crop / 4K crop
   hfovDeg: 70.7,
 });
 
