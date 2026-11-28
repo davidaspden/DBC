@@ -122,8 +122,14 @@ export function extractPanTiltRollDeg(qRel, out = { panDeg: 0, tiltDeg: 0, rollD
 
 /**
  * Creates a live sensor-backed OrientationTracker instance.
+ *
+ * @param {{ gravityZero?: boolean }} [opts]
+ *  - `gravityZero` (A7 flag `orientGravityZero`, default false): uses `referenceFrame: 'device'`,
+ *    keeps pitch & roll absolute from gravity, zeroes yaw only (`zeroYawOnly`), and compensates
+ *    explicitly for `screen.orientation.angle`.
  */
-export function createOrientationTracker() {
+export function createOrientationTracker(opts = {}) {
+  const gravityZeroMode = Boolean(opts && opts.gravityZero);
   // Preallocated quaternion & ring buffers (zero hot-loop allocations)
   const qCur = new Float64Array([0, 0, 0, 1]);
   const qZeroInv = new Float64Array([0, 0, 0, 1]);
@@ -131,7 +137,25 @@ export function createOrientationTracker() {
   const qPrev = new Float64Array([0, 0, 0, 1]);
   const qDelta = new Float64Array([0, 0, 0, 1]);
   const qTmp = new Float64Array([0, 0, 0, 1]);
+  const qTmp2 = new Float64Array([0, 0, 0, 1]);
+  const qRxNeg90 = new Float64Array([-Math.SQRT1_2, 0, 0, Math.SQRT1_2]); // Rx(-90 deg): world(+Z up) -> wall(+Y up, -Z fwd)
+  const qScreenCorr = new Float64Array([0, 0, 0, 1]);
+  const qYawZero = new Float64Array([0, 0, 0, 1]);
   const vecTmp = new Float64Array(3);
+
+  let screenAngleDeg = (typeof screen !== 'undefined' && screen.orientation && typeof screen.orientation.angle === 'number')
+    ? screen.orientation.angle
+    : 0;
+  let yawZeroRad = 0;
+
+  function updateScreenCorrQuat() {
+    const half = (-screenAngleDeg * 0.5) * DEG_TO_RAD;
+    qScreenCorr[0] = 0;
+    qScreenCorr[1] = 0;
+    qScreenCorr[2] = Math.sin(half);
+    qScreenCorr[3] = Math.cos(half);
+  }
+  updateScreenCorrQuat();
 
   // Ring buffer: [ts, qx, qy, qz, qw, wPanDps, wPitchDps] per slot (stride 7)
   const STRIDE = 7;
@@ -218,6 +242,18 @@ export function createOrientationTracker() {
     }
   }
 
+  function computeRelFromCur() {
+    if (gravityZeroMode) {
+      // qRel = Rx(-90) * Rz(yawZeroRad) * qCur * Rz(-screenAngleDeg)
+      quatMultiply(qCur, qScreenCorr, qTmp);
+      quatMultiply(qYawZero, qTmp, qTmp2);
+      quatMultiply(qRxNeg90, qTmp2, qRel);
+      quatNormalize(qRel, qRel);
+    } else {
+      quatMultiply(qZeroInv, qCur, qRel);
+    }
+  }
+
   function recordSample(ts) {
     if (sampleCount === 0) firstSampleTs = ts;
     sampleCount++;
@@ -225,7 +261,7 @@ export function createOrientationTracker() {
     if (sampleCount > 4 && elapsed > 200) {
       measuredHz = Math.round(((sampleCount - 1) * 10000) / elapsed) / 10;
     }
-    quatMultiply(qZeroInv, qCur, qRel);
+    computeRelFromCur();
     pushRing(ts, qRel, wPanDps, wPitchDps);
     lastSampleTs = ts;
   }
@@ -275,6 +311,79 @@ export function createOrientationTracker() {
     quatMultiply(qZeroInv, qCur, qRel);
     const now = performance.now();
     pushRing(now, qRel, wPanDps, wPitchDps);
+  }
+
+  /**
+   * A7: Sets screen orientation angle (0/90/180/270 deg). In gravity-zero device-frame mode
+   * this seamlessly rotates the camera-to-device mapping without jumping world orientation;
+   * in legacy screen-frame mode it compensates `qZeroInv` by the angle delta.
+   */
+  function setScreenAngle(angleDeg) {
+    const next = (((angleDeg | 0) % 360) + 360) % 360;
+    const delta = next - screenAngleDeg;
+    screenAngleDeg = next;
+    updateScreenCorrQuat();
+    if (!gravityZeroMode && delta !== 0) {
+      const half = (delta * 0.5) * DEG_TO_RAD;
+      qTmp[0] = 0; qTmp[1] = 0; qTmp[2] = Math.sin(half); qTmp[3] = Math.cos(half);
+      quatMultiply(qZeroInv, qTmp, qTmp2);
+      quatNormalize(qTmp2, qZeroInv);
+    }
+    computeRelFromCur();
+  }
+
+  /**
+   * A7: Zeroes ONLY horizontal yaw so the current optical ray azimuth maps to `targetPanRightDeg`,
+   * while preserving absolute gravity-referenced pitch and roll.
+   */
+  function zeroYawOnly(targetPanRightDeg = 0) {
+    // Back camera forward in world frame (+Z = up) after screen-angle compensation
+    quatMultiply(qCur, qScreenCorr, qTmp);
+    quatRotateVec(qTmp, 0, 0, -1, vecTmp);
+    const curAzRad = Math.atan2(vecTmp[0], vecTmp[1]);
+    yawZeroRad = curAzRad - targetPanRightDeg * DEG_TO_RAD;
+    const half = yawZeroRad * 0.5;
+    qYawZero[0] = 0;
+    qYawZero[1] = 0;
+    qYawZero[2] = Math.sin(half);
+    qYawZero[3] = Math.cos(half);
+    computeRelFromCur();
+    const now = performance.now();
+    pushRing(now, qRel, wPanDps, wPitchDps);
+  }
+
+  /**
+   * A7: Injects a synthetic gravity-aligned device quaternion (`qWorldFromDevice`) for unit tests.
+   */
+  function setDeviceQuaternion(qWorldFromDevice, ts = performance.now()) {
+    qCur[0] = qWorldFromDevice[0];
+    qCur[1] = qWorldFromDevice[1];
+    qCur[2] = qWorldFromDevice[2];
+    qCur[3] = qWorldFromDevice[3];
+    quatNormalize(qCur, qCur);
+    computeRelFromCur();
+    pushRing(ts, qRel, 0, 0);
+    lastSampleTs = ts;
+  }
+
+  /**
+   * A7: Returns current gravity-relative pitch, roll & screen angle for preflight UI.
+   */
+  function getSetupInfo() {
+    quatMultiply(qCur, qScreenCorr, qTmp);
+    const f = new Float64Array(3);
+    const u = new Float64Array(3);
+    const r = new Float64Array(3);
+    if (gravityZeroMode) {
+      quatRotateVec(qTmp, 0, 0, -1, f);
+      quatRotateVec(qTmp, 0, 1, 0, u);
+      quatRotateVec(qTmp, 1, 0, 0, r);
+      const pitchDeg = Math.asin(Math.max(-1, Math.min(1, f[2]))) * RAD_TO_DEG;
+      const rollDeg = Math.atan2(r[2], u[2]) * RAD_TO_DEG;
+      return { pitchDeg, rollDeg, screenAngleDeg, gravityZeroMode };
+    }
+    const ang = extractPanTiltRollDeg(qRel);
+    return { pitchDeg: ang.tiltDeg, rollDeg: ang.rollDeg, screenAngleDeg, gravityZeroMode };
   }
 
   /**
@@ -333,7 +442,7 @@ export function createOrientationTracker() {
         try {
           relSensor = new globalThis.RelativeOrientationSensor({
             frequency: 60,
-            referenceFrame: 'screen',
+            referenceFrame: gravityZeroMode ? 'device' : 'screen',
           });
           let gotFirst = false;
           relSensor.addEventListener('reading', () => {
@@ -386,7 +495,10 @@ export function createOrientationTracker() {
         let settled = false;
         const finish = (ok) => { if (!settled) { settled = true; resolve(ok); } };
         try {
-          gyroSensor = new globalThis.Gyroscope({ frequency: 60, referenceFrame: 'screen' });
+          gyroSensor = new globalThis.Gyroscope({
+            frequency: 60,
+            referenceFrame: gravityZeroMode ? 'device' : 'screen',
+          });
           let gotFirst = false;
           gyroSensor.addEventListener('reading', () => {
             const ts = typeof gyroSensor.timestamp === 'number' && gyroSensor.timestamp > 0
@@ -585,6 +697,10 @@ export function createOrientationTracker() {
     stop,
     zeroNow,
     zeroToQuaternion,
+    zeroYawOnly,
+    setScreenAngle,
+    setDeviceQuaternion,
+    getSetupInfo,
     calibrateZero,
     setManualPanTilt,
     getQuaternionAt,

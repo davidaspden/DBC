@@ -11,23 +11,34 @@
  *  - Wall lies on Z = 0; camera stands at (Px, Py, D) looking along -Z when qRel = identity.
  */
 
-import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js?v=2';
+import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js?v=3';
+import { FC_PROFILE, resolveTotePitch } from './config.js';
+import { evaluateOptics, estimateModules } from './optics.js';
+import { AXIS_REMAPS, applyAxisRemap } from './setup.js';
 
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
 const MIN_WZ_IN = 0.25; // Reject oblique rays > ~75 deg off wall normal
 
 export function createPanArrayMapper(opts = {}) {
+  const useFc = Boolean(opts.fcLabelDefaults);
+  const basePitch = opts.toteOrientation ? resolveTotePitch(opts.toteOrientation) : null;
   const cfg = {
     cols: opts.cols || 4,
     rows: opts.rows || 4,
-    pitchXIn: opts.pitchXIn || 14,       // Tote width (inches)
-    pitchYIn: opts.pitchYIn || 16,       // Tote height (inches)
-    labelLenIn: opts.labelLenIn || 6,    // Vertical barcode length (inches)
-    labelModules: opts.labelModules || 231,
+    toteOrientation: opts.toteOrientation || '14Wx16H',
+    pitchXIn: opts.pitchXIn || (basePitch ? basePitch.pitchXIn : 14),
+    pitchYIn: opts.pitchYIn || (basePitch ? basePitch.pitchYIn : 16),
+    labelLenIn: opts.labelLenIn || (useFc ? FC_PROFILE.labelLenIn : 6),
+    labelWidthIn: opts.labelWidthIn || (useFc ? FC_PROFILE.labelWidthIn : 2),
+    payloadChars: opts.payloadChars || (useFc ? FC_PROFILE.payloadChars : 16),
+    labelModules: opts.labelModules || (useFc ? FC_PROFILE.labelModules : 231),
+    labelOrientation: opts.labelOrientation || 'ladder',
     hfovDeg: opts.hfovDeg || 70.7,       // 1x main lens horizontal FOV (long-axis)
     zoom: opts.zoom || 1,
-    distanceIn: opts.distanceIn || 30,   // Stand-back distance D (inches)
+    distanceIn: opts.distanceIn || (useFc ? FC_PROFILE.distanceIn : 30),
+    stanceMode: opts.stanceMode || 'centre', // 'centre' (legacy default) | 'in-front' (A7)
+    axisRemapId: opts.axisRemapId | 0,       // A7 D4 axis remap index (0..7)
     snapTolFracX: opts.snapTolFracX || 0.48,
     snapTolFracY: opts.snapTolFracY || 0.48,
     camSensorOffsetMs: opts.camSensorOffsetMs ?? 50,
@@ -113,8 +124,15 @@ export function createPanArrayMapper(opts = {}) {
     rayScratch[2] = -invLen;
 
     quatRotateVec(qRel, rayScratch[0], rayScratch[1], rayScratch[2], rotScratch);
-    let rx = cfg.invertPan ? -rotScratch[0] : rotScratch[0];
-    let ry = cfg.invertTilt ? -rotScratch[1] : rotScratch[1];
+    let rx = rotScratch[0];
+    let ry = rotScratch[1];
+    if (cfg.axisRemapId > 0 && cfg.axisRemapId < AXIS_REMAPS.length) {
+      const m = applyAxisRemap(rx, ry, AXIS_REMAPS[cfg.axisRemapId]);
+      rx = m.x;
+      ry = m.y;
+    }
+    rx = cfg.invertPan ? -rx : rx;
+    ry = cfg.invertTilt ? -ry : ry;
     const wzIn = -rotScratch[2]; // positive into wall
 
     if (wzIn < MIN_WZ_IN) {
@@ -403,19 +421,60 @@ export function createPanArrayMapper(opts = {}) {
   }
 
   function updateConfig(patch) {
+    const nextPatch = { ...patch };
+    if (nextPatch.toteOrientation && nextPatch.pitchXIn === undefined && nextPatch.pitchYIn === undefined) {
+      const p = resolveTotePitch(nextPatch.toteOrientation);
+      nextPatch.pitchXIn = p.pitchXIn;
+      nextPatch.pitchYIn = p.pitchYIn;
+    }
+    if (nextPatch.payloadChars !== undefined && nextPatch.labelModules === undefined) {
+      nextPatch.labelModules = estimateModules(nextPatch.payloadChars);
+    }
     const gridChanged =
-      (patch.cols !== undefined && patch.cols !== cfg.cols) ||
-      (patch.rows !== undefined && patch.rows !== cfg.rows) ||
-      (patch.pitchXIn !== undefined && patch.pitchXIn !== cfg.pitchXIn) ||
-      (patch.pitchYIn !== undefined && patch.pitchYIn !== cfg.pitchYIn);
+      (nextPatch.cols !== undefined && nextPatch.cols !== cfg.cols) ||
+      (nextPatch.rows !== undefined && nextPatch.rows !== cfg.rows) ||
+      (nextPatch.pitchXIn !== undefined && nextPatch.pitchXIn !== cfg.pitchXIn) ||
+      (nextPatch.pitchYIn !== undefined && nextPatch.pitchYIn !== cfg.pitchYIn);
 
-    Object.assign(cfg, patch);
-    if (patch.distanceIn !== undefined && !stance.calibratedTwoCorner) {
+    Object.assign(cfg, nextPatch);
+    if (nextPatch.distanceIn !== undefined && !stance.calibratedTwoCorner) {
       stance.d = cfg.distanceIn;
     }
     if (gridChanged) {
       resetAll();
     }
+  }
+
+  /**
+   * A1: Returns current pixels-per-module optics feasibility report at active standoff & zoom.
+   */
+  function getOpticsReport(widthPx = 1920, heightPx = 1080) {
+    return evaluateOptics({
+      distanceIn: stance.d,
+      hfovDeg: cfg.hfovDeg,
+      zoom: cfg.zoom,
+      widthPx,
+      heightPx,
+      labelLenIn: cfg.labelLenIn,
+      modules: cfg.labelModules,
+    });
+  }
+
+  /**
+   * A7: Sets camera stance for standing directly in front of `cell` (square to wall, yaw=0)
+   * using the gravity-measured elevation `pitchDeg`, so zeroing on R1C1 from in front of R1C1
+   * does not bake in a 35 deg wall-centre angle error.
+   */
+  function setInFrontStanceForCell(row, col, pitchDeg = 0) {
+    if (row === null || col === null || row < 0 || row >= cfg.rows || col < 0 || col >= cfg.cols) {
+      stance.px = 0;
+      stance.py = -stance.d * Math.tan(pitchDeg * DEG_TO_RAD);
+      return;
+    }
+    const cell = cells[row * cfg.cols + col];
+    stance.px = cell.cx;
+    stance.py = cell.cy - stance.d * Math.tan(pitchDeg * DEG_TO_RAD);
+    stance.stanceWarning = false;
   }
 
   function exportCsv() {
@@ -452,6 +511,8 @@ export function createPanArrayMapper(opts = {}) {
     getCameraFootprint,
     getAimQuaternionForCell,
     getStartCornerAim,
+    setInFrontStanceForCell,
+    getOpticsReport,
     anchorAimToCell,
     recordCornerCalibration,
     addObservation,

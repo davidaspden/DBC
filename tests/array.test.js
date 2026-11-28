@@ -8,9 +8,15 @@ import assert from 'node:assert/strict';
 import {
   quatFromPanTiltRollDeg,
   extractPanTiltRollDeg,
+  quatMultiply,
+  quatRotateVec,
   createOrientationTracker,
 } from '../src/array/orient.js';
 import { createPanArrayMapper } from '../src/array/pan-mapper.js';
+import { classifyHold, solveAxisRemap, AXIS_REMAPS, applyAxisRemap } from '../src/array/setup.js';
+import { computeBlurModules } from '../src/array/blur.js';
+import { computeViewTransform, mapRectToHud } from '../src/array/viewmap.js';
+import { pxPerModule } from '../src/array/optics.js';
 
 let passed = 0;
 
@@ -173,6 +179,121 @@ test('OrientationTracker manual pan/tilt lookup works cleanly', () => {
   const ang = extractPanTiltRollDeg(q);
   assert.ok(Math.abs(ang.panDeg - 15) < 0.05);
   assert.ok(Math.abs(ang.tiltDeg - (-10)) < 0.05);
+});
+
+test('A1 fcLabelDefaults and toteOrientation config produce expected 3.5 in optics & swapped pitch', () => {
+  const mapper = createPanArrayMapper({ fcLabelDefaults: true, toteOrientation: '16Wx14H' });
+  assert.equal(mapper.cfg.labelLenIn, 3.5);
+  assert.equal(mapper.cfg.labelModules, 187);
+  assert.equal(mapper.cfg.pitchXIn, 16);
+  assert.equal(mapper.cfg.pitchYIn, 14);
+  assert.equal(mapper.cfg.distanceIn, 12);
+
+  const rep12 = mapper.getOpticsReport(1920, 1080);
+  assert.equal(rep12.status, 'ok');
+  assert.ok(rep12.ppm > 2.0, `12 in ppm=${rep12.ppm}`);
+
+  const ppm30 = pxPerModule({ distanceIn: 30, hfovDeg: 70.7, zoom: 1, widthPx: 1920, heightPx: 1080, labelLenIn: 3.5, modules: 187 });
+  assert.ok(ppm30 < 1.0, `30 in 1x ppm=${ppm30}`);
+});
+
+test('A7 orientGravityZero preserves absolute gravity pitch/roll at 15 deg roll + 20 deg pitch & screen rotations', () => {
+  const orient = createOrientationTracker({ gravityZero: true });
+  const mapper = createPanArrayMapper({ cols: 4, rows: 4, pitchXIn: 14, pitchYIn: 16, distanceIn: 30 });
+
+  // Upright phone in world frame (+Z up) is Rx(+90 deg). Compose with roll 15 deg & pitch up 20 deg.
+  const qRx90 = new Float64Array([Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
+  const qTiltRoll = quatFromPanTiltRollDeg(0, 20, 15);
+  const qWorldFromDev = new Float64Array(4);
+  quatMultiply(qRx90, qTiltRoll, qWorldFromDev);
+
+  orient.setDeviceQuaternion(qWorldFromDev);
+  orient.zeroYawOnly(0);
+  const info = orient.getSetupInfo();
+  assert.ok(Math.abs(info.pitchDeg - 20) < 0.2, `expected gravity pitch ~20 deg, got ${info.pitchDeg}`);
+  assert.ok(Math.abs(info.rollDeg - 15) < 0.5, `expected gravity roll ~15 deg, got ${info.rollDeg}`);
+
+  // Stand in front of R1C1 with phone tilted up 20 deg -> ray hits R1C1 squarely
+  mapper.setInFrontStanceForCell(0, 0, info.pitchDeg);
+  const p0 = mapper.projectPixelToWall(orient.getRelativeQuaternion(), 640, 360, 1280, 720);
+  assert.equal(p0.ok, true);
+  assert.ok(Math.abs(p0.wx - (-21)) < 0.25, `wx=${p0.wx}`);
+  assert.ok(Math.abs(p0.wy - 24) < 0.25, `wy=${p0.wy}`);
+
+  // Rotate screen 90 deg mid-run while device physically holds same world orientation
+  // (device rotated -90 around Z in hand, screenAngle updated to 90 -> optical ray stays on R1C1!)
+  const qDevRot = new Float64Array(4);
+  const qRz90 = new Float64Array([0, 0, Math.SQRT1_2, Math.SQRT1_2]);
+  quatMultiply(qWorldFromDev, qRz90, qDevRot);
+  orient.setScreenAngle(90);
+  orient.setDeviceQuaternion(qDevRot);
+  const p90 = mapper.projectPixelToWall(orient.getRelativeQuaternion(), 640, 360, 1280, 720);
+  assert.ok(Math.abs(p90.wx - (-21)) < 0.25, `after 90deg screen rot wx=${p90.wx}`);
+  assert.ok(Math.abs(p90.wy - 24) < 0.25, `after 90deg screen rot wy=${p90.wy}`);
+
+  // classifyHold verdicts
+  assert.equal(classifyHold({ rollDeg: 3, pitchDeg: 5, frameW: 1080, frameH: 1920 }).verdict, 'OK');
+  assert.equal(classifyHold({ rollDeg: 15, pitchDeg: 5 }).verdict, 'LEVEL_PHONE');
+  assert.equal(classifyHold({ rollDeg: 35, pitchDeg: 5, frameW: 1920, frameH: 1080 }).verdict, 'ROTATED');
+  assert.equal(classifyHold({ rollDeg: 0, pitchDeg: 48 }).verdict, 'AIM_WALL');
+});
+
+test('A7 solveAxisRemap recovers every one of the 8 D4 axis permutations/flips from 3 reads', () => {
+  const truePts = [
+    { expectedX: -21, expectedY: 24 },
+    { expectedX: 7, expectedY: 8 },
+    { expectedX: 21, expectedY: -24 },
+  ];
+  for (let id = 1; id < AXIS_REMAPS.length; id++) {
+    const remap = AXIS_REMAPS[id];
+    // Generate corrupted sensor tangents such that applying `remap` recovers truePts
+    // Find inverse remap in D4
+    const inv = AXIS_REMAPS.find((cand) => {
+      const a = applyAxisRemap(1, 2, cand);
+      const b = applyAxisRemap(a.x, a.y, remap);
+      return b.x === 1 && b.y === 2;
+    });
+    const reads = truePts.map((pt) => {
+      const m = applyAxisRemap(pt.expectedX / 30, pt.expectedY / 30, inv);
+      return { tx: m.x, ty: m.y, expectedX: pt.expectedX, expectedY: pt.expectedY };
+    });
+    const solved = solveAxisRemap(reads, { distanceIn: 30, pitchXIn: 14, pitchYIn: 16, currentRemapId: 0 });
+    assert.equal(solved.improved, true, `failed to detect improvement for remap ${id}`);
+    assert.equal(solved.remap.id, id, `expected remap ${id}, got ${solved.remap.id}`);
+    assert.ok(solved.bestErrIn < 0.05);
+  }
+});
+
+test('B1 computeBlurModules gates vertical pitch on ladder labels and ignores harmless sideways pan', () => {
+  const panOnly = computeBlurModules({
+    wPanDps: 35,
+    wPitchDps: 0,
+    scanAngleDeg: 90,
+    exposureSec: 1 / 60,
+    pxPerModule: 2.5,
+    focalLengthPx: 1350,
+  });
+  const pitchOnly = computeBlurModules({
+    wPanDps: 0,
+    wPitchDps: 20,
+    scanAngleDeg: 90,
+    exposureSec: 1 / 60,
+    pxPerModule: 2.5,
+    focalLengthPx: 1350,
+  });
+  assert.ok(panOnly < 0.01, `sideways pan on ladder label should have ~0 blur, got ${panOnly}`);
+  assert.ok(pitchOnly > 2.5, `vertical pitch on ladder label at 1/60s should exceed gate, got ${pitchOnly}`);
+});
+
+test('B2 computeViewTransform maps 16:9 frame into 4:3 stage with exact contain letterboxing', () => {
+  const xf = computeViewTransform(1920, 1080, 400, 300, 'contain');
+  assert.ok(Math.abs(xf.drawW - 400) < 1e-6);
+  assert.ok(Math.abs(xf.drawH - 225) < 1e-6);
+  assert.ok(Math.abs(xf.offX - 0) < 1e-6);
+  assert.ok(Math.abs(xf.offY - 37.5) < 1e-6);
+  const mapped = mapRectToHud({ x: 960, y: 540, w: 192, h: 108 }, xf);
+  assert.ok(Math.abs(mapped.x - 200) < 1e-6);
+  assert.ok(Math.abs(mapped.y - 150) < 1e-6);
 });
 
 console.log(`All ${passed} Tilt & Pan Array Scanner tests passed.`);
