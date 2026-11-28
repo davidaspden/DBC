@@ -507,8 +507,12 @@
     function setStatus(msg, state = 'running') {
       statusText.textContent = msg;
       statusDot.dataset.state = state;
-      const isHold = msg.toLowerCase().includes('hold the phone still');
+      const low = msg.toLowerCase();
+      const isHold = low.includes('flat/still') || low.includes('hold the phone still');
       holdStillBanner.hidden = !isHold;
+      if (isHold) {
+        holdStillBanner.textContent = msg;
+      }
     }
 
     function setPreviewActive(active, caption = 'Preview') {
@@ -642,13 +646,16 @@
       let restHtml = '';
       if (sens.atRest) {
         const r = sens.atRest;
-        const b = r.biasDps || { x: 0, y: 0, z: 0 };
+        const b = r.biasDps;
         const tone = r.movedDuringTest ? 'warn' : (r.pass ? 'good' : 'warn');
-        const tag = r.movedDuringTest ? 'Moved during check' : (r.pass ? 'Still — pass' : 'High bias / low samples');
+        const tag = r.movedDuringTest ? 'Moved during check (bias not recorded)' : (r.pass ? 'Still — pass' : 'High bias / low samples');
+        const biasStr = b && r.biasRecorded !== false
+          ? `bias x/y/z = ${b.x} / ${b.y} / ${b.z} dps`
+          : 'bias not recorded';
         restHtml = `
           <div class="cam-detail mono" style="margin-top:6px;">
             <span class="dim">2 s stationary gyro (${esc(r.source)}):</span>
-            bias x/y/z = ${b.x} / ${b.y} / ${b.z} dps · rms ${r.rmsDps} dps
+            ${biasStr} · rms ${r.rmsDps} dps
             <span class="badge ${tone}">${tag}</span>
           </div>
         `;

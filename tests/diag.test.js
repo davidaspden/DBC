@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { hashDeviceId } from '../src/diag/hash.js';
 import { formatLabelSizeOpticsSummary } from '../src/diag/decode-test.js';
 import { resolveOsGuess, buildDefaultLabelTests } from '../src/diag/probe.js';
-import { classifyMotionPermissionPath } from '../src/diag/sensors.js';
+import { classifyMotionPermissionPath, measureGyroAtRestWithRetry } from '../src/diag/sensors.js';
 import { classifyCameras } from '../src/diag/cameras.js';
 import { recommend } from '../src/diag/recommend.js';
 import { formatReportJson, formatReportText } from '../src/diag/report.js';
@@ -498,6 +498,54 @@ await test('PP5 buildDefaultLabelTests and formatReportText explicitly explain s
   const txt = formatReportText(report);
   assert.ok(txt.includes('Label    8 in: skipped (not-run-interactive-test)'));
   assert.ok(txt.includes('30 in: skipped (not-run-interactive-test)'));
+});
+
+await test('PP6 measureGyroAtRestWithRetry prompts countdown, auto-retries once, and only records bias from still window', async () => {
+  // Case 1: first attempt MOVED (rms 1.92), retry passes still -> records bias from attempt 2
+  const msgs1 = [];
+  let call1 = 0;
+  const r1 = await measureGyroAtRestWithRetry({
+    durationMs: 2000,
+    countdownSec: 2,
+    maxRetries: 1,
+    onStatus: (m) => msgs1.push(m),
+    sleepFn: async () => {},
+    sampleFn: async () => {
+      call1++;
+      if (call1 === 1) {
+        return { source: 'Gyroscope', durationMs: 2000, n: 120, biasDps: { x: -0.5, y: 0.9, z: 0.4 }, maxAbsBiasDps: 0.9, rmsDps: 1.92, pass: false, movedDuringTest: true, error: null };
+      }
+      return { source: 'Gyroscope', durationMs: 2000, n: 120, biasDps: { x: 0.02, y: -0.01, z: 0.03 }, maxAbsBiasDps: 0.03, rmsDps: 0.06, pass: true, movedDuringTest: false, error: null };
+    },
+  });
+  assert.equal(call1, 2);
+  assert.equal(r1.attempts, 2);
+  assert.equal(r1.biasRecorded, true);
+  assert.deepEqual(r1.biasDps, { x: 0.02, y: -0.01, z: 0.03 });
+  assert.ok(msgs1.some((m) => /place phone flat\/still/i.test(m)));
+
+  // Case 2: both attempts MOVED -> biasDps MUST be null (never record moved bias!)
+  let call2 = 0;
+  const r2 = await measureGyroAtRestWithRetry({
+    durationMs: 2000,
+    countdownSec: 1,
+    maxRetries: 1,
+    onStatus: () => {},
+    sleepFn: async () => {},
+    sampleFn: async () => {
+      call2++;
+      return { source: 'Gyroscope', durationMs: 2000, n: 120, biasDps: { x: -0.7, y: 1.1, z: 0.5 }, maxAbsBiasDps: 1.1, rmsDps: 1.85, pass: false, movedDuringTest: true, error: null };
+    },
+  });
+  assert.equal(call2, 2);
+  assert.equal(r2.biasRecorded, false);
+  assert.equal(r2.biasDps, null);
+  assert.equal(r2.pass, false);
+
+  const rep = a53Fixture({ sensors: { gyroAvailable: true, gyroSource: 'Gyroscope', gyroHz: 59.8, atRest: r2 } });
+  rep.recommendation = recommend(rep);
+  const txt = formatReportText(rep);
+  assert.ok(txt.includes('bias not recorded · rms 1.85 (MOVED'));
 });
 
 console.log(`All ${passed} D0 diagnostics tests passed.`);

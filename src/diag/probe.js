@@ -6,7 +6,7 @@
 import { stopCamera } from '../camera.js';
 import { requestCameraAccess, probeCameras } from './cameras.js';
 import { probeCapturePath } from './capture.js';
-import { requestMotionAccess, probeSensors, measureGyroAtRest } from './sensors.js';
+import { requestMotionAccess, probeSensors, measureGyroAtRestWithRetry } from './sensors.js';
 import { recommend } from './recommend.js';
 
 function randomReportId() {
@@ -296,8 +296,12 @@ export async function runFullProbe(uiHooks = {}) {
   report.sensors.permission = motionPerm;
 
   if (report.sensors.gyroAvailable) {
-    setStatus('Hold the phone still for 2 seconds…');
-    report.sensors.atRest = await measureGyroAtRest(2000);
+    report.sensors.atRest = await measureGyroAtRestWithRetry({
+      durationMs: 2000,
+      countdownSec: 2,
+      maxRetries: 1,
+      onStatus: setStatus,
+    });
   }
   onPartial({ sensors: report.sensors });
 

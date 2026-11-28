@@ -135,10 +135,15 @@ export function formatReportText(report) {
   if (sens) {
     if (sens.gyroAvailable) {
       let sLine = `Sensors  ${sens.gyroSource} ${sens.gyroHz} Hz`;
-      if (sens.atRest && sens.atRest.n > 0) {
+      if (sens.atRest && (sens.atRest.n > 0 || sens.atRest.biasRecorded === false)) {
         const b = sens.atRest.biasDps;
         const holdNote = sens.atRest.movedDuringTest ? 'MOVED' : (sens.atRest.pass ? 'still' : 'high-bias');
-        sLine += ` · bias x/y/z ${b.x} ${b.y} ${b.z} dps · rms ${sens.atRest.rmsDps} (${holdNote}, ${(sens.atRest.durationMs / 1000).toFixed(1)} s)`;
+        const attStr = sens.atRest.attempts > 1 ? `, ${sens.atRest.attempts} attempts` : '';
+        if (b && sens.atRest.biasRecorded !== false) {
+          sLine += ` · bias x/y/z ${b.x} ${b.y} ${b.z} dps · rms ${sens.atRest.rmsDps} (${holdNote}, ${(sens.atRest.durationMs / 1000).toFixed(1)} s${attStr})`;
+        } else {
+          sLine += ` · bias not recorded · rms ${sens.atRest.rmsDps} (${holdNote}, ${(sens.atRest.durationMs / 1000).toFixed(1)} s${attStr})`;
+        }
       }
       lines.push(sLine);
     } else {

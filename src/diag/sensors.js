@@ -463,3 +463,60 @@ export async function measureGyroAtRest(ms = 2000) {
 
   return computeStats();
 }
+
+/**
+ * PP6: Stationary gyro check UX with "place phone flat/still" countdown, one automatic retry
+ * on movement (rms >= 0.35 dps), and strict rule: ONLY record `biasDps` from a passing still window.
+ */
+export async function measureGyroAtRestWithRetry({
+  durationMs = 2000,
+  countdownSec = 2,
+  maxRetries = 1,
+  onStatus = () => {},
+  sampleFn = measureGyroAtRest,
+  sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
+} = {}) {
+  let lastRes = null;
+  const maxAttempts = 1 + Math.max(0, maxRetries | 0);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let s = countdownSec; s > 0; s--) {
+      if (attempt === 1) {
+        onStatus(`Place phone flat/still — starting in ${s}s…`);
+      } else {
+        onStatus(`Movement detected (rms ${lastRes.rmsDps} dps) — place phone flat/still, retry ${attempt}/${maxAttempts} in ${s}s…`);
+      }
+      await sleepFn(1000);
+    }
+
+    onStatus(`Place phone flat/still — measuring gyro (${(durationMs / 1000).toFixed(1)} s, attempt ${attempt}/${maxAttempts})…`);
+    const res = await sampleFn(durationMs);
+    lastRes = res;
+
+    if (res && !res.movedDuringTest && res.n >= 10) {
+      return {
+        ...res,
+        attempts: attempt,
+        biasRecorded: true,
+      };
+    }
+  }
+
+  // All attempts detected movement or lacked samples -> do NOT record unreliable bias!
+  return {
+    ...(lastRes || {
+      source: 'none',
+      durationMs,
+      n: 0,
+      rmsDps: 0,
+      pass: false,
+      movedDuringTest: true,
+      error: 'MovedDuringTest',
+    }),
+    biasDps: null,
+    maxAbsBiasDps: null,
+    pass: false,
+    biasRecorded: false,
+    attempts: maxAttempts,
+  };
+}
