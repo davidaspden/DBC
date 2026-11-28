@@ -17,6 +17,7 @@ import { classifyHold, solveAxisRemap, AXIS_REMAPS, applyAxisRemap } from '../sr
 import { computeBlurModules } from '../src/array/blur.js';
 import { computeViewTransform, mapRectToHud } from '../src/array/viewmap.js';
 import { pxPerModule } from '../src/array/optics.js';
+import { createAutoZeroStateMachine } from '../src/array/autozero.js';
 
 let passed = 0;
 
@@ -294,6 +295,88 @@ test('B2 computeViewTransform maps 16:9 frame into 4:3 stage with exact contain 
   const mapped = mapRectToHud({ x: 960, y: 540, w: 192, h: 108 }, xf);
   assert.ok(Math.abs(mapped.x - 200) < 1e-6);
   assert.ok(Math.abs(mapped.y - 150) < 1e-6);
+});
+
+test('A2 conflictHysteresis ignores single stray misread while flagging genuine 3v3 conflict', () => {
+  const mapper = createPanArrayMapper({
+    cols: 2, rows: 2, pitchXIn: 16, pitchYIn: 14, distanceIn: 12,
+    conflictHysteresis: true,
+  });
+  const qTL = quatFromPanTiltRollDeg(
+    Math.atan2(-8, 12) * (180 / Math.PI),
+    Math.atan2(7, Math.hypot(-8, 12)) * (180 / Math.PI),
+    0
+  );
+  // 6 valid reads + 1 stray misread -> stays READ!
+  for (let i = 0; i < 6; i++) {
+    mapper.addObservation({ payload: 'tsX01GOOD01B', cx: 640, cy: 360, prefixOk: 1 }, qTL, 1280, 720);
+  }
+  mapper.addObservation({ payload: 'NOISE-BAD', cx: 640, cy: 360, prefixOk: 0 }, qTL, 1280, 720);
+  assert.equal(mapper.getCells()[0].state, 'READ');
+  assert.equal(mapper.getCells()[0].payload, 'tsX01GOOD01B');
+
+  // Now compete on cell 1 (3 vs 3) -> CONFLICT!
+  const qTR = quatFromPanTiltRollDeg(
+    Math.atan2(8, 12) * (180 / Math.PI),
+    Math.atan2(7, Math.hypot(8, 12)) * (180 / Math.PI),
+    0
+  );
+  for (let i = 0; i < 3; i++) {
+    mapper.addObservation({ payload: 'tsX02AAA001B', cx: 640, cy: 360 }, qTR, 1280, 720);
+    mapper.addObservation({ payload: 'tsX02BBB002B', cx: 640, cy: 360 }, qTR, 1280, 720);
+  }
+  assert.equal(mapper.getCells()[1].state, 'CONFLICT');
+});
+
+test('A3 dupCheck flags cross-cell duplicate payloads and A4/A5 damp & label-anchor cleanly', () => {
+  const mapper = createPanArrayMapper({
+    cols: 2, rows: 2, pitchXIn: 16, pitchYIn: 14, distanceIn: 12,
+    dupCheck: true, nudgeDamp: true, driftFromLabel: true,
+  });
+  const qTL = quatFromPanTiltRollDeg(
+    Math.atan2(-8, 12) * (180 / Math.PI),
+    Math.atan2(7, Math.hypot(-8, 12)) * (180 / Math.PI),
+    0
+  );
+  const qTR = quatFromPanTiltRollDeg(
+    Math.atan2(8, 12) * (180 / Math.PI),
+    Math.atan2(7, Math.hypot(8, 12)) * (180 / Math.PI),
+    0
+  );
+  for (let i = 0; i < 2; i++) mapper.addObservation({ payload: 'tsXDUPE0001B', cx: 640, cy: 360 }, qTL, 1280, 720);
+  for (let i = 0; i < 2; i++) mapper.addObservation({ payload: 'tsXDUPE0001B', cx: 640, cy: 360 }, qTR, 1280, 720);
+  assert.equal(mapper.getCells()[0].state, 'CONFLICT');
+  assert.equal(mapper.getCells()[1].state, 'CONFLICT');
+  assert.ok(mapper.getDuplicateEvents().length >= 1);
+
+  // A5 anchorObservationToCell rejects giant 16 in jump and accepts small 3 in sway
+  mapper.stance.px = 3;
+  const okSmall = mapper.anchorObservationToCell({ cx: 640, cy: 360 }, qTL, 0, 0, 1280, 720);
+  assert.equal(okSmall.ok, true);
+  assert.ok(Math.abs(mapper.stance.px) < 0.2);
+
+  mapper.stance.px = 14;
+  const rejBig = mapper.anchorObservationToCell({ cx: 640, cy: 360 }, qTL, 0, 0, 1280, 720);
+  assert.equal(rejBig.ok, false);
+  assert.equal(rejBig.reason, 'jump-too-large');
+});
+
+test('A6 autoZeroFromLabel accepts 2 centred square reads and rejects skewed or off-centre reads', () => {
+  const az = createAutoZeroStateMachine({ expectedScanDeg: 90, labelLenIn: 3.5 });
+  az.arm();
+  const base = { payload: 'tsX11AUTO01B', cx: 640, cy: 360, lenPx: 400, thetaDeg: 90, frameW: 1280, frameH: 720, focalLengthPx: 1350, currentDistanceIn: 12, wTotalDps: 1.5, rollDeg: 2 };
+
+  // Skewed (>15 deg) rejected
+  assert.equal(az.evaluate({ ...base, thetaDeg: 70 }).reason, 'skewed');
+  // Off-centre rejected
+  assert.equal(az.evaluate({ ...base, cx: 950 }).reason, 'off-center');
+  // First valid read awaits second agreement
+  assert.equal(az.evaluate(base).reason, 'awaiting-second-read');
+  // Second agreeing read triggers!
+  const trig = az.evaluate(base);
+  assert.equal(trig.triggered, true);
+  assert.equal(trig.payload, 'tsX11AUTO01B');
+  assert.ok(trig.estimatedDistanceIn > 10 && trig.estimatedDistanceIn < 14);
 });
 
 console.log(`All ${passed} Tilt & Pan Array Scanner tests passed.`);

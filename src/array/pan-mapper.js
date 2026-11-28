@@ -11,7 +11,7 @@
  *  - Wall lies on Z = 0; camera stands at (Px, Py, D) looking along -Z when qRel = identity.
  */
 
-import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js?v=3';
+import { quatRotateVec, quatFromPanTiltRollDeg } from './orient.js?v=4';
 import { FC_PROFILE, resolveTotePitch } from './config.js';
 import { evaluateOptics, estimateModules } from './optics.js';
 import { AXIS_REMAPS, applyAxisRemap } from './setup.js';
@@ -45,6 +45,12 @@ export function createPanArrayMapper(opts = {}) {
     autoDistanceFromLabel: Boolean(opts.autoDistanceFromLabel),
     invertPan: Boolean(opts.invertPan),
     invertTilt: Boolean(opts.invertTilt),
+    // Wave 2 Stream A feature flags (all default OFF -> legacy behavior byte-identical)
+    conflictHysteresis: Boolean(opts.conflictHysteresis),
+    dupCheck: Boolean(opts.dupCheck),
+    nudgeDamp: Boolean(opts.nudgeDamp),
+    nudgeGain: opts.nudgeGain ?? 0.10,
+    driftFromLabel: Boolean(opts.driftFromLabel),
   };
 
   // Camera stance offset relative to wall center (inches)
@@ -57,6 +63,12 @@ export function createPanArrayMapper(opts = {}) {
     scaleX: 1,
     scaleY: 1,
     lastResidualIn: 0,
+    lastResidualEx: 0,
+    lastResidualEy: 0,
+    lastReadCellIdx: -1,
+    lastReadPayload: '',
+    lastNudgeMs: 0,
+    nudgeCumInWindow: 0,
     stanceWarning: false,
     calibratedTwoCorner: false,
   };
@@ -67,6 +79,7 @@ export function createPanArrayMapper(opts = {}) {
 
   let cells = [];
   const payloadToCellIdx = new Map();
+  let duplicateEvents = [];
   let unplaced = [];
   let twoCornerAnchorA = null;
 
@@ -348,8 +361,10 @@ export function createPanArrayMapper(opts = {}) {
     }
 
     const now = obs.tFrameMs || performance.now();
+    // A2 (`conflictHysteresis`): prefixOk reads count double (2), plain reads count 1
+    const voteWeight = cfg.conflictHysteresis && obs.prefixOk ? 2 : 1;
     const prevVotes = cell.votes.get(obs.payload) || 0;
-    cell.votes.set(obs.payload, prevVotes + 1);
+    cell.votes.set(obs.payload, prevVotes + voteWeight);
     cell.readCount++;
     cell.lastSeenMs = now;
     cell.lastErrIn = Math.round(errIn * 10) / 10;
@@ -370,14 +385,82 @@ export function createPanArrayMapper(opts = {}) {
     }
 
     cell.payload = bestPayload;
-    cell.state = secondCount > 0 && secondCount >= Math.max(1, Math.floor(bestCount * 0.5))
-      ? 'CONFLICT'
-      : 'READ';
-    payloadToCellIdx.set(bestPayload, cell.index);
+    if (cfg.conflictHysteresis) {
+      // A2: single stray misread does not flip a solid cell to CONFLICT;
+      // requires runner-up >= 2 votes AND >= 1/3 of winner to declare CONFLICT.
+      if (secondCount >= 2 && secondCount * 3 >= bestCount) {
+        cell.state = 'CONFLICT';
+      } else if (bestCount >= 2 && bestCount >= secondCount * 3) {
+        cell.state = 'READ';
+      } else {
+        cell.state = bestCount >= 1 && secondCount === 0 ? 'READ' : 'LOW_CONF';
+      }
+    } else {
+      cell.state = secondCount > 0 && secondCount >= Math.max(1, Math.floor(bestCount * 0.5))
+        ? 'CONFLICT'
+        : 'READ';
+    }
 
-    // Gentle body-sway anchor absorption (only when single clear payload and close to center)
+    // A3 (`dupCheck`): cross-cell duplicate payload guard
+    if (cfg.dupCheck && bestPayload) {
+      let bestOwnerIdx = cell.index;
+      let bestOwnerVotes = bestCount;
+      for (let i = 0; i < cells.length; i++) {
+        if (i === cell.index) continue;
+        const other = cells[i];
+        if (!other || other.payload !== bestPayload) continue;
+        const otherVotes = other.votes.get(bestPayload) || 0;
+        if (otherVotes > bestOwnerVotes) {
+          bestOwnerIdx = i;
+          bestOwnerVotes = otherVotes;
+        }
+        if (bestCount >= 2 && otherVotes >= 2) {
+          cell.state = 'CONFLICT';
+          other.state = 'CONFLICT';
+        } else if (bestCount >= otherVotes) {
+          other.state = 'LOW_CONF';
+        } else {
+          cell.state = 'LOW_CONF';
+        }
+        duplicateEvents.push({ payload: bestPayload, cells: [other.id, cell.id], ts: now });
+      }
+      payloadToCellIdx.set(bestPayload, bestOwnerIdx);
+    } else if (bestPayload) {
+      payloadToCellIdx.set(bestPayload, cell.index);
+    }
+
+    // Gentle body-sway anchor absorption
     stance.lastResidualIn = Math.round(errIn * 10) / 10;
-    if (cell.state === 'READ' && errIn < Math.min(cfg.pitchXIn, cfg.pitchYIn) * 0.38) {
+    if (cfg.nudgeDamp) {
+      // A4: damped stance nudge only on agreeing reads within 3 in of prior residual, rate-capped
+      const sameRead = stance.lastReadCellIdx === cell.index && stance.lastReadPayload === bestPayload;
+      const resJump = Math.hypot(ex - stance.lastResidualEx, ey - stance.lastResidualEy);
+      if (now - stance.lastNudgeMs > 1000) {
+        stance.nudgeCumInWindow = 0;
+        stance.lastNudgeMs = now;
+      }
+      if (
+        cell.state === 'READ' &&
+        !stance.stanceWarning &&
+        sameRead &&
+        resJump <= 3.0 &&
+        errIn < Math.min(cfg.pitchXIn, cfg.pitchYIn) * 0.38 &&
+        stance.nudgeCumInWindow < 2.0
+      ) {
+        const g = Math.max(0.02, Math.min(0.15, cfg.nudgeGain));
+        const dx = ex * g;
+        const dy = ey * g;
+        stance.px -= dx;
+        stance.py -= dy;
+        stance.nudgeCumInWindow += Math.hypot(dx, dy);
+      } else if (errIn > Math.min(cfg.pitchXIn, cfg.pitchYIn) * 0.42) {
+        stance.stanceWarning = true;
+      }
+      stance.lastResidualEx = ex;
+      stance.lastResidualEy = ey;
+      stance.lastReadCellIdx = cell.index;
+      stance.lastReadPayload = bestPayload;
+    } else if (cell.state === 'READ' && errIn < Math.min(cfg.pitchXIn, cfg.pitchYIn) * 0.38) {
       stance.px -= ex * 0.22;
       stance.py -= ey * 0.22;
       stance.stanceWarning = false;
@@ -386,6 +469,29 @@ export function createPanArrayMapper(opts = {}) {
     }
 
     return { placed: true, cell, proj, errIn };
+  }
+
+  /**
+   * A5 (`driftFromLabel`): Re-anchors camera stance `(px, py)` using the decoded barcode's
+   * exact pixel coordinates `(obs.cx, obs.cy)` rather than frame center. Rejects large jumps
+   * (> 0.5 * minPitch) unless `force === true`.
+   */
+  function anchorObservationToCell(obs, qRel, row, col, frameW, frameH, force = false) {
+    if (row < 0 || row >= cfg.rows || col < 0 || col >= cfg.cols) return { ok: false, reason: 'invalid-cell' };
+    const p = projectPixelToWall(qRel, obs.cx, obs.cy, frameW, frameH);
+    if (!p.ok) return { ok: false, reason: 'oblique' };
+    const cell = cells[row * cfg.cols + col];
+    const dx = cell.cx - p.wx;
+    const dy = cell.cy - p.wy;
+    const jumpIn = Math.hypot(dx, dy);
+    if (!force && jumpIn > Math.min(cfg.pitchXIn, cfg.pitchYIn) * 0.5) {
+      stance.stanceWarning = true;
+      return { ok: false, reason: 'jump-too-large', jumpIn: Math.round(jumpIn * 10) / 10 };
+    }
+    stance.px += dx;
+    stance.py += dy;
+    stance.stanceWarning = false;
+    return { ok: true, jumpIn: Math.round(jumpIn * 10) / 10 };
   }
 
   function recordUnplaced(payload, wx, wy) {
@@ -397,6 +503,9 @@ export function createPanArrayMapper(opts = {}) {
   function clearCell(index) {
     const c = cells[index];
     if (!c) return;
+    if (c.payload && payloadToCellIdx.get(c.payload) === index) {
+      payloadToCellIdx.delete(c.payload);
+    }
     c.state = 'EMPTY';
     c.payload = '';
     c.readCount = 0;
@@ -415,8 +524,13 @@ export function createPanArrayMapper(opts = {}) {
     stance.scaleX = 1;
     stance.scaleY = 1;
     stance.lastResidualIn = 0;
+    stance.lastResidualEx = 0;
+    stance.lastResidualEy = 0;
+    stance.lastReadCellIdx = -1;
+    stance.lastReadPayload = '';
     stance.stanceWarning = false;
     stance.calibratedTwoCorner = false;
+    duplicateEvents = [];
     rebuildGrid();
   }
 
@@ -506,6 +620,7 @@ export function createPanArrayMapper(opts = {}) {
     stance,
     getCells: () => cells,
     getUnplaced: () => unplaced,
+    getDuplicateEvents: () => duplicateEvents,
     getFocalLengthPx,
     projectPixelToWall,
     getCameraFootprint,
@@ -514,6 +629,7 @@ export function createPanArrayMapper(opts = {}) {
     setInFrontStanceForCell,
     getOpticsReport,
     anchorAimToCell,
+    anchorObservationToCell,
     recordCornerCalibration,
     addObservation,
     clearCell,
