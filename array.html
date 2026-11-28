@@ -441,9 +441,13 @@
   </main>
 
   <script type="module">
-    import { startCamera, stopCamera, setTorch, listVideoDevices } from './src/camera.js';
-    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=2';
-    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=2';
+    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo } from './src/camera.js';
+    import { isOn, toWorkerMask } from './src/flags.js';
+    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=3';
+    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=3';
+    import { computeBlurModules } from './src/array/blur.js?v=3';
+    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=3';
+    import { pxPerModule } from './src/array/optics.js?v=3';
 
     const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 
@@ -513,16 +517,35 @@
       } catch {}
     }
 
-    // Core modules
-    const orient = createOrientationTracker();
+    // Core modules (all new Wave 1 features strictly behind flags, default OFF)
+    const flagCamAlign = isOn('camAlign');
+    const flagBlurGateV2 = isOn('blurGateV2');
+    const flagFcDefaults = isOn('fcLabelDefaults');
+    const flagGravityZero = isOn('orientGravityZero');
+
+    const orient = createOrientationTracker({ gravityZero: flagGravityZero });
     const mapper = createPanArrayMapper({
       cols: 4,
       rows: 4,
       pitchXIn: 14,
       pitchYIn: 16,
-      distanceIn: 30,
+      distanceIn: flagFcDefaults ? 12 : 30,
       hfovDeg: 70.7,
+      fcLabelDefaults: flagFcDefaults,
     });
+    if (flagFcDefaults) {
+      rngStandoff.value = String(mapper.cfg.distanceIn);
+      lblStandoff.textContent = `${mapper.cfg.distanceIn} in (FC)`;
+    }
+    if (flagCamAlign) {
+      videoEl.style.objectFit = 'contain';
+      camStage.style.maxHeight = '62dvh';
+    }
+    if (flagGravityZero && typeof screen !== 'undefined' && screen.orientation) {
+      screen.orientation.addEventListener('change', () => {
+        orient.setScreenAngle(screen.orientation.angle || 0);
+      });
+    }
 
     const worker = new Worker(new URL('./src/worker/scanner.worker.js', import.meta.url), { type: 'module' });
 
@@ -573,14 +596,46 @@
     function ensureBuffers(w, h) {
       app.frameW = w;
       app.frameH = h;
-      camHud.width = w;
-      camHud.height = h;
+      if (flagCamAlign) {
+        camStage.style.aspectRatio = `${w} / ${h}`;
+      } else {
+        camHud.width = w;
+        camHud.height = h;
+      }
       app.recycledBuffer = new ArrayBuffer(w * h);
       app.fallbackCanvas = typeof OffscreenCanvas !== 'undefined'
         ? new OffscreenCanvas(w, h)
         : Object.assign(document.createElement('canvas'), { width: w, height: h });
       app.fallbackCtx = app.fallbackCanvas.getContext('2d', { willReadFrequently: true });
-      worker.postMessage({ type: 'init', width: w, height: h });
+      worker.postMessage({ type: 'init', width: w, height: h, flags: toWorkerMask() });
+    }
+
+    function computeCurrentBlurModules(status) {
+      if (!flagBlurGateV2) {
+        return (Math.abs(status.wPitchDps) * (Math.PI / 180) * mapper.stance.d * 0.004) / (mapper.cfg.labelLenIn / mapper.cfg.labelModules);
+      }
+      const expInfo = app.cam && app.cam.track ? getExposureInfo(app.cam.track) : null;
+      const exposureSec = (expInfo && expInfo.exposureTimeSec) || (1 / 60);
+      const lastTheta = app.lastResult && app.lastResult.detected === 1 && typeof app.lastResult.thetaDeg === 'number'
+        ? app.lastResult.thetaDeg
+        : (mapper.cfg.labelOrientation === 'picket' ? 0 : 90);
+      const ppm = pxPerModule({
+        distanceIn: mapper.stance.d,
+        hfovDeg: mapper.cfg.hfovDeg,
+        zoom: mapper.cfg.zoom,
+        widthPx: app.frameW,
+        heightPx: app.frameH,
+        labelLenIn: mapper.cfg.labelLenIn,
+        modules: mapper.cfg.labelModules,
+      });
+      return computeBlurModules({
+        wPanDps: status.wPanDps,
+        wPitchDps: status.wPitchDps,
+        scanAngleDeg: lastTheta,
+        exposureSec,
+        pxPerModule: ppm,
+        focalLengthPx: mapper.getFocalLengthPx(app.frameW, app.frameH),
+      });
     }
 
     function updateSummaryUi() {
@@ -653,13 +708,36 @@
 
     // Draw camera overlay (green decode boxes + center aim reticle + row alignment bar)
     function drawCameraHud(footprint, status) {
-      const w = camHud.width;
-      const h = camHud.height;
-      camHudCtx.clearRect(0, 0, w, h);
+      let w;
+      let h;
+      let xform = null;
+      if (flagCamAlign) {
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = camHud.clientWidth | 0;
+        const cssH = camHud.clientHeight | 0;
+        if (cssW <= 0 || cssH <= 0) return;
+        const tw = Math.round(cssW * dpr);
+        const th = Math.round(cssH * dpr);
+        if (camHud.width !== tw || camHud.height !== th) {
+          camHud.width = tw;
+          camHud.height = th;
+        }
+        camHudCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        camHudCtx.clearRect(0, 0, cssW, cssH);
+        w = cssW;
+        h = cssH;
+        xform = computeViewTransform(app.frameW, app.frameH, cssW, cssH, 'contain');
+      } else {
+        w = camHud.width;
+        h = camHud.height;
+        camHudCtx.setTransform(1, 0, 0, 1, 0, 0);
+        camHudCtx.clearRect(0, 0, w, h);
+      }
 
-      // Subtle vertical 1:3 label guide in center
+      // Subtle vertical label guide in center (1:1.75 when camAlign ON, 1:3 legacy when OFF)
+      const guideAspect = flagCamAlign ? 1.75 : 3;
       const guideH = h * 0.44;
-      const guideW = guideH / 3;
+      const guideW = guideH / guideAspect;
       const gx = (w - guideW) * 0.5;
       const gy = (h - guideH) * 0.5;
       camHudCtx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
@@ -679,7 +757,7 @@
       // Target cell badge near center crosshair
       if (footprint.targetCell) {
         const tag = `${footprint.targetCell.id}${footprint.targetCell.state === 'READ' ? ' ✓' : ''}`;
-        const fs = Math.max(14, Math.round(w / 52));
+        const fs = Math.max(12, Math.round(w / 32));
         camHudCtx.font = `800 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
         const tw = camHudCtx.measureText(tag).width;
         camHudCtx.fillStyle = footprint.targetCell.state === 'READ'
@@ -696,15 +774,18 @@
         const dets = Array.isArray(msg.detections) && msg.detections.length > 0
           ? msg.detections
           : (msg.detected === 1 && msg.payload ? [msg] : []);
-        const fs = Math.max(13, Math.round(w / 62));
+        const fs = Math.max(11, Math.round(w / 42));
         camHudCtx.font = `700 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
         for (const d of dets) {
+          const box = xform
+            ? mapRectToHud({ x: d.roiX, y: d.roiY, w: d.roiW, h: d.roiH }, xform)
+            : { x: d.roiX, y: d.roiY, w: d.roiW, h: d.roiH };
           camHudCtx.strokeStyle = '#22c55e';
-          camHudCtx.lineWidth = Math.max(3, w / 360);
-          camHudCtx.strokeRect(d.roiX, d.roiY, d.roiW, d.roiH);
+          camHudCtx.lineWidth = Math.max(2.5, w / 360);
+          camHudCtx.strokeRect(box.x, box.y, box.w, box.h);
           const tw = camHudCtx.measureText(d.payload).width;
-          const bx = Math.max(4, Math.min(w - tw - 10, d.roiX));
-          const by = Math.max(fs + 8, d.roiY - 4);
+          const bx = Math.max(4, Math.min(w - tw - 10, box.x));
+          const by = Math.max(fs + 8, box.y - 4);
           camHudCtx.fillStyle = 'rgba(6, 40, 24, 0.90)';
           camHudCtx.fillRect(bx, by - fs - 4, tw + 10, fs + 8);
           camHudCtx.fillStyle = '#86efac';
@@ -712,11 +793,11 @@
         }
       }
 
-      // Pitch-shake warning tint on border
-      const pitchBlurMods = (Math.abs(status.wPitchDps) * (Math.PI / 180) * mapper.stance.d * 0.004) / (mapper.cfg.labelLenIn / mapper.cfg.labelModules);
-      if (app.blurGate && pitchBlurMods > 0.8) {
+      // Along-scan motion-blur warning tint on border
+      const blurMods = computeCurrentBlurModules(status);
+      if (app.blurGate && blurMods > 0.8) {
         camHudCtx.strokeStyle = 'rgba(245, 158, 11, 0.85)';
-        camHudCtx.lineWidth = Math.max(6, w / 160);
+        camHudCtx.lineWidth = Math.max(5, w / 160);
         camHudCtx.strokeRect(3, 3, w - 6, h - 6);
       }
     }
@@ -842,10 +923,10 @@
     async function extractAndSendFrame(tFrameMs) {
       if (!app.running || app.workerBusy || !app.recycledBuffer || videoEl.readyState < 2) return;
 
-      // Pitch-shake blur guard: skip decoding frames during rapid vertical row tilts
+      // Along-scan blur guard: skip decoding frames during rapid along-scan motion
       const st = orient.getStatus();
-      const pitchBlurMods = (Math.abs(st.wPitchDps) * (Math.PI / 180) * mapper.stance.d * 0.004) / (mapper.cfg.labelLenIn / mapper.cfg.labelModules);
-      if (app.blurGate && pitchBlurMods > 0.85) return;
+      const blurMods = computeCurrentBlurModules(st);
+      if (app.blurGate && blurMods > 0.85) return;
 
       app.workerBusy = true;
       const w = app.frameW;
@@ -902,6 +983,8 @@
         {
           type: 'frame',
           frameId: app.frameId,
+          tFrameMs,
+          flags: toWorkerMask(),
           width: w,
           height: h,
           byteOffset: 0,
@@ -1050,7 +1133,15 @@
       mapper.stance.stanceWarning = false;
 
       if (orient.getStatus().active) {
-        orient.zeroToQuaternion(aim.quat);
+        if (flagGravityZero) {
+          const setup = orient.getSetupInfo();
+          const row = corner === 'center' ? null : 0;
+          const col = corner === 'top-left' ? 0 : (corner === 'top-right' ? mapper.cfg.cols - 1 : null);
+          orient.zeroYawOnly(0);
+          mapper.setInFrontStanceForCell(row, col, setup.pitchDeg);
+        } else {
+          orient.zeroToQuaternion(aim.quat);
+        }
       } else {
         app.manualPanDeg = aim.panDeg;
         app.manualTiltDeg = aim.tiltDeg;
