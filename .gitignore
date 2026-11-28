@@ -5,6 +5,7 @@ ParcelBar/
 # Generated debug captures & fixtures
 tests/fixtures/generated/
 tests/fixtures/roi_debug/
+gate-results/
 *.pgm
 *.ppm
 
