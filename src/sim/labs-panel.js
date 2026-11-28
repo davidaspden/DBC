@@ -17,8 +17,8 @@
 import { buildScenarioJson, specFromScenarioJson, HEADLESS_SIM_FLAGS } from './labs-scenario.js';
 import { runAb } from './ab-run.js';
 
-/** Sim flags whose live effect exists in sim.html (none yet: the page renders with WebGL, flags L/K/T/M are headless items). */
-export const LIVE_SIM_FLAGS = Object.freeze([]);
+/** Sim flags whose live effect exists in sim.html (T1: simTapePose adds a tape file row; the rest are headless or later items). */
+export const LIVE_SIM_FLAGS = Object.freeze(['simTapePose']);
 
 /** Pure model of what the panel shows (testable without a DOM). */
 export function buildLabsModel({ workerFlags, simFlags, state, presetId, mask }) {

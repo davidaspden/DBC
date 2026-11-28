@@ -337,6 +337,25 @@ export const PATH_DEFINITIONS = [
   { id: 'manual', label: 'Manual Drag / Zoom', lengthIn: 0 },
 ];
 
+// T1: extra (registered) paths, e.g. `tape:<name>`. Empty by default, so `PATH_DEFINITIONS` and
+// `sampleCameraPose` behave exactly as before unless something registers a path (flag `simTapePose`).
+const EXTRA_PATH_SAMPLERS = new Map();
+
+/** Adds a path to `PATH_DEFINITIONS` and routes `sampleCameraPose(def.id, ...)` to `sampler(tSec, cfg)`. */
+export function registerExtraPath(def, sampler) {
+  if (!def || !def.id || typeof sampler !== 'function') return false;
+  unregisterExtraPath(def.id);
+  PATH_DEFINITIONS.push(def);
+  EXTRA_PATH_SAMPLERS.set(def.id, sampler);
+  return true;
+}
+
+export function unregisterExtraPath(id) {
+  EXTRA_PATH_SAMPLERS.delete(id);
+  const i = PATH_DEFINITIONS.findIndex((d) => d.id === id);
+  if (i >= 0) PATH_DEFINITIONS.splice(i, 1);
+}
+
 /**
  * Evaluates camera pose at simulation time `tSec`.
  *
@@ -351,6 +370,10 @@ export const PATH_DEFINITIONS = [
  * }} cfg
  */
 export function sampleCameraPose(pathId, tSec, cfg) {
+  if (EXTRA_PATH_SAMPLERS.size !== 0) {
+    const extra = EXTRA_PATH_SAMPLERS.get(pathId);
+    if (extra) return extra(tSec, cfg);
+  }
   const zBase = Math.max(4, cfg.distanceIn || 10);
   const speed = Math.max(0.5, cfg.speedInPerSec || 18);
   const jitter = Math.max(0, Math.min(1, cfg.jitter || 0));

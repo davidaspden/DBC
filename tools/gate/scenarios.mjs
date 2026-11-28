@@ -131,6 +131,7 @@ function namesToWorkerMask(names) {
  */
 export function computePresetLoopDurationSec(preset) {
   const pathDef = PATH_DEFINITIONS.find((p) => p.id === preset.pathId);
+  if (pathDef && pathDef.fixedDurationSec > 0) return pathDef.fixedDurationSec; // T1: tape paths
   if (!pathDef || pathDef.lengthIn <= 0) {
     return 2.0;
   }

@@ -36,6 +36,7 @@ export function workerMaskFromNames(names) {
 /** One canonical pass of a preset path in seconds (static `manual` paths use 2 s), as simgate does. */
 export function loopDurationSec(pathId, speedInPerSec) {
   const def = PATH_DEFINITIONS.find((p) => p.id === pathId);
+  if (def && def.fixedDurationSec > 0) return def.fixedDurationSec; // T1: tape paths
   if (!def || def.lengthIn <= 0) return 2.0;
   return def.lengthIn / Math.max(0.5, speedInPerSec || 18);
 }

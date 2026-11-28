@@ -600,7 +600,8 @@
     } from './src/sim/paths.js';
     import { createWebGLWallRenderer } from './src/sim/webgl-wall.js';
     import { describe as describeFlags, toWorkerMask, setFlag } from './src/flags.js';
-    import { describeSimFlags, setSimFlag } from './src/sim/simflags.js';
+    import { describeSimFlags, setSimFlag, isSimOn } from './src/sim/simflags.js';
+    import { readTapeSensors, registerTapePath } from './src/sim/tape-pose.js';
     import { mountLabsPanel } from './src/sim/labs-panel.js';
 
     const glCanvas = document.getElementById('gl-canvas');
@@ -1352,7 +1353,7 @@
       setSimFlag,
       getState: () => state,
       getPresetId: () => activePresetId,
-      onChange: () => refreshFlagsHud(),
+      onChange: () => { refreshFlagsHud(); refreshTapeRow(); },
       download: (name, text) => {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
@@ -1361,6 +1362,46 @@
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       },
     });
+
+    // T1: tape-driven pose. The row only exists while the `simTapePose` sim flag is on, so with the flag
+    // off the page (and its path list) is unchanged.
+    const tapeRow = document.createElement('div');
+    tapeRow.style.cssText = 'display:none;margin-top:6px;';
+    const tapeLabel = document.createElement('span');
+    tapeLabel.textContent = 'Tape pose (.dbct): ';
+    const tapeInput = document.createElement('input');
+    tapeInput.type = 'file';
+    tapeInput.accept = '.dbct';
+    const tapeNote = document.createElement('div');
+    tapeNote.className = 'mono';
+    tapeRow.append(tapeLabel, tapeInput, tapeNote);
+    document.getElementById('labs-panel').appendChild(tapeRow);
+    function refreshTapeRow() {
+      tapeRow.style.display = isSimOn('simTapePose') ? '' : 'none';
+    }
+    tapeInput.addEventListener('change', async () => {
+      const file = tapeInput.files && tapeInput.files[0];
+      if (!file) return;
+      try {
+        const tape = readTapeSensors(new Uint8Array(await file.arrayBuffer()));
+        const hasSim = tape.samples.length && tape.samples[0].sensor && tape.samples[0].sensor.simPose;
+        const id = registerTapePath(file.name.replace(/\.dbct$/i, ''), tape, { source: hasSim ? 'simPose' : 'integrated', stance: hasSim ? 'log' : 'fixed', originSec: 'header', loop: true });
+        if (!id) { tapeNote.textContent = 'turn the simTapePose flag on first'; return; }
+        const def = PATH_DEFINITIONS.find((p) => p.id === id);
+        if (![...selPath.options].some((o) => o.value === id)) {
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = def.label;
+          selPath.appendChild(opt);
+        }
+        selPath.value = id;
+        selPath.dispatchEvent(new Event('change'));
+        tapeNote.textContent = `${def.label} loaded`;
+      } catch (e) {
+        tapeNote.textContent = `tape not usable: ${e.message}`;
+      }
+    });
+    refreshTapeRow();
 
     // Boot
     updateAspectFrame();
