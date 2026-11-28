@@ -908,3 +908,117 @@ export function decodeAllCode128FromRuns(runWidthsQ8, runIsBar, runCount, state)
   tryDecodeDirection(runWidthsQ8, runIsBar, rc, -1, state, 1);
   return state.hitCount;
 }
+
+/**
+ * BL1 (`moduleEst`): Crib-first module-width estimator on Stage 3 Q8 runs.
+ * Scans forward and reverse for Start B (104) + 't' (84), 's' (83), 'X' (56) (44 modules total)
+ * and writes `moduleWidthQ8 = cribSpanQ8 / 44`, `modulePeakStrength` (Q10), and `moduleSource = 1`
+ * onto `outScanState`. Pure 32-bit integer arithmetic, zero heap allocations.
+ *
+ * @returns {number} 1 if tsX crib matched, 0 otherwise
+ */
+export function findTsxCribModuleWidthQ8(runWidthsQ8, runIsBar, runCount, outScanState) {
+  const rc = runCount | 0;
+  if (rc < 25) return 0;
+
+  const patQ8 = CODE128_PATTERNS_Q8;
+  const eQ8 = CODE128_E_SUMS_Q8;
+  const startP = CODE128_START_B * 6;
+  const startEP = CODE128_START_B << 2;
+
+  const MIN_CHAR_SUM_Q8 = 11 << 8;
+  const MAX_CHAR_SUM_Q8 = 440 << 8; // supports close-range up to 40 px/mod
+  const MAX_START_ERR_Q8 = 560;
+
+  let bestErr = 2200;
+  let bestModQ8 = 0;
+
+  for (let dPass = 0; dPass < 2; dPass++) {
+    const step = dPass === 0 ? 1 : -1;
+    const startIdx = step === 1 ? 0 : ((rc - 1) | 0);
+    const endLimit = step === 1 ? ((rc - 24) | 0) : 23;
+
+    for (let i = startIdx; step === 1 ? (i <= endLimit) : (i >= endLimit); i = (i + step) | 0) {
+      if (runIsBar[i] !== 1) continue;
+
+      const r0 = runWidthsQ8[i] | 0;
+      const r1 = runWidthsQ8[(i + step) | 0] | 0;
+      const r2 = runWidthsQ8[(i + (step << 1)) | 0] | 0;
+      const r3 = runWidthsQ8[(i + Math.imul(3, step)) | 0] | 0;
+      const r4 = runWidthsQ8[(i + (step << 2)) | 0] | 0;
+      const r5 = runWidthsQ8[(i + Math.imul(5, step)) | 0] | 0;
+
+      const startSum = (r0 + r1 + r2 + r3 + r4 + r5) | 0;
+      if (startSum < MIN_CHAR_SUM_Q8 || startSum > MAX_CHAR_SUM_Q8) continue;
+
+      const quietIdx = (i - step) | 0;
+      if (quietIdx >= 0 && quietIdx < rc) {
+        if (runWidthsQ8[quietIdx] < ((Math.imul(startSum, 74) >> 8) | 0)) continue;
+      }
+
+      const halfSum = startSum >> 1;
+      const n0 = ((Math.imul(r0, 2816) + halfSum) / startSum) | 0;
+      const n1 = ((Math.imul(r1, 2816) + halfSum) / startSum) | 0;
+      const n2 = ((Math.imul(r2, 2816) + halfSum) / startSum) | 0;
+      const n3 = ((Math.imul(r3, 2816) + halfSum) / startSum) | 0;
+      const n4 = ((Math.imul(r4, 2816) + halfSum) / startSum) | 0;
+      const n5 = ((Math.imul(r5, 2816) + halfSum) / startSum) | 0;
+
+      let d = ((n0 + n1) - eQ8[startEP]) | 0;
+      let err = d < 0 ? -d : d;
+      d = ((n1 + n2) - eQ8[startEP + 1]) | 0;
+      err = (err + (d < 0 ? -d : d)) | 0;
+      d = ((n2 + n3) - eQ8[startEP + 2]) | 0;
+      err = (err + (d < 0 ? -d : d)) | 0;
+      d = ((n3 + n4) - eQ8[startEP + 3]) | 0;
+      err = (err + (d < 0 ? -d : d)) | 0;
+      if (err > MAX_START_ERR_Q8) continue;
+
+      let ind = 0;
+      d = (n0 - patQ8[startP]) | 0; ind = (ind + (d < 0 ? -d : d)) | 0;
+      d = (n1 - patQ8[startP + 1]) | 0; ind = (ind + (d < 0 ? -d : d)) | 0;
+      d = (n2 - patQ8[startP + 2]) | 0; ind = (ind + (d < 0 ? -d : d)) | 0;
+      d = (n3 - patQ8[startP + 3]) | 0; ind = (ind + (d < 0 ? -d : d)) | 0;
+      d = (n4 - patQ8[startP + 4]) | 0; ind = (ind + (d < 0 ? -d : d)) | 0;
+      d = (n5 - patQ8[startP + 5]) | 0; ind = (ind + (d < 0 ? -d : d)) | 0;
+
+      const totalStartErr = (err + ((Math.imul(ind, 115) >> 8) | 0)) | 0;
+      if (totalStartErr > MAX_START_ERR_Q8) continue;
+
+      const cursor = (i + Math.imul(6, step)) | 0;
+      let cribSum = 0;
+      for (let k = 0; k < 18; k++) {
+        cribSum = (cribSum + runWidthsQ8[(cursor + Math.imul(k, step)) | 0]) | 0;
+      }
+      const total44 = (startSum + cribSum) | 0;
+      if (total44 < (startSum << 1) || total44 > (startSum << 3) || total44 <= 256) continue;
+
+      const scaleQ22 = ((184549376 + (total44 >> 1)) / total44) | 0;
+      const maxCribRunQ8 = total44 >> 3;
+      let cribErr = 0;
+      for (let k = 0; k < 18; k++) {
+        const rw = runWidthsQ8[(cursor + Math.imul(k, step)) | 0] | 0;
+        if (rw > maxCribRunQ8) { cribErr = 2200; break; }
+        const normQ8 = ((Math.imul(rw, scaleQ22) + 8192) >> 14) | 0;
+        const cd = (normQ8 - TSX_CRIB_RUNS_Q8[k]) | 0;
+        cribErr = (cribErr + (cd < 0 ? -cd : cd)) | 0;
+        if (cribErr >= bestErr) break;
+      }
+      if (cribErr < bestErr) {
+        bestErr = cribErr;
+        bestModQ8 = ((total44 + 22) / 44) | 0;
+      }
+    }
+  }
+
+  if (bestModQ8 > 0) {
+    let strengthQ10 = (1024 - ((Math.imul(bestErr, 1024) / 2200) | 0)) | 0;
+    if (strengthQ10 < 64) strengthQ10 = 64;
+    else if (strengthQ10 > 1024) strengthQ10 = 1024;
+    outScanState.moduleWidthQ8 = bestModQ8;
+    outScanState.modulePeakStrength = strengthQ10;
+    outScanState.moduleSource = 1;
+    return 1;
+  }
+  return 0;
+}

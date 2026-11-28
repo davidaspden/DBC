@@ -171,6 +171,8 @@ export function processFrame(luma, width, height, state, result, measureStages =
   const t0 = measureStages ? performance.now() : 0;
   const activeFlags = state.flags | 0;
   state.scanline.flags = activeFlags;
+  state.scanline.linesEvaluated = 0;
+  state.scanline.linesRejectedEarly = 0;
   state.roi.flags = activeFlags;
 
   const hasRoi = estimateRoi(luma, width, height, state.roi, result);
@@ -314,6 +316,8 @@ export function processFrameMulti(luma, width, height, state, result, measureSta
   state.detCount = 0;
   const activeFlags = state.flags | 0;
   state.scanline.flags = activeFlags;
+  state.scanline.linesEvaluated = 0;
+  state.scanline.linesRejectedEarly = 0;
   state.roi.flags = activeFlags;
 
   // W10 (flagged `verticalMode`): try 11-line vertical plan BEFORE estimateRoi (skips t_roi on decode!)

@@ -32,6 +32,7 @@ import {
   FLAG_SUBPIX_EDGES,
   FLAG_DEBLUR_1D,
   FLAG_DECODE_ANCHOR,
+  FLAG_MODULE_EST,
 } from './flagbits.js';
 import {
   MAX_SCANLINES,
@@ -42,6 +43,7 @@ import {
   deblurScanlineLuma,
   extractRunsFromScanline,
   extractRunsLocalMidCrossing,
+  estimateModuleWidthQ8,
 } from './scanline.js';
 import {
   MAX_CODE128_SYMBOLS,
@@ -504,6 +506,10 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
   const useSubpixFirst = (flags & FLAG_SUBPIX_EDGES) !== 0;
   const useReqPrefix = (flags & FLAG_REQUIRE_PREFIX) !== 0;
   const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
+  const useModuleEst = (flags & FLAG_MODULE_EST) !== 0;
+  if (useModuleEst) {
+    scanState.roiMajorLen = hasRoi === 1 ? (result.roiMajorLen | 0) : 0;
+  }
 
   const lineCount = buildScanlinePlan(width, height, result, hasRoi, scanState, numLines);
   if (lineCount <= 0) return 0;
@@ -529,6 +535,13 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
     const runCount = useSubpixFirst
       ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
       : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
+    if (useModuleEst) {
+      scanState.linesEvaluated = (scanState.linesEvaluated + 1) | 0;
+      if (estimateModuleWidthQ8(lumaBank, lumaOffset, len, scanState, useSubpixFirst ? 0 : 1, 0) === 0) {
+        scanState.linesRejectedEarly = (scanState.linesRejectedEarly + 1) | 0;
+        continue;
+      }
+    }
     let status = 0;
     if (runCount >= 25) {
       status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
@@ -701,6 +714,10 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
   const useDeblur = (flags & FLAG_DEBLUR_1D) !== 0 && scanState.blurPx >= 1.5 && scanState.blurPx <= 8.0;
   const useSubpixFirst = (flags & FLAG_SUBPIX_EDGES) !== 0;
   const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
+  const useModuleEst = (flags & FLAG_MODULE_EST) !== 0;
+  if (useModuleEst) {
+    scanState.roiMajorLen = hasRoi === 1 ? (result.roiMajorLen | 0) : 0;
+  }
 
   // For tall/merged clusters (e.g. 2–4 stacked cartons sharing one column), cast 11–13 lines
   // and sweep across the full cluster so every stacked barcode reaches >= 2 agreement.
@@ -726,6 +743,13 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
     const runCount1 = useSubpixFirst
       ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
       : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
+    if (useModuleEst) {
+      scanState.linesEvaluated = (scanState.linesEvaluated + 1) | 0;
+      if (estimateModuleWidthQ8(lumaBank, lumaOffset, len, scanState, useSubpixFirst ? 0 : 1, isMergedCluster ? 1 : 0) === 0) {
+        scanState.linesRejectedEarly = (scanState.linesRejectedEarly + 1) | 0;
+        continue;
+      }
+    }
     let hits1 = 0;
     if (runCount1 >= 25) {
       hits1 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount1, c128);

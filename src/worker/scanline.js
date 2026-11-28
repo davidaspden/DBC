@@ -44,7 +44,10 @@ import {
   FLAG_DEBLUR_1D,
   FLAG_FLOW_ON,
   FLAG_STOP_GUARD,
+  FLAG_MODULE_EST,
 } from './flagbits.js';
+import { computeCode128Modules } from '../array/config.js';
+import { findTsxCribModuleWidthQ8 } from './decoders/code128.js';
 
 export {
   FLAG_VERT_FALLBACK,
@@ -61,7 +64,12 @@ export {
   FLAG_DEBLUR_1D,
   FLAG_FLOW_ON,
   FLAG_STOP_GUARD,
+  FLAG_MODULE_EST,
 };
+
+const DEFAULT_EXPECTED_MODULES = computeCode128Modules(11);   // 176 (FC 11-char + 2x10 quiet)
+const MIN_CODE128_BAR_MODULES = computeCode128Modules(4, 0);  // 79 (4-char bar span, no quiet)
+export const MODULE_STRENGTH_FLOOR_Q10 = 220;
 
 const DEG_TO_RAD = Math.PI / 180;
 
@@ -112,6 +120,18 @@ export function createScanlineState() {
     runOriginQ8: 0,
     runIsBar: new Uint8Array(MAX_RUNS),     // 1 = dark bar, 0 = light space
     runCount: 0,
+
+    // BL1 (`moduleEst`): pre-allocated autocorrelation buffer, scalar results & early-reject telemetry
+    corrLags: new Int32Array(64),
+    moduleWidthQ8: 0,
+    modulePeakStrength: 0,
+    moduleSource: 0,                        // 0 = none, 1 = crib, 2 = autocorr
+    expectedModules: 0,                     // 0 = default computeCode128Modules(11)
+    roiMajorLen: 0,                         // Stage 1 RoI major length in px (0 when no RoI)
+    derivedMinModQ8: 0,
+    derivedMaxModQ8: 0,
+    linesEvaluated: 0,
+    linesRejectedEarly: 0,
   };
 }
 
@@ -761,4 +781,309 @@ export function extractRunsLocalMidCrossing(lumaBuf, offset, len, state, minCont
 
   state.runCount = rc;
   return rc;
+}
+
+/**
+ * BL1 (`moduleEst`): Computes dynamic valid module-width bounds `[derivedMinModQ8, derivedMaxModQ8]`
+ * on `state` from `expectedModules` (default `computeCode128Modules(11) = 176`) and `roiMajorLen`
+ * (or scanline length `scanLen` when `roiMajorLen === 0`), using a ~±50% derived band so valid
+ * close-range (>= 8 px/mod) and far-range (~1.3-1.5 px/mod) barcodes are never rejected.
+ * Pure 32-bit integer arithmetic, zero heap allocations.
+ */
+export function updateDerivedModuleRangeQ8(scanLen, state, isMergedCluster = 0) {
+  const sLen = scanLen | 0;
+  const userExp = state.expectedModules | 0;
+  const expMods = userExp > 0 ? userExp : DEFAULT_EXPECTED_MODULES;
+  const roiLen = state.roiMajorLen > 0 ? (state.roiMajorLen | 0) : 0;
+
+  let minQ8 = 230; // ~0.90 px/mod Nyquist floor
+  let maxQ8 = 1024;
+
+  if (roiLen > 0) {
+    const nomQ8 = ((roiLen << 8) / expMods) | 0;
+    // On merged multi-carton clusters (2-4 stacked labels), allow lower bound down to 1.0 px/mod
+    minQ8 = isMergedCluster !== 0 ? 256 : (nomQ8 >> 1);
+    if (minQ8 < 230) minQ8 = 230;
+
+    if (userExp > 0) {
+      maxQ8 = (nomQ8 + (nomQ8 >> 1)) | 0; // +50% around parameterized expectedModules
+    } else {
+      const shortNomQ8 = ((roiLen << 8) / MIN_CODE128_BAR_MODULES) | 0;
+      maxQ8 = (shortNomQ8 + (shortNomQ8 >> 1)) | 0;
+    }
+    if (maxQ8 < ((minQ8 + 256) | 0)) maxQ8 = (minQ8 + 256) | 0;
+  } else {
+    // Fallback fan (no RoI): derive bounds from scanline length ratios
+    minQ8 = ((sLen << 8) / Math.imul(expMods, 8)) | 0;
+    if (minQ8 < 230) minQ8 = 230;
+    const maxBaseMods = userExp > 0 ? expMods : MIN_CODE128_BAR_MODULES;
+    const nomMaxQ8 = ((sLen << 8) / maxBaseMods) | 0;
+    maxQ8 = (nomMaxQ8 + (nomMaxQ8 >> 1)) | 0;
+    if (maxQ8 < 1024) maxQ8 = 1024;
+  }
+
+  state.derivedMinModQ8 = minQ8;
+  state.derivedMaxModQ8 = maxQ8;
+}
+
+/**
+ * BL1 (`moduleEst`): Crib-first, bounded-autocorrelation-fallback module-width estimator +
+ * derived-range early-reject gate.
+ *
+ * 1. Primary (`moduleSource = 1`): matches 44-module Start B + `t,s,X` crib on `state.runWidthsQ8`
+ *    -> `moduleWidthQ8 = cribSpanQ8 / 44` and Q10 strength from crib score.
+ * 2. Fallback (`moduleSource = 2`, only when crib misses): bounded integer autocorrelation of
+ *    `state.absDeriv` into `state.corrLags[0..maxLag]` (`maxLag <= 63`), parabolic peak lag,
+ *    and `/1, /2, /3, /4` divisor selection minimizing L1 distance of non-quiet run widths to
+ *    integer multiples `1..4`. Strength = `(peak * 1024) / max(1, lag0)` (Q10).
+ * 3. Early-reject gate: returns 0 (skip decode) if strength < `MODULE_STRENGTH_FLOOR_Q10` OR
+ *    `moduleWidthQ8` falls outside `[derivedMinModQ8, derivedMaxModQ8]`.
+ *
+ * Strictly zero heap allocations and pure 32-bit integer arithmetic.
+ *
+ * @returns {number} 1 = pass (proceed to decode), 0 = early reject (skip decode)
+ */
+export function estimateModuleWidthQ8(lumaBuf, offset, len, state, hasAbsDeriv = 1, isMergedCluster = 0) {
+  const n = len | 0;
+  state.moduleWidthQ8 = 0;
+  state.modulePeakStrength = 0;
+  state.moduleSource = 0;
+
+  updateDerivedModuleRangeQ8(n, state, isMergedCluster);
+  if (n < 32) return 0;
+
+  const minModQ8 = state.derivedMinModQ8 | 0;
+  const maxModQ8 = state.derivedMaxModQ8 | 0;
+
+  // 1. Primary: crib-first estimator (Start B + t, s, X -> 44 modules)
+  if ((state.runCount | 0) >= 25) {
+    if (findTsxCribModuleWidthQ8(state.runWidthsQ8, state.runIsBar, state.runCount, state) === 1) {
+      const mQ8 = state.moduleWidthQ8 | 0;
+      const str = state.modulePeakStrength | 0;
+      return (str >= MODULE_STRENGTH_FLOOR_Q10 && mQ8 >= minModQ8 && mQ8 <= maxModQ8) ? 1 : 0;
+    }
+  }
+
+  // 2. Fallback: bounded integer autocorrelation of absDeriv into state.corrLags
+  const absDeriv = state.absDeriv;
+  if (hasAbsDeriv === 0) {
+    const base = offset | 0;
+    const last = (n - 1) | 0;
+    absDeriv[0] = 0;
+    absDeriv[last] = 0;
+    for (let i = 1; i < last; i++) {
+      const idx = (base + i) | 0;
+      const d = (lumaBuf[idx + 1] - lumaBuf[idx - 1]) | 0;
+      absDeriv[i] = d < 0 ? -d : d;
+    }
+  }
+
+  // Restrict autocorrelation to active edge span (absDeriv >= 12) for speed & SNR
+  let firstActive = n;
+  let lastActive = -1;
+  let activeCount = 0;
+  const lastSample = (n - 1) | 0;
+  for (let i = 1; i < lastSample; i++) {
+    if (absDeriv[i] >= 12) {
+      if (i < firstActive) firstActive = i;
+      lastActive = i;
+      activeCount = (activeCount + 1) | 0;
+    }
+  }
+
+  state.moduleSource = 2;
+  const activeSpan = (lastActive - firstActive + 1) | 0;
+  if (activeCount < 36 || activeSpan < 40) {
+    return 0;
+  }
+
+  let maxLag = activeSpan >> 2;
+  if (maxLag > 63) maxLag = 63;
+  if (maxLag < 8) return 0;
+
+  const corrLags = state.corrLags;
+  let lag0 = 0;
+  for (let i = firstActive; i <= lastActive; i++) {
+    const v = absDeriv[i];
+    lag0 = (lag0 + Math.imul(v, v)) | 0;
+  }
+  corrLags[0] = lag0;
+  if (lag0 <= 0) return 0;
+
+  for (let lag = 1; lag <= maxLag; lag++) {
+    let acc = 0;
+    const end = (lastActive - lag) | 0;
+    for (let i = firstActive; i <= end; i++) {
+      acc = (acc + Math.imul(absDeriv[i], absDeriv[(i + lag) | 0])) | 0;
+    }
+    corrLags[lag] = acc;
+  }
+
+  // Locate both the first significant local peak (always 1*M..3*M, never a 5*M/11*M harmonic)
+  // and the global strongest local peak after descending off the zero-lag main lobe.
+  let seenRise = 0;
+  let bestLag = 0;
+  let bestPeak = 0;
+  let firstLag = 0;
+  let firstPeak = 0;
+  for (let lag = 2; lag < maxLag; lag++) {
+    const cur = corrLags[lag] | 0;
+    const prev = corrLags[lag - 1] | 0;
+    if (cur > prev) seenRise = 1;
+    if (seenRise === 1) {
+      const next = corrLags[lag + 1] | 0;
+      if (cur >= prev && cur >= next && (cur > prev || cur > next)) {
+        if (firstLag === 0 && cur > (lag0 >> 4)) {
+          firstLag = lag;
+          firstPeak = cur;
+        }
+        if (cur > bestPeak) {
+          bestPeak = cur;
+          bestLag = lag;
+        }
+      }
+    }
+  }
+
+  if (bestLag === 0 || bestPeak <= 0) return 0;
+
+  // Parabolic sub-pixel peak lag refinement in Q8 for both bestLag and firstLag
+  let bestPeakLagQ8 = bestLag << 8;
+  {
+    const ym = corrLags[bestLag - 1] | 0;
+    const y0 = corrLags[bestLag] | 0;
+    const yp = corrLags[bestLag + 1] | 0;
+    let diff = (ym - yp) | 0;
+    let den = (ym - (y0 << 1) + yp) | 0;
+    if (den !== 0) {
+      while (diff > 8388607 || diff < -8388607) {
+        diff >>= 1;
+        den >>= 1;
+      }
+      if (den !== 0) {
+        let deltaQ8 = ((diff << 7) / den) | 0;
+        if (deltaQ8 < -128) deltaQ8 = -128;
+        else if (deltaQ8 > 128) deltaQ8 = 128;
+        bestPeakLagQ8 = ((bestLag << 8) + deltaQ8) | 0;
+      }
+    }
+  }
+
+  let firstPeakLagQ8 = bestPeakLagQ8;
+  if (firstLag > 0 && firstLag !== bestLag) {
+    firstPeakLagQ8 = firstLag << 8;
+    const ym = corrLags[firstLag - 1] | 0;
+    const y0 = corrLags[firstLag] | 0;
+    const yp = corrLags[firstLag + 1] | 0;
+    let diff = (ym - yp) | 0;
+    let den = (ym - (y0 << 1) + yp) | 0;
+    if (den !== 0) {
+      while (diff > 8388607 || diff < -8388607) {
+        diff >>= 1;
+        den >>= 1;
+      }
+      if (den !== 0) {
+        let deltaQ8 = ((diff << 7) / den) | 0;
+        if (deltaQ8 < -128) deltaQ8 = -128;
+        else if (deltaQ8 > 128) deltaQ8 = 128;
+        firstPeakLagQ8 = ((firstLag << 8) + deltaQ8) | 0;
+      }
+    }
+  }
+
+  // Overflow-safe Q10 peak strength: (bestPeak * 1024) / max(1, lag0)
+  let p = bestPeak;
+  let l0 = lag0;
+  while (l0 > 2000000) {
+    p >>= 1;
+    l0 >>= 1;
+  }
+  const strengthQ10 = l0 > 0 ? ((Math.imul(p, 1024) / l0) | 0) : 0;
+
+  // Test candidate divisors /1, /2, /3, /4 on firstPeakLagQ8 and bestPeakLagQ8 against
+  // extracted non-quiet run widths (integer multiples 1..4), then refine by run sum ratio.
+  const rc = state.runCount | 0;
+  let chosenModQ8 = firstPeakLagQ8;
+  let fitOk = 1;
+  if (rc >= 12) {
+    const runWidthsQ8 = state.runWidthsQ8;
+    const runIsBar = state.runIsBar;
+    const rEnd = (rc - 1) | 0;
+    let bestFitErrQ8 = 0x3fffffff;
+    let bestWidthSum = 0;
+    let bestUsed = 0;
+    let bestHasVariety = 0;
+    const numPeaks = (firstLag > 0 && firstLag !== bestLag) ? 2 : 1;
+
+    for (let pk = 0; pk < numPeaks; pk++) {
+      const pkLagQ8 = pk === 0 ? firstPeakLagQ8 : bestPeakLagQ8;
+      for (let div = 1; div <= 4; div++) {
+        const candQ8 = ((pkLagQ8 + (div >> 1)) / div) | 0;
+        if (candQ8 < 205 || candQ8 > 10240) continue;
+        const halfC = candQ8 >> 1;
+        let errSum = 0;
+        let widthSum = 0;
+        let used = 0;
+        let cnt1 = 0;
+        let cnt2 = 0;
+        let cnt34 = 0;
+
+        for (let r = 1; r < rEnd; r++) {
+          const wQ8 = runWidthsQ8[r] | 0;
+          const ratioQ8 = (((wQ8 << 8) + halfC) / candQ8) | 0;
+          if (runIsBar[r] === 0 && ratioQ8 >= 1792) continue; // ignore quiet zones (>= 7 mod)
+          let q = (ratioQ8 + 128) >> 8;
+          if (q < 1) q = 1;
+          else if (q > 4) q = 4;
+          if (q === 1) cnt1 = (cnt1 + 1) | 0;
+          else if (q === 2) cnt2 = (cnt2 + 1) | 0;
+          else cnt34 = (cnt34 + 1) | 0;
+          let d = (ratioQ8 - (q << 8)) | 0;
+          if (d < 0) d = -d;
+          errSum = (errSum + d) | 0;
+          widthSum = (widthSum + wQ8) | 0;
+          used = (used + 1) | 0;
+        }
+
+        if (used >= 8) {
+          const avgErr = (errSum / used) | 0;
+          // Code 128 invariant: 6 runs per 11 modules -> mean run width = 11/6 = 1.8333 mod (469 Q8).
+          // Edge-shift / ink-bleed invariant, disambiguates 1.5x vs 2.0x harmonic aliases.
+          const meanRunQ8 = (widthSum / used) | 0;
+          const meanRatioQ8 = (((meanRunQ8 << 8) + halfC) / candQ8) | 0;
+          let meanErr = (meanRatioQ8 - 469) | 0;
+          if (meanErr < 0) meanErr = -meanErr;
+          const totalScore = (avgErr + meanErr) | 0;
+          if ((totalScore + 6) < bestFitErrQ8) {
+            bestFitErrQ8 = totalScore;
+            chosenModQ8 = candQ8;
+            bestWidthSum = widthSum;
+            bestUsed = used;
+            // Every Code 128 symbol sequence (Start + data + Check + Stop) has 1-mod, 2-mod,
+            // and 3/4-mod runs; uniform rib/fabric square waves lack multi-width variety.
+            bestHasVariety = (used < 16 || (cnt1 >= 2 && cnt2 >= 1 && cnt34 >= 1)) ? 1 : 0;
+          }
+        }
+      }
+    }
+
+    if (bestFitErrQ8 > 200 || bestHasVariety === 0) {
+      fitOk = 0;
+    }
+
+    // Edge-shift-invariant sub-pixel refinement using Code 128's 6 runs = 11 modules ratio
+    // (only when candidate already fits cleanly and refined width stays within +/-25% of peak)
+    if (bestFitErrQ8 < 180 && bestUsed >= 18 && chosenModQ8 >= 205) {
+      const den = Math.imul(bestUsed, 11);
+      const refQ8 = ((Math.imul(bestWidthSum, 6) + (den >> 1)) / den) | 0;
+      if (refQ8 >= ((Math.imul(chosenModQ8, 192) >> 8) | 0) && refQ8 <= ((Math.imul(chosenModQ8, 320) >> 8) | 0)) {
+        chosenModQ8 = refQ8;
+      }
+    }
+  }
+
+  state.moduleWidthQ8 = chosenModQ8;
+  state.modulePeakStrength = strengthQ10;
+
+  return (fitOk === 1 && strengthQ10 >= MODULE_STRENGTH_FLOOR_Q10 && chosenModQ8 >= minModQ8 && chosenModQ8 <= maxModQ8) ? 1 : 0;
 }
