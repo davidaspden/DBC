@@ -190,6 +190,14 @@ export function createScenarioFromPreset(presetId, opts = {}) {
     flagSets: Array.isArray(opts.flagSets) ? [...opts.flagSets] : [flags.id],
     array: Boolean(opts.array),
     quick: Boolean(opts.quick),
+    quickFullLength: Boolean(opts.quickFullLength),
+    quickFlagSets: Array.isArray(opts.quickFlagSets) ? [...opts.quickFlagSets] : null,
+    quickSeeds: Array.isArray(opts.quickSeeds) ? [...opts.quickSeeds] : null,
+    quickMode: Boolean(opts.quickMode),
+    truncated: Boolean(opts.truncated),
+    truncatedAtSec: opts.truncatedAtSec ?? null,
+    coverageGated: opts.coverageGated !== false,
+    fpGated: Boolean(opts.fpGated),
     ppm: Number(optics.ppm.toFixed(3)),
     expectedPayloads: opts.expectedPayloads
       ? [...opts.expectedPayloads]
@@ -199,9 +207,10 @@ export function createScenarioFromPreset(presetId, opts = {}) {
 
 /**
  * Builds the canonical Wave 1 scenario registry:
- *  - S01: the 4 original presets (`ideal`, `off`) — quick-eligible
+ *  - S01: the 4 original presets (`ideal`, `off`) — quick-eligible (truncated at 10 s in --quick)
  *  - S02: the 4 original presets (`ideal`, `W-all`)
- *  - FC presets + `snake-h-fast-step` (`ideal`, `off` / `W-fc` / `W-all`)
+ *  - FC presets + `snake-h-fast-step` (`ideal`, `off` / `W-fc` / `W-all`;
+ *    `fc-tele-30-3p5` also runs full-length `off,W-fc` in `--quick` as the F1/F6 stopGuard FP gate)
  */
 export function buildWave1Scenarios() {
   const list = [];
@@ -214,6 +223,9 @@ export function buildWave1Scenarios() {
       flagSet: 'off',
       flagSets: ['off'],
       quick: true,
+      quickFullLength: false,
+      quickFlagSets: ['off'],
+      quickSeeds: [...QUICK_SEEDS],
     }));
   }
 
@@ -229,13 +241,17 @@ export function buildWave1Scenarios() {
   }
 
   for (const presetId of FC_PRESET_IDS) {
+    const isQuickFpGate = presetId === 'fc-tele-30-3p5';
     list.push(createScenarioFromPreset(presetId, {
       id: `fc-${presetId.replace(/^fc-/, '')}`,
       group: 'fc',
       profile: 'ideal',
       flagSet: 'off',
       flagSets: ['off', 'W-fc', 'W-all'],
-      quick: false,
+      quick: isQuickFpGate,
+      quickFullLength: isQuickFpGate,
+      quickFlagSets: isQuickFpGate ? ['off', 'W-fc'] : null,
+      quickSeeds: isQuickFpGate ? [1, 2] : null,
     }));
   }
 
@@ -271,7 +287,7 @@ export function selectScenarios(opts = {}) {
   for (const sc of scenarios) {
     const flagSetIds = opts.flags
       ? String(opts.flags).split(',').map((s) => s.trim()).filter(Boolean)
-      : (opts.quick ? [sc.flagSets[0]] : sc.flagSets);
+      : (opts.quick ? (sc.quickFlagSets || [sc.flagSets[0]]) : sc.flagSets);
 
     for (const fsId of flagSetIds) {
       let seeds = sc.seeds;
@@ -279,17 +295,20 @@ export function selectScenarios(opts = {}) {
         const n = opts.seeds | 0;
         seeds = Array.from({ length: n }, (_, i) => i + 1);
       } else if (opts.quick) {
-        seeds = [...QUICK_SEEDS];
+        seeds = sc.quickSeeds ? [...sc.quickSeeds] : [...QUICK_SEEDS];
       }
 
       const loops = Number.isFinite(opts.loops) && opts.loops > 0 ? (opts.loops | 0) : sc.loops;
+      const fullDurationSec = Number((sc.loopDurationSec * loops).toFixed(4));
       let durationSec = Number.isFinite(opts.durationSec)
         ? opts.durationSec
-        : Number((sc.loopDurationSec * loops).toFixed(4));
-      if (opts.quick && !Number.isFinite(opts.durationSec)) {
+        : fullDurationSec;
+      if (opts.quick && !Number.isFinite(opts.durationSec) && !sc.quickFullLength) {
         durationSec = Math.min(durationSec, QUICK_MAX_DURATION_SEC);
       }
 
+      const truncated = Boolean(opts.quick && durationSec + 1e-6 < fullDurationSec);
+      const truncatedAtSec = truncated ? durationSec : null;
       const flagObj = resolveFlagSet(fsId);
       const runId = flagSetIds.length > 1 || (opts.flags && fsId !== sc.flags.id)
         ? `${sc.id}[${flagObj.id}]`
@@ -300,8 +319,14 @@ export function selectScenarios(opts = {}) {
         runId,
         loops,
         durationSec,
+        fullDurationSec,
         seeds,
         flags: flagObj,
+        quickMode: Boolean(opts.quick),
+        truncated,
+        truncatedAtSec,
+        coverageGated: !opts.quick,
+        fpGated: Boolean(opts.quick && flagObj.id !== 'off'),
       });
     }
   }

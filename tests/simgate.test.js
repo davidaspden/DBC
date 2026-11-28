@@ -15,6 +15,7 @@ import {
 import {
   runScenarioSeed,
   runScenarios,
+  evaluateQuickGate,
   stripVolatileMetrics,
 } from '../tools/gate/score.mjs';
 import { buildReport, formatTable } from '../tools/gate/report.mjs';
@@ -70,11 +71,23 @@ await test('Wave 1 scenarios cover ideal profile, 4 original presets, FC presets
   }
 
   const quick = selectScenarios({ quick: true });
-  assert.equal(quick.length, 4, 'quick mode should select the 4 S01 original presets');
+  assert.equal(quick.length, 6, 'quick mode should select 4 S01 presets + fc-tele-30-3p5 off & W-fc');
+  const truncatedRuns = quick.filter((q) => q.truncated);
+  assert.equal(truncatedRuns.length, 3, 'the 3 sweeping S01 presets are truncated at 10s');
   for (const q of quick) {
-    assert.equal(q.seeds.length, 1);
-    assert.ok(q.durationSec <= 10);
-    assert.equal(q.flags.id, 'off');
+    assert.equal(q.quickMode, true);
+    assert.equal(q.coverageGated, false, 'quick mode must never gate coverage');
+    if (q.presetId === 'fc-tele-30-3p5') {
+      assert.equal(q.truncated, false, 'fc-tele-30-3p5 must run full length in quick mode');
+      assert.ok(q.durationSec > 10, `expected full-length duration > 10s, got ${q.durationSec}`);
+      assert.equal(q.seeds.length, 2);
+      assert.equal(q.fpGated, q.flags.id === 'W-fc');
+    } else {
+      assert.equal(q.seeds.length, 1);
+      assert.ok(q.durationSec <= 10);
+      assert.equal(q.flags.id, 'off');
+      assert.equal(q.fpGated, false);
+    }
   }
 
   const parsed = parseCliArgs(['--only', 'S01', '--seeds', '3', '--quick', '--flags=W-fc']);
@@ -147,6 +160,69 @@ await test('report table formats cleanly with raw and A53-scaled metrics', async
   assert.ok(tbl.includes('tbl-check'));
   assert.ok(tbl.includes('W-fc'));
   assert.ok(tbl.includes('ideal'));
+});
+
+await test('F6 quick mode labels 10s truncation, disables coverage gate, and fails if stopGuard is removed from fc-tele-30-3p5 W-fc', async () => {
+  const quickSelected = selectScenarios({ quick: true });
+  const wfcQuick = quickSelected.find((s) => s.presetId === 'fc-tele-30-3p5' && s.flags.id === 'W-fc');
+  assert.ok(wfcQuick, 'expected fc-tele-30-3p5[W-fc] in quick mode');
+
+  const truncZeroCov = {
+    id: 'S01-a53-8-720',
+    coverageMedian: 0,
+    totalCells: 16,
+    falsePositivesTotal: 0,
+    coverageGated: false,
+    fpGated: false,
+    truncated: true,
+    quickMode: true,
+    durationSec: 10,
+    profile: 'ideal',
+    flagSet: 'off',
+    seedCount: 1,
+    timeToAllMedianSec: null,
+    workerMs: { node: { p50: 1, p95: 2 }, a53Scaled: { p50: 8, p95: 16 } },
+    fpsDelivered: 13,
+    deterministicHash: '0123456789abcdef',
+    seeds: [],
+  };
+  const zeroCovGate = evaluateQuickGate([truncZeroCov]);
+  assert.equal(zeroCovGate.ok, true, 'quick mode must not fail on truncated 0/16 coverage');
+  assert.ok(zeroCovGate.coverageGate.includes('disabled'));
+
+  const tbl = formatTable([truncZeroCov], { quickMode: true });
+  assert.ok(tbl.includes('truncated at 10s'));
+  assert.ok(tbl.includes('10.0s*'));
+
+  const rep = buildReport([truncZeroCov], { commit: 'test', machine: 'box', quickMode: true, truncatedAtSec: 10, gate: zeroCovGate });
+  assert.equal(rep.quickMode, true);
+  assert.equal(rep.truncatedAtSec, 10);
+  assert.ok(rep.coverageGate.includes('disabled'));
+
+  // Real check: fc-tele-30-3p5 full length with W-fc passes quick FP gate (0 FP),
+  // whereas W-fc without stopGuard fails quick FP gate (FP > 0 on oblique tail).
+  const wfcNoStopGuard = W_FC_FLAGS.filter((f) => f !== 'stopGuard');
+  const [withStopGuard, withoutStopGuard] = await runScenarios([
+    wfcQuick,
+    createScenarioFromPreset('fc-tele-30-3p5', {
+      id: 'fc-tele-30-3p5-no-stopguard',
+      flagSet: { id: 'W-fc-no-stopGuard', worker: wfcNoStopGuard, page: [] },
+      seeds: [1, 2],
+      loops: 1,
+      quickMode: true,
+      truncated: false,
+      truncatedAtSec: null,
+      coverageGated: false,
+      fpGated: true,
+    }),
+  ], { parallel: true });
+
+  const passGate = evaluateQuickGate([withStopGuard]);
+  assert.equal(passGate.ok, true, `expected 0 FP with stopGuard, got: ${passGate.failures.join('; ')}`);
+
+  const failGate = evaluateQuickGate([withoutStopGuard]);
+  assert.equal(failGate.ok, false, 'expected F6 quick gate to fail when stopGuard is removed from W-fc');
+  assert.ok(withoutStopGuard.falsePositivesTotal > 0, `expected FP > 0 without stopGuard, got ${withoutStopGuard.falsePositivesTotal}`);
 });
 
 console.log(`All ${passed} G2 simgate tests passed.`);

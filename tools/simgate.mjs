@@ -15,8 +15,8 @@
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildWave1Scenarios, selectScenarios } from './gate/scenarios.mjs';
-import { runScenarios } from './gate/score.mjs';
+import { buildWave1Scenarios, selectScenarios, QUICK_MAX_DURATION_SEC } from './gate/scenarios.mjs';
+import { runScenarios, evaluateQuickGate } from './gate/score.mjs';
 import {
   PHONE_MS_A53,
   DEFAULT_ITERATIONS,
@@ -132,9 +132,12 @@ async function main() {
   console.log(
     `SimGate: machine=${mInfo.hostname} | cpu=${mInfo.cpuModel} (${mInfo.cpuCount} cores, ${mInfo.platform}/${mInfo.arch}, Node ${mInfo.nodeVersion})`
   );
+  const modeLabel = opts.quick
+    ? `quick mode — truncated at ${QUICK_MAX_DURATION_SEC}s; coverage not gated; fc-tele-30-3p5 off,W-fc full-length`
+    : 'standard mode';
   console.log(
     `SimGate: running ${scenarios.length} scenario(s) ` +
-    `(${opts.quick ? 'quick mode' : 'standard mode'}, profile=ideal, fidelity=uncalibrated, ` +
+    `(${modeLabel}, profile=ideal, fidelity=uncalibrated, ` +
     `${dfDetail})...`
   );
 
@@ -143,6 +146,7 @@ async function main() {
     jobs: opts.jobs,
   });
 
+  const gate = opts.quick ? evaluateQuickGate(results) : null;
   const commit = getShortCommit(ROOT);
   const machine = getMachineSlug();
   const report = buildReport(results, {
@@ -150,6 +154,9 @@ async function main() {
     machine,
     deviceFactorA53: deviceFactor,
     deviceFactorMeta,
+    quickMode: opts.quick,
+    truncatedAtSec: opts.quick ? QUICK_MAX_DURATION_SEC : null,
+    gate,
     includeTimings: !opts.deterministicJson,
   });
 
@@ -158,9 +165,17 @@ async function main() {
 
   const elapsedSec = ((performance.now() - t0) / 1000).toFixed(2);
   console.log('');
-  console.log(formatTable(results));
+  console.log(formatTable(results, { quickMode: opts.quick }));
   console.log('');
   console.log(`Wrote ${outPath} in ${elapsedSec} s (profile=ideal, fidelity=uncalibrated).`);
+  if (gate) {
+    if (gate.ok) {
+      console.log(`Quick Gate: PASS (0 FP on gated full-length fc-tele-30-3p5[W-fc]; coverage ${gate.coverageGate}).`);
+    } else {
+      console.error(`Quick Gate: FAIL (${gate.failures.join('; ')})`);
+      process.exit(1);
+    }
+  }
 }
 
 if (typeof process !== 'undefined' && process.argv[1] && process.argv[1].endsWith('simgate.mjs')) {

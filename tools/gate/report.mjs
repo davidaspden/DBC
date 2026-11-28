@@ -44,6 +44,10 @@ export function buildReport(scenarioResults, meta = {}) {
     fidelityStatus: 'uncalibrated',
     deviceFactorA53,
     ...(meta.deviceFactorMeta ? { deviceFactorMeta: meta.deviceFactorMeta } : {}),
+    quickMode: Boolean(meta.quickMode),
+    truncatedAtSec: meta.quickMode ? (meta.truncatedAtSec ?? 10) : null,
+    coverageGate: meta.quickMode ? 'disabled (truncated at 10s)' : 'standard',
+    ...(meta.gate ? { gate: meta.gate } : {}),
     scenarios: scenarioResults,
   };
   if (meta.includeTimings === false) {
@@ -55,11 +59,13 @@ export function buildReport(scenarioResults, meta = {}) {
 /**
  * Formats a concise one-screen ASCII summary table for terminal display.
  */
-export function formatTable(scenarioResults) {
+export function formatTable(scenarioResults, opts = {}) {
+  const isQuick = Boolean(opts.quickMode || scenarioResults.some((sc) => sc.quickMode));
   const headers = [
     ['Scenario', 26, false],
     ['Profile', 8, false],
     ['Flags', 7, false],
+    ['Dur', 7, true],
     ['Seeds', 5, true],
     ['Cov', 9, true],
     ['T-all(s)', 9, true],
@@ -71,11 +77,18 @@ export function formatTable(scenarioResults) {
   ];
 
   const lines = [];
+  if (isQuick) {
+    lines.push('QUICK MODE (truncated at 10s; coverage informational/not gated; fc-tele-30-3p5 full-length FP-gated)');
+  }
   lines.push(headers.map(([h, w, r]) => pad(h, w, r)).join('  '));
   lines.push(headers.map(([, w]) => '-'.repeat(w)).join('  '));
 
   for (const sc of scenarioResults) {
-    const covStr = `${sc.coverageMedian}/${sc.totalCells}`;
+    const covStr = sc.coverageGated === false
+      ? `${sc.coverageMedian}/${sc.totalCells}*`
+      : `${sc.coverageMedian}/${sc.totalCells}`;
+    const durVal = Number.isFinite(sc.durationSec) ? `${sc.durationSec.toFixed(1)}s` : '--';
+    const durStr = sc.truncated ? `${durVal}*` : durVal;
     const tAllStr = sc.timeToAllMedianSec !== null ? sc.timeToAllMedianSec.toFixed(2) : '--';
     const nodeMs = `${sc.workerMs.node.p50.toFixed(1)}/${sc.workerMs.node.p95.toFixed(1)}`;
     const a53Ms = `${sc.workerMs.a53Scaled.p50.toFixed(1)}/${sc.workerMs.a53Scaled.p95.toFixed(1)}`;
@@ -83,6 +96,7 @@ export function formatTable(scenarioResults) {
       pad(sc.id, 26, false),
       pad(sc.profile, 8, false),
       pad(sc.flagSet, 7, false),
+      pad(durStr, 7, true),
       pad(sc.seedCount, 5, true),
       pad(covStr, 9, true),
       pad(tAllStr, 9, true),
@@ -93,6 +107,10 @@ export function formatTable(scenarioResults) {
       pad(sc.deterministicHash.slice(0, 10), 10, false),
     ];
     lines.push(row.join('  '));
+  }
+
+  if (isQuick) {
+    lines.push('(* truncated/informational in quick mode; coverage does not pass or fail --quick)');
   }
 
   return lines.join('\n');

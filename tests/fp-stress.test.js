@@ -17,6 +17,7 @@
  *   FP_STRESS_FRAMES=5000 node tests/fp-stress.test.js
  */
 import assert from 'node:assert/strict';
+import { mulberry32 } from '../src/sim/prng.js';
 import {
   CODE128_PATTERNS,
   CODE128_STOP_PATTERN,
@@ -55,17 +56,6 @@ function parseFrameCount() {
   const envN = Number(process.env.FP_STRESS_FRAMES);
   if (Number.isFinite(envN) && envN >= 60) return envN | 0;
   return 50000;
-}
-
-/** Deterministic mulberry32 PRNG (no Math.random). */
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function next() {
-    a = (a + 0x6D2B79F5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 const BASE36 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';

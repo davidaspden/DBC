@@ -20,21 +20,9 @@ import {
 } from '../../src/worker/scanner.worker.js';
 import { FLAG_VERTICAL_MODE } from '../../src/worker/flagbits.js';
 import { getDeviceFactorA53 } from './device-factor.mjs';
+import { median, percentileSorted as percentile } from '../../src/util/stats.js';
 
-export { getDeviceFactorA53 };
-
-export function percentile(sorted, p) {
-  if (!sorted.length) return 0;
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)));
-  return sorted[idx];
-}
-
-export function median(values) {
-  if (!values.length) return 0;
-  const s = [...values].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return (s.length & 1) ? s[m] : (s[m - 1] + s[m]) * 0.5;
-}
+export { getDeviceFactorA53, median, percentile };
 
 function round3(x) {
   return Math.round(x * 1000) / 1000;
@@ -265,6 +253,12 @@ export function aggregateScenarioResults(scenario, seedResults, deviceFactor = g
     fpsCap: scenario.fpsCap,
     loops: scenario.loops,
     durationSec: scenario.durationSec,
+    fullDurationSec: scenario.fullDurationSec ?? scenario.durationSec,
+    quickMode: Boolean(scenario.quickMode),
+    truncated: Boolean(scenario.truncated),
+    truncatedAtSec: scenario.truncatedAtSec ?? null,
+    coverageGated: scenario.coverageGated !== false,
+    fpGated: Boolean(scenario.fpGated),
     ppm: scenario.ppm,
     seedCount: ordered.length,
     totalCells,
@@ -311,6 +305,12 @@ export function stripVolatileMetrics(reportOrScenario) {
     fpsCap: sc.fpsCap,
     loops: sc.loops,
     durationSec: sc.durationSec,
+    fullDurationSec: sc.fullDurationSec ?? sc.durationSec,
+    quickMode: Boolean(sc.quickMode),
+    truncated: Boolean(sc.truncated),
+    truncatedAtSec: sc.truncatedAtSec ?? null,
+    coverageGated: sc.coverageGated !== false,
+    fpGated: Boolean(sc.fpGated),
     ppm: sc.ppm,
     seedCount: sc.seedCount,
     totalCells: sc.totalCells,
@@ -348,6 +348,39 @@ export function stripVolatileMetrics(reportOrScenario) {
     };
   }
   return cleanScenario(reportOrScenario);
+}
+
+/**
+ * F6: Evaluates quick-mode SimGate results.
+ * Coverage is NEVER gated in quick mode because 10 s sweeps are truncated.
+ * Flagged quick scenarios (notably full-length `fc-tele-30-3p5[W-fc]`) MUST have 0 FP.
+ */
+export function evaluateQuickGate(scenarioResults) {
+  const failures = [];
+  for (const sc of scenarioResults) {
+    if (!sc || !sc.fpGated) continue;
+    if ((sc.falsePositivesTotal | 0) > 0) {
+      const payloads = [];
+      if (Array.isArray(sc.seeds)) {
+        for (const s of sc.seeds) {
+          if (Array.isArray(s.falsePositivePayloads)) {
+            for (const p of s.falsePositivePayloads) {
+              payloads.push(p.payload || String(p));
+              if (payloads.length >= 4) break;
+            }
+          }
+          if (payloads.length >= 4) break;
+        }
+      }
+      const sampleStr = payloads.length ? ` [${payloads.join(', ')}]` : '';
+      failures.push(`${sc.id}: ${sc.falsePositivesTotal} FP on FP-gated quick run${sampleStr}`);
+    }
+  }
+  return {
+    ok: failures.length === 0,
+    coverageGate: 'disabled (truncated at 10s)',
+    failures,
+  };
 }
 
 /**
