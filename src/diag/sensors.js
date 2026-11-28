@@ -13,14 +13,58 @@ function round3(v) {
 }
 
 /**
+ * PP4: Classifies the actual motion permission path accurately without mislabelling
+ * Android Chrome as `devicemotion-ios`.
+ * Returns `'generic-sensor' | 'devicemotion-ios' | 'devicemotion-android' | 'devicemotion' | 'none'`.
+ */
+export function classifyMotionPermissionPath({
+  hasGenericGyro = false,
+  hasDeviceMotion = false,
+  hasDeviceOrientation = false,
+  hasRequestPermission = false,
+  userAgent = '',
+  platform = '',
+} = {}) {
+  const ua = `${userAgent || ''} ${platform || ''}`;
+  const isIos = /iPhone|iPad|iPod/i.test(ua) || (/Mac/i.test(ua) && hasRequestPermission && !hasGenericGyro);
+  const isAndroid = /Android/i.test(ua);
+
+  if (isIos && hasDeviceMotion && hasRequestPermission) {
+    return 'devicemotion-ios';
+  }
+  if (hasGenericGyro) {
+    return 'generic-sensor';
+  }
+  if (hasDeviceMotion || hasDeviceOrientation) {
+    return isAndroid ? 'devicemotion-android' : 'devicemotion';
+  }
+  return 'none';
+}
+
+/**
  * Requests motion sensor permission inside a user-gesture handler (required on iOS Safari).
+ * PP4: Labels the path accurately (`generic-sensor`, `devicemotion-android`, or `devicemotion-ios`).
  */
 export async function requestMotionAccess() {
   const hasGenericGyro = typeof globalThis.Gyroscope === 'function';
   const hasDM = typeof globalThis.DeviceMotionEvent !== 'undefined';
   const hasDO = typeof globalThis.DeviceOrientationEvent !== 'undefined';
+  const hasReqPerm = hasDM && typeof DeviceMotionEvent.requestPermission === 'function';
+  const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
+  const platform = typeof navigator !== 'undefined' && navigator.userAgentData
+    ? (navigator.userAgentData.platform || '')
+    : (typeof navigator !== 'undefined' ? (navigator.platform || '') : '');
 
-  if (hasDM && typeof DeviceMotionEvent.requestPermission === 'function') {
+  const path = classifyMotionPermissionPath({
+    hasGenericGyro,
+    hasDeviceMotion: hasDM,
+    hasDeviceOrientation: hasDO,
+    hasRequestPermission: hasReqPerm,
+    userAgent: ua,
+    platform,
+  });
+
+  if (hasReqPerm && path === 'devicemotion-ios') {
     try {
       const res = await DeviceMotionEvent.requestPermission();
       if (hasDO && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -40,11 +84,18 @@ export async function requestMotionAccess() {
     }
   }
 
-  if (hasGenericGyro) {
-    return { granted: true, path: 'generic-sensor', error: null };
+  // On Android/desktop Chrome if requestPermission is somehow exposed, invoke safely without mislabelling iOS
+  if (hasReqPerm && !hasGenericGyro) {
+    try {
+      const res = await DeviceMotionEvent.requestPermission();
+      return { granted: res === 'granted', path, error: res === 'granted' ? null : res };
+    } catch {
+      return { granted: true, path, error: null };
+    }
   }
-  if (hasDM || hasDO) {
-    return { granted: true, path: 'devicemotion', error: null };
+
+  if (path !== 'none') {
+    return { granted: true, path, error: null };
   }
   return { granted: false, path: 'none', error: 'NoMotionAPIs' };
 }

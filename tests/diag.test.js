@@ -7,6 +7,8 @@
 import assert from 'node:assert/strict';
 import { hashDeviceId } from '../src/diag/hash.js';
 import { formatLabelSizeOpticsSummary } from '../src/diag/decode-test.js';
+import { resolveOsGuess } from '../src/diag/probe.js';
+import { classifyMotionPermissionPath } from '../src/diag/sensors.js';
 import { classifyCameras } from '../src/diag/cameras.js';
 import { recommend } from '../src/diag/recommend.js';
 import { formatReportJson, formatReportText } from '../src/diag/report.js';
@@ -457,6 +459,32 @@ await test('PP2 capture report prints resolution, exposureTime and ISO measureme
   report.recommendation = recommend(report);
   const txt = formatReportText(report);
   assert.ok(txt.includes('29.8 fps @ 1080x1920 (exp=manual 2ms ISO 2400)'), `got:\n${txt}`);
+});
+
+await test('PP3 resolveOsGuess prefers highEntropy platformVersion over frozen Android 10 UA', async () => {
+  const frozenUa = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/160.0.0.0 Mobile Safari/537.36';
+  assert.equal(resolveOsGuess(frozenUa, { platform: 'Android', platformVersion: '16.0.0' }), 'Android 16.0.0');
+  assert.equal(resolveOsGuess(frozenUa, null), 'Android 10');
+});
+
+await test('PP4 classifyMotionPermissionPath labels Android Generic Sensor vs Android devicemotion vs iOS accurately', async () => {
+  const androidUa = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/160.0.0.0 Mobile Safari/537.36';
+  // Even if Chrome exposes requestPermission on Android, Generic Sensor Gyroscope -> generic-sensor!
+  assert.equal(
+    classifyMotionPermissionPath({ hasGenericGyro: true, hasDeviceMotion: true, hasRequestPermission: true, userAgent: androidUa, platform: 'Android' }),
+    'generic-sensor'
+  );
+  // Android without Generic Sensor -> devicemotion-android (never devicemotion-ios)
+  assert.equal(
+    classifyMotionPermissionPath({ hasGenericGyro: false, hasDeviceMotion: true, hasRequestPermission: true, userAgent: androidUa, platform: 'Android' }),
+    'devicemotion-android'
+  );
+  // Real iOS Safari -> devicemotion-ios
+  const iosUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1';
+  assert.equal(
+    classifyMotionPermissionPath({ hasGenericGyro: false, hasDeviceMotion: true, hasRequestPermission: true, userAgent: iosUa }),
+    'devicemotion-ios'
+  );
 });
 
 console.log(`All ${passed} D0 diagnostics tests passed.`);
