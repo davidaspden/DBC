@@ -17,8 +17,33 @@ function median(arr) {
 
 function estimateModules(payloadLen) {
   // Code 128B: 11 * chars + 35 (start + check + stop) + 20 (quiet zones)
-  const chars = payloadLen > 0 ? payloadLen : 16;
+  const chars = payloadLen > 0 ? payloadLen : 12;
   return 11 * chars + 55;
+}
+
+/**
+ * D3: Computes theoretical & formatted pixels-per-module summary for a given label length
+ * (default 3.5 in, 12 chars = 187 modules) at 8 in and 16 in standoff distances.
+ */
+export function formatLabelSizeOpticsSummary({
+  labelLenIn = 3.5,
+  payloadChars = 12,
+  hfovDeg = 70.7,
+  zoom = 1,
+  longAxisPx = 1920,
+} = {}) {
+  const modules = estimateModules(payloadChars);
+  const fPx = ((longAxisPx * 0.5) / Math.tan((hfovDeg * 0.5) * (Math.PI / 180))) * Math.max(0.5, zoom);
+  const ppm8 = Math.round(((fPx * labelLenIn) / (8 * modules)) * 100) / 100;
+  const ppm16 = Math.round(((fPx * labelLenIn) / (16 * modules)) * 100) / 100;
+  return {
+    labelLenIn,
+    payloadChars,
+    modules,
+    ppm8,
+    ppm16,
+    line: `Label ${labelLenIn}in: 8in ${ppm8} ppm, 16in ${ppm16} ppm`,
+  };
 }
 
 /**
@@ -220,9 +245,16 @@ export async function runLabelTest(opts) {
     const decodeRate = framesProcessed > 0 ? Math.round((decodes / framesProcessed) * 100) / 100 : 0;
     const medianTotalMs = Math.round(median(totalsMs) * 10) / 10;
     const medianPpm = ppms.length > 0 ? Math.round(median(ppms) * 10) / 10 : null;
+    const labelSummary = formatLabelSizeOpticsSummary({
+      labelLenIn: opts.labelLenIn || 3.5,
+      payloadChars: opts.payloadChars || 12,
+      longAxisPx: Math.max(width, height),
+      zoom: typeof actualZoom === 'number' ? actualZoom : 1,
+    });
 
     return {
       distanceIn,
+      labelSummary,
       skipped: false,
       cameraIdHash,
       zoom: actualZoom,

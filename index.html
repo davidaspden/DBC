@@ -89,6 +89,13 @@
       border: 1px solid rgba(56, 189, 248, 0.35);
       background: rgba(15, 23, 42, 0.72);
     }
+    /* U5: Keep navigation links reachable inside a compact collapsible pill when overlay is Min */
+    #nav-links { display: inline-flex; align-items: center; gap: 6px; }
+    #nav-menu-toggle { display: none; pointer-events: auto; }
+    body[data-overlay="min"] .status-row { display: flex !important; }
+    body[data-overlay="min"] #nav-links { display: none; }
+    body[data-overlay="min"] #nav-links.open { display: inline-flex; }
+    body[data-overlay="min"] #nav-menu-toggle { display: inline-flex; }
     #status-dot {
       flex: 0 0 auto;
       width: 9px;
@@ -385,9 +392,12 @@
           <span id="status-text">Initializing...</span>
         </div>
         <div class="status-right">
-          <a class="diag-link" href="./array.html">Array Scan</a>
-          <a class="diag-link" href="./sim.html">3D Sim</a>
-          <a class="diag-link" href="./diag.html">Device check</a>
+          <button id="nav-menu-toggle" class="diag-link" type="button" onclick="document.getElementById('nav-links').classList.toggle('open')">Menu</button>
+          <span id="nav-links">
+            <a class="diag-link" href="./array.html">Array Scan</a>
+            <a class="diag-link" href="./sim.html">3D Sim</a>
+            <a class="diag-link" href="./diag.html">Device check</a>
+          </span>
           <span id="hud-fps">0 fps</span>
         </div>
       </div>

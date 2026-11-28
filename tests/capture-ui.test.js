@@ -6,8 +6,9 @@
 
 import assert from 'node:assert/strict';
 import { setZoom, setManualFocusDistance, pickBackCameras } from '../src/camera.js';
-import { computeEvenCropRect, offsetDetectionByCrop } from '../src/capture/crop.js';
+import { computeEvenCropRect, offsetDetectionByCrop, computePredictedLabelCrop } from '../src/capture/crop.js';
 import { createPauseController } from '../src/ui/pause.js';
+import { selectStandbackLens } from '../src/capture/lensprobe.js';
 
 let passed = 0;
 async function test(name, fn) {
@@ -84,4 +85,64 @@ await test('U4 pauseCtl pauses on manual hold and after >400ms face-down gravity
   assert.equal(ctl.isPaused(), false);
 });
 
-console.log(`All ${passed} Wave 2 Stream C & U tests passed.`);
+await test('C6 selectStandbackLens reports no tele on A53 (picks main camera 0) and picks tele when present', async () => {
+  const a53Cams = [
+    {
+      label: 'camera 2, facing back',
+      facing: 'environment',
+      roleGuess: 'REAR-AUX?',
+      capabilities: { width: { max: 4000 }, focusMode: ['manual'], torch: 'n/a', zoom: { min: 1, max: 8 } },
+      zoomSweep: { logicalZoomLikely: false },
+    },
+    {
+      label: 'camera 0, facing back',
+      facing: 'environment',
+      roleGuess: 'MAIN?',
+      capabilities: { width: { max: 4624 }, focusMode: ['manual', 'continuous'], torch: true, zoom: { min: 1, max: 8 } },
+      zoomSweep: { logicalZoomLikely: false },
+    },
+  ];
+  const a53Res = selectStandbackLens(a53Cams);
+  assert.equal(a53Res.hasTele, false);
+  assert.equal(a53Res.profile, 'wall');
+  assert.equal(a53Res.selectedCamera.label, 'camera 0, facing back');
+
+  const teleCams = [
+    ...a53Cams,
+    {
+      label: 'camera 4, facing back tele',
+      facing: 'environment',
+      roleGuess: 'TELE?',
+      capabilities: { width: { max: 4000 }, focusMode: ['continuous'], focusDistance: { min: 0.3, max: 5 }, zoom: { min: 1, max: 10 } },
+    },
+  ];
+  const teleRes = selectStandbackLens(teleCams);
+  assert.equal(teleRes.hasTele, true);
+  assert.equal(teleRes.profile, 'standback');
+  assert.equal(teleRes.selectedCamera.label, 'camera 4, facing back tele');
+});
+
+await test('C7 computePredictedLabelCrop builds even-aligned 4K crop and falls back when stale or out of frame', async () => {
+  const okCrop = computePredictedLabelCrop(
+    { ok: true, inFrame: true, uPx: 1080, vPx: 1920, expectedLenPx: 420 },
+    2160,
+    3840,
+    { quatAgeMs: 25 }
+  );
+  assert.equal(okCrop.fallback, false);
+  assert.equal(okCrop.rect.x % 2, 0);
+  assert.equal(okCrop.rect.y % 2, 0);
+  assert.equal(okCrop.rect.width % 4, 0);
+  assert.equal(okCrop.rect.height % 2, 0);
+
+  const stale = computePredictedLabelCrop(
+    { ok: true, inFrame: true, uPx: 1080, vPx: 1920, expectedLenPx: 420 },
+    2160,
+    3840,
+    { quatAgeMs: 250 }
+  );
+  assert.equal(stale.fallback, true);
+  assert.equal(stale.reason, 'stale-quat');
+});
+
+console.log(`All ${passed} Stream C & U tests passed.`);

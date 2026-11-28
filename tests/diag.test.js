@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { hashDeviceId } from '../src/diag/hash.js';
+import { formatLabelSizeOpticsSummary } from '../src/diag/decode-test.js';
 import { classifyCameras } from '../src/diag/cameras.js';
 import { recommend } from '../src/diag/recommend.js';
 import { formatReportJson, formatReportText } from '../src/diag/report.js';
@@ -416,6 +417,14 @@ await test('D1 orientation extras format cleanly in v1 text and JSON reports', a
   const parsed = JSON.parse(formatReportJson(report));
   assert.equal(parsed.version, 1);
   assert.equal(parsed.env.screenOrientation.type, 'portrait-primary');
+});
+
+await test('D3 formatLabelSizeOpticsSummary reports exact 8in and 16in ppm line for 3.5in FC labels', async () => {
+  const sum = formatLabelSizeOpticsSummary({ labelLenIn: 3.5, payloadChars: 12, hfovDeg: 70.7, longAxisPx: 1920 });
+  assert.equal(sum.modules, 187);
+  assert.ok(sum.ppm8 > 2.8 && sum.ppm8 < 3.6, `ppm8=${sum.ppm8}`);
+  assert.ok(sum.ppm16 > 1.4 && sum.ppm16 < 1.8, `ppm16=${sum.ppm16}`);
+  assert.match(sum.line, /^Label 3\.5in: 8in [\d.]+ ppm, 16in [\d.]+ ppm$/);
 });
 
 console.log(`All ${passed} D0 diagnostics tests passed.`);

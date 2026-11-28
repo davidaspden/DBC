@@ -43,3 +43,43 @@ export function offsetDetectionByCrop(det, cropX, cropY) {
     y1: det.y1 !== undefined ? det.y1 + cropY : undefined,
   };
 }
+
+/**
+ * C7 (`predictCrop`): Computes an even-aligned 4K/high-res crop rect around a predicted
+ * lattice cell's image projection `(pred.uPx, pred.vPx, pred.expectedLenPx)`.
+ * Falls back cleanly (`fallback: true`) when prediction is out-of-frame or quaternion is stale.
+ */
+export function computePredictedLabelCrop(pred, frameW, frameH, opts = {}) {
+  const staleMs = opts.quatAgeMs || 0;
+  const maxStaleMs = opts.maxStaleMs ?? 120;
+  const minW = opts.minWidthPx || 320;
+  const minH = opts.minHeightPx || 440;
+  const maxW = opts.maxWidthPx || 960;
+  const maxH = opts.maxHeightPx || 1280;
+  const padScale = opts.padScale || 1.7;
+
+  if (!pred || !pred.ok || !pred.inFrame || staleMs > maxStaleMs) {
+    return { fallback: true, reason: staleMs > maxStaleMs ? 'stale-quat' : 'out-of-frame', rect: null };
+  }
+
+  const fw = frameW | 0;
+  const fh = frameH | 0;
+  const lenPx = Math.max(80, pred.expectedLenPx || 260);
+  let h = Math.round(lenPx * padScale);
+  let w = Math.round(h * 0.72);
+  w = Math.max(minW, Math.min(maxW, Math.min(fw, w))) & ~3;
+  h = Math.max(minH, Math.min(maxH, Math.min(fh, h))) & ~1;
+
+  let x = Math.round(pred.uPx - w * 0.5) & ~1;
+  let y = Math.round(pred.vPx - h * 0.5) & ~1;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x + w > fw) x = Math.max(0, (fw - w) & ~1);
+  if (y + h > fh) y = Math.max(0, (fh - h) & ~1);
+
+  return {
+    fallback: false,
+    reason: 'predicted-crop',
+    rect: { x, y, width: w, height: h },
+  };
+}
