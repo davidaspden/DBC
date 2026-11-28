@@ -135,4 +135,12 @@ test('F1 FC realism 3.5 in tsX labels match expected module count and Nyquist fl
   assert.equal(o30.nyquistOk, false);
 });
 
+test('F2 snake-h has zero along-scan blur on row passes while snake-v has full along-scan blur', () => {
+  const pH = sampleCameraPose('snake-h', 0.5, { distanceIn: 10, speedInPerSec: 20, jitter: 0, loop: false });
+  const pV = sampleCameraPose('snake-v', 0.5, { distanceIn: 10, speedInPerSec: 20, jitter: 0, loop: false });
+  assert.ok(pH.alongScanSpeedInPerSec < 0.01, `horizontal row pass should have ~0 along-scan speed, got ${pH.alongScanSpeedInPerSec}`);
+  assert.ok(pV.alongScanSpeedInPerSec > 19.5, `vertical column pass should have full along-scan speed, got ${pV.alongScanSpeedInPerSec}`);
+  assert.ok(PATH_DEFINITIONS.some((p) => p.id === 'snake-h-fast-step'));
+});
+
 console.log(`All ${passed} WebGL simulator tests passed.`);

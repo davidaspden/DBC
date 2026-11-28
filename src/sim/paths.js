@@ -195,6 +195,7 @@ const DIAGONAL_POLY = buildPolyline([
 
 export const PATH_DEFINITIONS = [
   { id: 'snake-h', label: 'Snake Horizontal (4 rows)', lengthIn: SNAKE_H_POLY.totalLength },
+  { id: 'snake-h-fast-step', label: 'Snake Horizontal (fast row step)', lengthIn: SNAKE_H_POLY.totalLength },
   { id: 'snake-v', label: 'Snake Vertical (4 cols)', lengthIn: SNAKE_V_POLY.totalLength },
   { id: 'pan-snake', label: 'Stand-Back Pan (Gimbal)', lengthIn: SNAKE_H_POLY.totalLength },
   { id: 'row-sweep', label: 'Single Row Sweep (R2)', lengthIn: ROW_SWEEP_POLY.totalLength },
@@ -257,6 +258,10 @@ export function sampleCameraPose(pathId, tSec, cfg) {
 
   const s = samplePolyline(poly, dist);
   const progress = poly.totalLength > 0 ? dist / poly.totalLength : 0;
+  // Effective velocity components on wall plane (in/s): vy is along vertical ladder scan axis!
+  const activeSpeed = finished ? 0 : (pathId === 'snake-h-fast-step' && Math.abs(s.vy) > 0.5 ? speed * 1.6 : speed);
+  const vxInPerSec = s.vx * activeSpeed;
+  const vyInPerSec = s.vy * activeSpeed;
 
   let x = s.x;
   let y = s.y;
@@ -294,7 +299,10 @@ export function sampleCameraPose(pathId, tSec, cfg) {
     rollDeg,
     targetX: s.x,
     targetY: s.y,
-    speedInPerSec: finished ? 0 : speed,
+    speedInPerSec: finished ? 0 : activeSpeed,
+    vxInPerSec,
+    vyInPerSec,
+    alongScanSpeedInPerSec: Math.abs(vyInPerSec), // Ladder label: vertical motion smears bars; horizontal is harmless
     progress,
     durationSec,
     finished,

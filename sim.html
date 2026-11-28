@@ -1000,11 +1000,13 @@
         );
       }
 
-      // Compute exact shutter blur streak in pixels
-      const blurPx = pose.speedInPerSec * shutterSec * optics.pxPerInch;
+      // Compute exact along-scan shutter blur streak (ladder label: vertical velocity smears bars!)
+      const alongScanSpeed = pose.alongScanSpeedInPerSec !== undefined ? pose.alongScanSpeedInPerSec : pose.speedInPerSec;
+      const blurPx = alongScanSpeed * shutterSec * optics.pxPerInch;
+      const blurMods = optics.ppm > 0 ? blurPx / optics.ppm : 0;
       mTime.textContent = `${state.simTimeSec.toFixed(2)} s`;
-      mBlur.textContent = `${blurPx.toFixed(1)} px · ${falsePositives} FP`;
-      mBlur.className = `metric-val ${falsePositives > 0 ? 'bad' : (blurPx > 2.5 ? 'warn' : '')}`;
+      mBlur.textContent = `${blurMods.toFixed(2)}m · ${falsePositives} FP`;
+      mBlur.className = `metric-val ${falsePositives > 0 ? 'bad' : (blurMods > 0.8 ? 'warn' : '')}`;
       pathProgressEl.style.width = `${(pose.progress * 100).toFixed(1)}%`;
 
       drawHudOverlay(pose, optics);
