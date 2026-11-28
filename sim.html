@@ -414,6 +414,8 @@
     </section>
 
     <aside class="controls-col">
+      <details id="labs-panel" class="card" style="padding:8px 10px;"></details>
+
       <div class="card">
         <div class="card-head">
           <span>Playback &amp; Presets</span>
@@ -597,7 +599,9 @@
       sampleCameraPose,
     } from './src/sim/paths.js';
     import { createWebGLWallRenderer } from './src/sim/webgl-wall.js';
-    import { describe as describeFlags, toWorkerMask } from './src/flags.js';
+    import { describe as describeFlags, toWorkerMask, setFlag } from './src/flags.js';
+    import { describeSimFlags, setSimFlag } from './src/sim/simflags.js';
+    import { mountLabsPanel } from './src/sim/labs-panel.js';
 
     const glCanvas = document.getElementById('gl-canvas');
     const hudCanvas = document.getElementById('hud-canvas');
@@ -1092,7 +1096,9 @@
       updateStaticLabels();
     }
 
+    let activePresetId = 'a53-8-720';
     function applyPreset(name) {
+      activePresetId = name;
       const isFc = name.startsWith('fc-');
       setLabelMode(isFc);
       if (name === 'a53-8-720') {
@@ -1335,6 +1341,26 @@
       rngDist.value = String(nextZ);
       updateStaticLabels();
     }, { passive: false });
+
+    // R3: Labs panel (flags live, A/B on the CPU renderer, scenario JSON download)
+    mountLabsPanel(document.getElementById('labs-panel'), {
+      document,
+      describeFlags,
+      setFlag,
+      toWorkerMask,
+      describeSimFlags,
+      setSimFlag,
+      getState: () => state,
+      getPresetId: () => activePresetId,
+      onChange: () => refreshFlagsHud(),
+      download: (name, text) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      },
+    });
 
     // Boot
     updateAspectFrame();
