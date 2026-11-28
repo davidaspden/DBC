@@ -120,8 +120,13 @@ export function formatReportText(report) {
     const vfText = cap.videoFrameSupported
       ? `yes (${cap.videoFrameFormat || 'unknown'}${cap.copyToOk ? ', copy ok' : ', copy fail'})`
       : 'no';
+    const resCond = cap.width && cap.height ? ` @ ${cap.width}x${cap.height}` : '';
+    const expCond = cap.exposureTimeMs !== undefined && cap.exposureTimeMs !== null
+      ? ` exp=${cap.exposureMode || 'auto'} ${cap.exposureTimeMs}ms${cap.iso ? ' ISO ' + cap.iso : ''}`
+      : (cap.exposureMode ? ` exp=${cap.exposureMode}` : '');
+    const condStr = (resCond || expCond) ? `${resCond}${expCond ? ' (' + expCond.trim() + ')' : ''}` : '';
     lines.push(
-      `Capture  ${cap.rVfcSupported ? 'rVFC' : 'rAF'} ${cap.measuredFps} fps` +
+      `Capture  ${cap.rVfcSupported ? 'rVFC' : 'rAF'} ${cap.measuredFps} fps${condStr}` +
       ` · VideoFrame ${vfText} · Worker transfer ${cap.workerTransferOk ? 'yes' : 'no'}`
     );
   }

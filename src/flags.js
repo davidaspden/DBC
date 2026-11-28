@@ -53,6 +53,7 @@ export const FLAG_DEFS = Object.freeze([
   { name: 'camProfiles',         bit: null,                                  default: false, item: 'C2',   desc: 'Named camera profiles (far/wall), zoom & 4K presets (S1)' },
   { name: 'focusCtl',            bit: null,                                  default: false, item: 'C3',   desc: 'Tap-to-focus, lens menu & close-focus helper (S2)' },
   { name: 'fastShutter',         bit: null,                                  default: false, item: 'C4',   desc: 'Manual 1/500s exposure setter & exposure HUD readout (S6)' },
+  { name: 'lock30fps',           bit: null,                                  default: false, item: 'PP2',  desc: 'Request frameRate min 30 & lock fast shutter + compensated ISO when supported' },
   { name: 'cropAtSource',        bit: null,                                  default: false, item: 'C5',   desc: 'VideoFrame copyTo rect crop to framing guide (S4 main)' },
   { name: 'lensProbe',           bit: null,                                  default: false, item: 'C6',   desc: 'Rear lens capability probe & standback profile (Q0)' },
   { name: 'predictCrop',         bit: null,                                  default: false, item: 'C7',   desc: 'Predicted lattice-node crop from 4K frames (Q4)' },

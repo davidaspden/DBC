@@ -33,11 +33,12 @@ export async function startCamera(videoEl, opts = {}) {
 
   const reqWidth = (opts.width | 0) || TARGET_WIDTH;
   const reqHeight = (opts.height | 0) || TARGET_HEIGHT;
+  const lock30fps = Boolean(opts.lock30fps);
 
   const videoConstraints = {
     width: { ideal: reqWidth },
     height: { ideal: reqHeight },
-    frameRate: { ideal: 30, min: 15 },
+    frameRate: lock30fps ? { ideal: 30, min: 30 } : { ideal: 30, min: 15 },
   };
   if (opts.deviceId) {
     videoConstraints.deviceId = { exact: opts.deviceId };
@@ -45,10 +46,24 @@ export async function startCamera(videoEl, opts = {}) {
     videoConstraints.facingMode = { ideal: 'environment' };
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: videoConstraints,
-  });
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: videoConstraints,
+    });
+  } catch (err) {
+    if (lock30fps) {
+      // Fallback cleanly if HAL refuses min: 30
+      videoConstraints.frameRate = { ideal: 30, min: 15 };
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: videoConstraints,
+      });
+    } else {
+      throw err;
+    }
+  }
   const track = stream.getVideoTracks()[0];
   if (!track) {
     stopCamera(stream);
@@ -58,6 +73,11 @@ export async function startCamera(videoEl, opts = {}) {
   const capabilities = typeof track.getCapabilities === 'function'
     ? track.getCapabilities()
     : {};
+
+  // PP2: when lock30fps + fastShutter are requested, lock short exposure and raise ISO to keep >=25-30 fps
+  if (lock30fps && opts.fastShutter) {
+    await setExposure(track, { targetSec: opts.targetExposureSec || (1 / 250), enableManual: true });
+  }
 
   // Explicitly lock continuous autofocus on Android Chrome when exposed by the camera HAL
   const focusModes = Array.isArray(capabilities.focusMode) ? capabilities.focusMode : [];

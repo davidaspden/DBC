@@ -653,6 +653,7 @@ function handleWorkerMessage(event) {
       app.tapeRecorder.pushFrame({
         frameId: msg.frameId || 0,
         tFrameMs: msg.tFrameMs || performance.now(),
+        fps: Math.round(app.fpsValue * 10) / 10,
         width: msg.frameW || app.frameWidth,
         height: msg.frameH || app.frameHeight,
         cropX: msg.cropX || 0,
@@ -1316,7 +1317,13 @@ async function startScanning(deviceId = null) {
         chosenDeviceId = localStorage.getItem('dbc.lensId') || null;
       } catch {}
     }
-    const cam = await startCamera(els.video, { deviceId: chosenDeviceId, width: reqW, height: reqH });
+    const cam = await startCamera(els.video, {
+      deviceId: chosenDeviceId,
+      width: reqW,
+      height: reqH,
+      lock30fps: isOn('lock30fps'),
+      fastShutter: app.fastShutterEnabled,
+    });
     app.camera = cam;
     app.frameWidth = cam.width;
     app.frameHeight = cam.height;

@@ -75,6 +75,7 @@ export function createTapeRecorder(opts = {}) {
   async function pushFrame({
     frameId = seen,
     tFrameMs = 0,
+    fps = null,
     width,
     height,
     cropX = 0,
@@ -95,6 +96,7 @@ export function createTapeRecorder(opts = {}) {
       meta: {
         frameId,
         tFrameMs,
+        fps,
         width,
         height,
         cropX,

@@ -107,11 +107,23 @@ function measureFrameRate(videoEl, maxFrames = 60, maxMs = 2400) {
 
 /**
  * Probes rVFC fps, WebCodecs VideoFrame copyTo, and Worker transferable ArrayBuffer
- * on the active stream currently playing in `videoEl`.
+ * on the active 1080p stream currently playing in `videoEl` (PP2: also records the
+ * exact measurement conditions: width, height, exposureMode, exposureTime, iso).
  *
  * @param {HTMLVideoElement} videoEl
+ * @param {MediaStreamTrack | null} [track]
  */
-export async function probeCapturePath(videoEl) {
+export async function probeCapturePath(videoEl, track = null) {
+  const settings = track && typeof track.getSettings === 'function' ? track.getSettings() : {};
+  const width = (videoEl && videoEl.videoWidth > 0 ? videoEl.videoWidth : settings.width) || 0;
+  const height = (videoEl && videoEl.videoHeight > 0 ? videoEl.videoHeight : settings.height) || 0;
+  const exposureMode = settings.exposureMode || 'auto';
+  const exposureTime = typeof settings.exposureTime === 'number' ? Math.round(settings.exposureTime * 100) / 100 : null;
+  // W3C exposureTime is in 100 us units -> ms = raw * 0.1
+  const exposureTimeMs = exposureTime !== null ? Math.round(exposureTime * 10) / 100 : null;
+  const iso = typeof settings.iso === 'number' ? Math.round(settings.iso) : null;
+  const frameRateSetting = typeof settings.frameRate === 'number' ? Math.round(settings.frameRate * 10) / 10 : null;
+
   const [fpsRes, transferRes] = await Promise.all([
     videoEl && videoEl.readyState >= 2
       ? measureFrameRate(videoEl, 60, 2400)
@@ -153,6 +165,13 @@ export async function probeCapturePath(videoEl) {
     rVfcSupported: fpsRes.rVfcSupported,
     measuredFps: fpsRes.measuredFps,
     frameCount: fpsRes.frameCount,
+    width,
+    height,
+    exposureMode,
+    exposureTime,
+    exposureTimeMs,
+    iso,
+    frameRateSetting,
     videoFrameSupported,
     videoFrameFormat,
     yuvDirectCopy,

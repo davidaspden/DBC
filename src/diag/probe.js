@@ -199,29 +199,37 @@ export async function runFullProbe(uiHooks = {}) {
     deviceMap = camResult.deviceMap;
     onPartial({ cameras: report.cameras });
 
-    // 3. Probe capture path on the preferred rear camera (or first working camera)
+    // 3. PP2: Probe capture path on the chosen 1080p stream ONLY AFTER all camera probing is done,
+    // requesting min 30 fps (fallback ideal 30) and recording exact resolution & exposure conditions.
     const prefCam =
       report.cameras.find((c) => c.roleGuess === 'MAIN?' && !c.error) ||
       report.cameras.find((c) => c.facing === 'environment' && !c.error) ||
       report.cameras.find((c) => !c.error);
 
     if (prefCam && previewEl) {
-      setStatus('Probing capture path (rVFC / WebCodecs / Worker)…');
+      setStatus('Probing 1080p capture path (rVFC / WebCodecs / Worker)…');
       let capStream = null;
       try {
         const rawId = deviceMap.get(prefCam.idHash);
         const videoConstraint = {
           width: { ideal: 1920 },
           height: { ideal: 1080 },
+          frameRate: { ideal: 30, min: 30 },
         };
         if (rawId) videoConstraint.deviceId = { exact: rawId };
-        capStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false });
+        try {
+          capStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false });
+        } catch {
+          videoConstraint.frameRate = { ideal: 30 };
+          capStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false });
+        }
+        const capTrack = capStream.getVideoTracks()[0] || null;
         previewEl.srcObject = capStream;
         previewEl.playsInline = true;
         previewEl.muted = true;
         await previewEl.play().catch(() => {});
-        await new Promise((r) => setTimeout(r, 250));
-        report.capture = await probeCapturePath(previewEl);
+        await new Promise((r) => setTimeout(r, 350));
+        report.capture = await probeCapturePath(previewEl, capTrack);
       } catch (err) {
         report.capture = {
           rVfcSupported: typeof previewEl.requestVideoFrameCallback === 'function',

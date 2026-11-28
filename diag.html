@@ -608,10 +608,14 @@
       const vfBadge = cap.videoFrameSupported && cap.copyToOk
         ? `<span class="badge good">${esc(cap.videoFrameFormat || 'ok')} (${cap.tCaptureMs ?? '?'} ms)</span>`
         : `<span class="badge warn">${cap.videoFrameSupported ? esc(cap.videoFrameError || 'fallback') : 'not supported'}</span>`;
+      const condRes = cap.width && cap.height ? ` @ ${cap.width}×${cap.height}` : '';
+      const condExp = cap.exposureTimeMs != null
+        ? ` · exp ${cap.exposureMode || 'auto'} ${cap.exposureTimeMs}ms${cap.iso ? ' ISO ' + cap.iso : ''}`
+        : (cap.exposureMode ? ` · exp ${cap.exposureMode}` : '');
       capBody.innerHTML = `
         <div class="kv-list">
           <span class="kv-key">Frame pacing</span>
-          <span class="kv-val mono">${cap.rVfcSupported ? 'rVFC' : 'rAF'} · ${cap.measuredFps} fps (${cap.frameCount} frames)</span>
+          <span class="kv-val mono">${cap.rVfcSupported ? 'rVFC' : 'rAF'} · ${cap.measuredFps} fps${esc(condRes)}${esc(condExp)} (${cap.frameCount} frames)</span>
           <span class="kv-key">VideoFrame</span>
           <span class="kv-val">${vfBadge}</span>
           <span class="kv-key">Worker transfer</span>

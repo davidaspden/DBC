@@ -436,4 +436,27 @@ await test('D3 formatLabelSizeOpticsSummary reports exact 8in and 16in ppm line 
   assert.match(sum.line, /^Label 3\.5in: 8in [\d.]+ ppm, 16in [\d.]+ ppm$/);
 });
 
+await test('PP2 capture report prints resolution, exposureTime and ISO measurement conditions', async () => {
+  const report = a53Fixture({
+    capture: {
+      rVfcSupported: true,
+      measuredFps: 29.8,
+      frameCount: 60,
+      width: 1080,
+      height: 1920,
+      exposureMode: 'manual',
+      exposureTime: 20,
+      exposureTimeMs: 2.0,
+      iso: 2400,
+      videoFrameSupported: true,
+      videoFrameFormat: 'I420',
+      copyToOk: true,
+      workerTransferOk: true,
+    },
+  });
+  report.recommendation = recommend(report);
+  const txt = formatReportText(report);
+  assert.ok(txt.includes('29.8 fps @ 1080x1920 (exp=manual 2ms ISO 2400)'), `got:\n${txt}`);
+});
+
 console.log(`All ${passed} D0 diagnostics tests passed.`);
