@@ -602,6 +602,7 @@
     import { describe as describeFlags, toWorkerMask, setFlag } from './src/flags.js';
     import { describeSimFlags, setSimFlag, isSimOn } from './src/sim/simflags.js';
     import { readTapeSensors, registerTapePath } from './src/sim/tape-pose.js';
+    import { enableMeasuredMotion, disableMeasuredMotion, getActiveMotionGenerator, legacyJitterModel, validateMotionModel } from './src/sim/measured-motion.js';
     import { mountLabsPanel } from './src/sim/labs-panel.js';
 
     const glCanvas = document.getElementById('gl-canvas');
@@ -1353,7 +1354,7 @@
       setSimFlag,
       getState: () => state,
       getPresetId: () => activePresetId,
-      onChange: () => { refreshFlagsHud(); refreshTapeRow(); },
+      onChange: () => { refreshFlagsHud(); refreshTapeRow(); syncMotion(); },
       download: (name, text) => {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
@@ -1402,6 +1403,46 @@
       }
     });
     refreshTapeRow();
+
+    // T3: measured hand motion. With the `simMeasuredMotion` flag on, the jitter slider's angular wobble is
+    // replaced by the motion model (the conservative built-in until a fitted `dbc-motion-model` .json is
+    // loaded; fit one with `node tools/tape-motion.mjs tape.dbct --out model.json`). Flag off: untouched.
+    let motionModel = null;
+    const motionRow = document.createElement('div');
+    motionRow.style.cssText = 'display:none;margin-top:6px;';
+    const motionInput = document.createElement('input');
+    motionInput.type = 'file';
+    motionInput.accept = '.json';
+    const motionNote = document.createElement('div');
+    motionNote.className = 'mono';
+    const motionLabel = document.createElement('span');
+    motionLabel.textContent = 'Motion model (.json): ';
+    motionRow.append(motionLabel, motionInput, motionNote);
+    document.getElementById('labs-panel').appendChild(motionRow);
+    function syncMotion() {
+      const on = isSimOn('simMeasuredMotion');
+      motionRow.style.display = on ? '' : 'none';
+      if (on) {
+        enableMeasuredMotion(motionModel || legacyJitterModel(), { seed: 1 });
+        motionNote.textContent = motionModel ? 'fitted model active (the jitter slider is ignored)' : 'built-in default active (the jitter slider is ignored)';
+      } else if (getActiveMotionGenerator()) {
+        disableMeasuredMotion();
+      }
+    }
+    motionInput.addEventListener('change', async () => {
+      const file = motionInput.files && motionInput.files[0];
+      if (!file) return;
+      try {
+        const m = JSON.parse(await file.text());
+        const v = validateMotionModel(m);
+        if (!v.ok) { motionNote.textContent = `model not usable: ${v.errors.join('; ')}`; return; }
+        motionModel = m;
+        syncMotion();
+      } catch (e) {
+        motionNote.textContent = `model not usable: ${e.message}`;
+      }
+    });
+    syncMotion();
 
     // Boot
     updateAspectFrame();

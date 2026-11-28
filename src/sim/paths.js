@@ -337,6 +337,16 @@ export const PATH_DEFINITIONS = [
   { id: 'manual', label: 'Manual Drag / Zoom', lengthIn: 0 },
 ];
 
+// T3: optional measured-motion generator `(tSec) => { yawDeg, pitchDeg, rollDeg }`. `null` by default,
+// so `sampleCameraPose` is bit-identical to before unless `setMeasuredMotionHook` is called (flag `simMeasuredMotion`).
+let measuredMotionHook = null;
+export function setMeasuredMotionHook(fn) {
+  measuredMotionHook = typeof fn === 'function' ? fn : null;
+}
+export function hasMeasuredMotionHook() {
+  return measuredMotionHook !== null;
+}
+
 // T1: extra (registered) paths, e.g. `tape:<name>`. Empty by default, so `PATH_DEFINITIONS` and
 // `sampleCameraPose` behave exactly as before unless something registers a path (flag `simTapePose`).
 const EXTRA_PATH_SAMPLERS = new Map();
@@ -437,7 +447,15 @@ export function sampleCameraPose(pathId, tSec, cfg) {
     rollDeg = 15 * Math.sin(tSec * 1.45);
   }
 
-  if (jitter > 0) {
+  if (measuredMotionHook !== null) {
+    // T3 (`simMeasuredMotion`): the slider's angular wobble is replaced by the tape-fitted generator.
+    // Breathing in z stays slider-driven (the tape's IMU does not measure translation).
+    if (jitter > 0) z += jitter * (0.65 * Math.sin(tSec * 2.7) + 0.28 * Math.sin(tSec * 6.3 + 1.1));
+    const m = measuredMotionHook(tSec);
+    yawDeg += m.yawDeg;
+    pitchDeg += m.pitchDeg;
+    rollDeg += m.rollDeg;
+  } else if (jitter > 0) {
     // Realistic handheld operator wobble (multi-harmonic breathing + wrist micro-shake)
     z += jitter * (0.65 * Math.sin(tSec * 2.7) + 0.28 * Math.sin(tSec * 6.3 + 1.1));
     yawDeg += jitter * (1.8 * Math.sin(tSec * 3.9 + 0.4) + 0.9 * Math.cos(tSec * 9.1));
