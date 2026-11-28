@@ -516,6 +516,19 @@
             <option value="1080x1920">1080×1920 (1080p Portrait)</option>
           </select>
         </div>
+
+        <div class="field">
+          <div class="field-top">
+            <label for="sel-start-orient">Start orientation (F3)</label>
+          </div>
+          <select id="sel-start-orient">
+            <option value="normal" selected>Normal (0° roll)</option>
+            <option value="roll15">Rolled +15°</option>
+            <option value="roll-15">Rolled -15°</option>
+            <option value="landscape90">Rotated 90° (Landscape)</option>
+            <option value="tilt20">Tilted +20° upward</option>
+          </select>
+        </div>
       </div>
 
       <div class="card">
@@ -620,6 +633,7 @@
     const selFov = document.getElementById('sel-fov');
     const lblFov = document.getElementById('lbl-fov');
     const selRes = document.getElementById('sel-res');
+    const selStartOrient = document.getElementById('sel-start-orient');
 
     const selShutter = document.getElementById('sel-shutter');
     const lblShutter = document.getElementById('lbl-shutter');
@@ -691,6 +705,8 @@
       noiseStrength: 0.015,
       fcMode: false,
       labelHeightIn: 6,
+      startOrientRollDeg: 0,
+      startOrientTiltOffsetIn: 0,
       simTimeSec: 0,
       frameId: 0,
       manualPose: { x: 0, y: 0, z: 14, yawDeg: 0, pitchDeg: 0, rollDeg: 0 },
@@ -936,6 +952,14 @@
         manualPose: state.manualPose,
       };
       const pose = sampleCameraPose(state.pathId, state.simTimeSec, cfg);
+      const applyStartOrient = (p) => {
+        if (state.startOrientRollDeg === 0 && state.startOrientTiltOffsetIn === 0) return p;
+        return {
+          ...p,
+          rollDeg: (p.rollDeg || 0) + state.startOrientRollDeg,
+          targetY: p.targetY + state.startOrientTiltOffsetIn,
+        };
+      };
 
       // Build temporal sub-frame poses across shutter exposure interval for physical motion blur
       const shutterSec = state.shutterMs * 0.001;
@@ -944,10 +968,10 @@
         const subFrames = state.shutterMs >= 8 ? 7 : 5;
         for (let k = 0; k < subFrames; k++) {
           const frac = (k / (subFrames - 1)) - 0.5; // -0.5 .. +0.5
-          poses.push(sampleCameraPose(state.pathId, Math.max(0, state.simTimeSec + frac * shutterSec), cfg));
+          poses.push(applyStartOrient(sampleCameraPose(state.pathId, Math.max(0, state.simTimeSec + frac * shutterSec), cfg)));
         }
       } else {
-        poses.push(pose);
+        poses.push(applyStartOrient(pose));
       }
 
       const optics = computeOptics({
@@ -1190,6 +1214,13 @@
       }
       updateStaticLabels();
       restartSweep();
+    });
+
+    selStartOrient.addEventListener('change', () => {
+      const v = selStartOrient.value;
+      state.startOrientRollDeg = v === 'roll15' ? 15 : (v === 'roll-15' ? -15 : (v === 'landscape90' ? 90 : 0));
+      state.startOrientTiltOffsetIn = v === 'tilt20' ? Math.tan(20 * Math.PI / 180) * state.distanceIn * 0.5 : 0;
+      if (!state.playing) renderAndDispatchOnce();
     });
 
     rngSpeed.addEventListener('input', () => {
