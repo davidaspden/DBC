@@ -40,16 +40,20 @@ To eliminate V8 Garbage Collection (GC) pauses on mobile devices:
 
 ## 4. Explicit Anti-Goals (Do NOT Implement)
 
-- **NO 2D reverse-keystone barcode rendering or pixel diffing:** Wastes frame budget and fails under glare/shadows; mathematical checksums + multi-scanline consensus guarantee near-zero false positives.
+- **NO 2D reverse-keystone barcode rendering or pixel diffing:** Wastes frame budget and fails under glare/shadows; mathematical checksums + multi-scanline consensus guarantee near-zero false positives. *(Clarification: this rule applies to barcode rendering; block-matching optical flow on already-downsampled luma in `src/worker/flow.js` is allowed behind the `flowOn` flag.)*
+- **Feature-Flag Guardrail (`src/flags.js`):** All new behaviour changes ship behind a named flag defaulting to `false` (overridable via `?flags=...` or `localStorage['dbc.flags']`, passed to the worker as a 32-bit integer bitmask). Verify baseline parity with `node tools/verify.mjs` after every change.
 - **NO full-frame global thresholding (e.g., Otsu):** Fails under ambient shadows, uneven lighting, and glare. Use local 1D first-derivative peak detection / zero-crossing edge extraction.
 - **NO blind format exhaustion:** Never iterate across all 1D/2D symbologies on failed frames. Strictly restrict decoding to an explicit active symbology allowlist (**active scope: `CODE_128` only**).
 - **NO WebAssembly (WASM) by default:** Stay in pure Vanilla JS unless empirical profiling demonstrates a full-frame 2D stage exceeding its allocated frame budget.
 
 ---
 
-## 5. Pipeline Architecture & Performance Budgets (720p Input)
+## 5. Pipeline Architecture & Performance Budgets (720p / 1080p Input)
 
-Target total per-frame processing budget: **< 25 ms** on `1280x720` luma frames.
+- **720p (`1280x720`) Target:** median `t_total <= 25 ms`.
+- **1080p (`1920x1080`) or native-resolution crop:** median `<= 25 ms` and `p95 <= 33 ms` (one 30 fps frame interval).
+- **Wall mapping:** adds at most `3 ms` median to `t_total`.
+- **FC Target Labels:** Code 128 Set B, ~`2 in × 3.5 in` (typically `tsX...`, ~187 modules) on tote walls (config-driven pitch `14×16 in` or `16×14 in`; never hard-code).
 
 | Stage | Module | Technique | Target Budget |
 | :--- | :--- | :--- | :--- |
@@ -88,34 +92,57 @@ Target total per-frame processing budget: **< 25 ms** on `1280x720` luma frames.
 ├── array.html                  # Live Tilt & Pan Array Scanner page (Part 3 stand-back gyro/ray-plane test)
 ├── src/
 │   ├── main.js                 # App entry, UI state machine, frame dispatch loop
-│   ├── camera.js               # getUserMedia setup, track constraints, focus lock
+│   ├── camera.js               # getUserMedia setup, track constraints, focus lock, C4 exposure API
+│   ├── flags.js                # Central feature-flag registry & worker bitmask (GR1; all default OFF)
 │   ├── scanner.js              # Headless drop-in Code 128 scanner API (cross-origin Blob worker support)
+│   ├── capture/                # Exposure & capture helpers (C4)
+│   │   └── exposure.js         # Max safe along-scan speed & exposure HUD formatter
+│   ├── ui/                     # Main-page UI helpers (U2)
+│   │   └── overlay-dim.js      # Flagged Normal/Dim/Min overlay & auto-fade controller
+│   ├── tape/                   # Frame/sensor `.dbct` recorder (GR3)
+│   │   └── record.js           # Gzip CompressionStream tape recorder for Node replay
 │   ├── array/                  # Stand-back Tilt & Pan Array Scanner modules (zero dependencies)
-│   │   ├── orient.js           # Fused RelativeOrientation/Gyro tracker, bias cal & timestamp ring buffer
-│   │   └── pan-mapper.js       # Ray-plane projection, 2-corner calibration, lattice snap & conflict guard
+│   │   ├── orient.js           # Fused RelativeOrientation/Gyro tracker, gravity-zero & ring buffer
+│   │   ├── pan-mapper.js       # Ray-plane projection, 2-corner calibration, lattice snap & conflict guard
+│   │   ├── config.js           # FC 2×3.5 in & tote orientation config profiles (A1)
+│   │   ├── optics.js           # Pixels-per-module (PPM) evaluator (A1)
+│   │   ├── setup.js            # Hold attitude preflight classifier & 8-way D4 axis remap solver (A7)
+│   │   ├── blur.js             # Scan-angle-aware shutter blur-modules gate (B1)
+│   │   └── viewmap.js          # Exact contain/cover camera-to-HUD view transform (B2)
 │   ├── sim/                    # WebGL 4×4 tote wall simulator modules (zero dependencies)
 │   │   ├── paths.js            # Exact 14×16 in wall geometry, optics/PPM, camera paths & mat4 math
 │   │   └── webgl-wall.js       # WebGL2/1 analytical Code 128 shader, shutter blur & GPU luma pack
-│   ├── diag/                   # Standalone device diagnostics modules (D0; zero network calls after load)
-│   │   ├── probe.js            # Environment probe & full D0 orchestration
+│   ├── diag/                   # Standalone device diagnostics modules (D0/D1; zero network calls)
+│   │   ├── probe.js            # Environment, screen orientation & full diagnostics orchestration
 │   │   ├── cameras.js          # Exclusive per-device probing, zoom sweep & lens heuristics
 │   │   ├── capture.js          # rVFC/rAF fps, VideoFrame copyTo & worker transferability check
-│   │   ├── sensors.js          # Generic Sensor / DeviceMotion probe & 2 s stationary gyro check
-│   │   ├── decode-test.js      # Optional 8 in / 30 in live Code 128 decode test
+│   │   ├── sensors.js          # Generic Sensor / DeviceMotion / gravity & referenceFrame probes
+│   │   ├── decode-test.js      # Optional live Code 128 decode test
 │   │   ├── recommend.js        # Deterministic mode recommendation engine
 │   │   ├── report.js           # Plain-text + JSON (v1) report formatter, copy & share helpers
 │   │   └── hash.js             # 12-char SHA-256 deviceId hashing (no raw deviceIds in reports)
 │   └── worker/
-│       ├── scanner.worker.js   # Pipeline orchestrator & pre-allocated TypedArray pool
+│       ├── scanner.worker.js   # Pipeline orchestrator, flags bitmask & pre-allocated TypedArray pool
 │       ├── roi.js              # Downscaler, Gx/Gy pass, Structure Tensor theta estimator
-│       ├── scanline.js         # Oriented luma sampler & derivative edge detector
+│       ├── scanline.js         # Oriented luma sampler, vertical fallback (W1) & derivative edge detector
 │       ├── consensus.js        # Multi-scanline character voting & validation engine
 │       └── decoders/
 │           ├── code128.js      # Code 128 guard pattern anchor & Mod 103 checksum
 │           └── ean13.js        # EAN-13/UPC-A guard anchor & Mod 10 checksum
+├── baseline/                   # Recorded clean d917944 baseline metrics & sim templates (GR0)
+├── tools/
+│   ├── verify.mjs              # Automated regression verification gate against baseline (GR2)
+│   ├── replay.mjs              # Node.js `.dbct` frame/sensor tape replay runner (GR3)
+│   └── tape-format.md          # Binary `.dbct` v1 tape specification
 └── tests/
     ├── harness.js              # Offline runner & synthetic/real test image generator
-    └── diag.test.js            # Unit tests for D0 diagnostics hashing, classification & recommendations
+    ├── array.test.js           # Unit tests for A1/A7/B1/B2 array orientation, mapping & blur
+    ├── diag.test.js            # Unit tests for D0/D1 diagnostics hashing, orientation & recommendations
+    ├── exposure.test.js        # Unit tests for C4 exposure info, two-step setter & speed budget
+    ├── flags.test.js           # Unit tests for GR1 feature flags & worker bitmask
+    ├── sim.test.js             # Unit tests for WebGL simulator geometry, F1 FC realism & F2 paths
+    ├── tape.test.js            # Unit tests for GR3 `.dbct` gzip record & Node replay
+    └── w1-vertical.test.js     # Unit tests for W11 geometry/flags & W1 vertical fallback scanlines
 ```
 
 ---
