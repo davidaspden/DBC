@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { hashDeviceId } from '../src/diag/hash.js';
 import { formatLabelSizeOpticsSummary } from '../src/diag/decode-test.js';
-import { resolveOsGuess } from '../src/diag/probe.js';
+import { resolveOsGuess, buildDefaultLabelTests } from '../src/diag/probe.js';
 import { classifyMotionPermissionPath } from '../src/diag/sensors.js';
 import { classifyCameras } from '../src/diag/cameras.js';
 import { recommend } from '../src/diag/recommend.js';
@@ -485,6 +485,19 @@ await test('PP4 classifyMotionPermissionPath labels Android Generic Sensor vs An
     classifyMotionPermissionPath({ hasGenericGyro: false, hasDeviceMotion: true, hasRequestPermission: true, userAgent: iosUa }),
     'devicemotion-ios'
   );
+});
+
+await test('PP5 buildDefaultLabelTests and formatReportText explicitly explain skipped labelTests', async () => {
+  const lt = buildDefaultLabelTests('not-run-interactive-test');
+  assert.equal(lt.in8.skipped, true);
+  assert.equal(lt.in8.reason, 'not-run-interactive-test');
+  assert.equal(lt.in30.skipped, true);
+
+  const report = a53Fixture({ labelTests: lt });
+  report.recommendation = recommend(report);
+  const txt = formatReportText(report);
+  assert.ok(txt.includes('Label    8 in: skipped (not-run-interactive-test)'));
+  assert.ok(txt.includes('30 in: skipped (not-run-interactive-test)'));
 });
 
 console.log(`All ${passed} D0 diagnostics tests passed.`);

@@ -156,6 +156,17 @@ export async function probeEnvironment() {
 }
 
 /**
+ * PP5: Explicitly populates skipped `labelTests` entries so reports never emit an
+ * unexplained empty `labelTests: {}`. Overwritten with real decode results when run.
+ */
+export function buildDefaultLabelTests(reason = 'not-run-interactive-test') {
+  return {
+    in8: { distanceIn: 8, skipped: true, reason },
+    in30: { distanceIn: 30, skipped: true, reason },
+  };
+}
+
+/**
  * Runs the complete D0 device diagnostic sequence from a single user Start gesture.
  *
  * @param {{
@@ -178,7 +189,7 @@ export async function runFullProbe(uiHooks = {}) {
     cameras: [],
     capture: null,
     sensors: null,
-    labelTests: {},
+    labelTests: buildDefaultLabelTests('not-run-interactive-test'),
     recommendation: null,
   };
 
@@ -191,6 +202,7 @@ export async function runFullProbe(uiHooks = {}) {
 
   if (!report.env.isSecureContext) {
     setStatus('Need HTTPS');
+    report.labelTests = buildDefaultLabelTests('insecure-context');
     report.recommendation = recommend(report);
     onPartial({ recommendation: report.recommendation });
     return { report, deviceMap: new Map() };
@@ -200,6 +212,9 @@ export async function runFullProbe(uiHooks = {}) {
   setStatus('Waiting for camera permission…');
   const camAccess = await requestCameraAccess();
   report.cameraPermission = { granted: camAccess.granted, error: camAccess.error };
+  if (!camAccess.granted) {
+    report.labelTests = buildDefaultLabelTests(camAccess.error || 'camera-permission-denied');
+  }
 
   let deviceMap = new Map();
 

@@ -158,17 +158,27 @@ export function formatReportText(report) {
   }
 
   const lt = report.labelTests || {};
-  if (lt.in8 && !lt.in8.skipped) {
-    lines.push(
-      `Label    8 in:  ${lt.in8.decodeRate} decode, ${lt.in8.medianPpm ?? 'n/a'} ppm, ` +
-      `t=${lt.in8.medianTotalMs} ms (${lt.in8.width}x${lt.in8.height})`
+  const labelLines = [];
+  if (lt.in8) {
+    labelLines.push(
+      lt.in8.skipped
+        ? `8 in: skipped (${lt.in8.reason || 'not-run'})`
+        : `8 in: ${lt.in8.decodeRate} decode, ${lt.in8.medianPpm ?? 'n/a'} ppm, t=${lt.in8.medianTotalMs} ms (${lt.in8.width}x${lt.in8.height})`
     );
   }
-  if (lt.in30 && !lt.in30.skipped) {
-    lines.push(
-      `         30 in: ${lt.in30.decodeRate} decode, ${lt.in30.medianPpm ?? 'n/a'} ppm, ` +
-      `t=${lt.in30.medianTotalMs} ms (${lt.in30.width}x${lt.in30.height})`
+  if (lt.in30) {
+    labelLines.push(
+      lt.in30.skipped
+        ? `30 in: skipped (${lt.in30.reason || 'not-run'})`
+        : `30 in: ${lt.in30.decodeRate} decode, ${lt.in30.medianPpm ?? 'n/a'} ppm, t=${lt.in30.medianTotalMs} ms (${lt.in30.width}x${lt.in30.height})`
     );
+  }
+  if (labelLines.length === 0) {
+    lines.push('Label    skipped (interactive 8 in / 30 in label tests not run)');
+  } else {
+    for (let i = 0; i < labelLines.length; i++) {
+      lines.push(`${i === 0 ? 'Label    ' : '         '}${labelLines[i]}`);
+    }
   }
 
   const rec = report.recommendation || { mode: 'unknown', blurb: '' };
