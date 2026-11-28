@@ -11,7 +11,7 @@
  *  - Wall lies on Z = 0; camera stands at (Px, Py, D) looking along -Z when qRel = identity.
  */
 
-import { quatRotateVec, quatFromPanTiltRollDeg, quatConjugate } from './orient.js?v=5';
+import { quatRotateVec, quatFromPanTiltRollDeg, quatConjugate } from './orient.js?v=6';
 import { FC_PROFILE, resolveTotePitch } from './config.js';
 import { evaluateOptics, estimateModules } from './optics.js';
 import { AXIS_REMAPS, applyAxisRemap } from './setup.js';

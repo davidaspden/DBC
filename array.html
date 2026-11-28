@@ -142,6 +142,39 @@
     .dot[data-state="cal"] { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
     .dot[data-state="error"] { background: var(--red); }
 
+    /* B3 (`arrayFullBleed`): full-bleed camera with ~132px PiP array inset (tap inset to expand) */
+    body.full-bleed .cam-stage {
+      position: fixed;
+      inset: 0;
+      max-height: none !important;
+      aspect-ratio: auto !important;
+      border-radius: 0;
+      border: none;
+      z-index: 10;
+    }
+    body.full-bleed #array-canvas {
+      position: fixed;
+      right: 10px;
+      bottom: 64px;
+      width: 132px;
+      height: 124px;
+      z-index: 25;
+      border: 2px solid rgba(56, 189, 248, 0.75);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65);
+    }
+    body.full-bleed #array-canvas.pip-expanded {
+      width: min(92vw, 420px);
+      height: auto;
+    }
+    body.full-bleed #btn-fullbleed-exit {
+      display: inline-flex;
+      position: fixed;
+      right: 10px;
+      bottom: 14px;
+      z-index: 26;
+    }
+    #btn-fullbleed-exit { display: none; }
+
     /* Telemetry Strip */
     .metrics {
       display: grid;
@@ -383,8 +416,15 @@
         <button id="btn-torch" type="button" disabled>Torch</button>
         <button id="btn-shutter" type="button" hidden>Fast 1/500s</button>
         <button id="btn-dim" type="button" hidden>Dim</button>
+        <button id="btn-mode-slide" type="button" hidden>Mode: Pan</button>
+        <button id="btn-auto-zero" type="button" hidden>Auto Zero</button>
+        <button id="btn-undo-zero" type="button" hidden>Undo Zero</button>
+        <button id="btn-stand-mode" type="button" hidden>Stand: In-Front</button>
+        <button id="btn-fullbleed" type="button" hidden>Full-Bleed</button>
+        <button id="btn-tape" type="button" hidden>Rec Tape</button>
         <button id="btn-sound" class="active" type="button">Beep ON</button>
       </div>
+      <button id="btn-fullbleed-exit" type="button">Exit Full-Bleed</button>
       <div id="zoom-row" class="field" hidden>
         <div class="field-top">
           <label for="rng-zoom">Camera Zoom</label>
@@ -480,15 +520,19 @@
   </main>
 
   <script type="module">
-    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo, setExposure, pickBackCameras } from './src/camera.js?v=5';
-    import { isOn, setFlag, describe, toWorkerMask, STORAGE_KEY } from './src/flags.js?v=5';
-    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=5';
-    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=5';
-    import { computeBlurModules } from './src/array/blur.js?v=5';
-    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=5';
-    import { pxPerModule } from './src/array/optics.js?v=5';
-    import { classifyHold } from './src/array/setup.js?v=5';
-    import { formatExposureLabel } from './src/capture/exposure.js?v=5';
+    import { startCamera, stopCamera, setTorch, listVideoDevices, getExposureInfo, setExposure, pickBackCameras } from './src/camera.js?v=6';
+    import { isOn, setFlag, describe, toWorkerMask, WORKER_FLAG_BITS, STORAGE_KEY } from './src/flags.js?v=6';
+    import { createOrientationTracker, extractPanTiltRollDeg } from './src/array/orient.js?v=6';
+    import { createPanArrayMapper } from './src/array/pan-mapper.js?v=6';
+    import { createAutoZeroStateMachine } from './src/array/autozero.js?v=6';
+    import { createSlideWallMapper } from './src/wallmap.js?v=6';
+    import { computeBlurModules } from './src/array/blur.js?v=6';
+    import { computeViewTransform, mapRectToHud } from './src/array/viewmap.js?v=6';
+    import { pxPerModule } from './src/array/optics.js?v=6';
+    import { classifyHold, solveAxisRemap } from './src/array/setup.js?v=6';
+    import { formatExposureLabel } from './src/capture/exposure.js?v=6';
+    import { computePredictedLabelCrop, offsetDetectionByCrop } from './src/capture/crop.js?v=6';
+    import { createTapeRecorder } from './src/tape/record.js?v=6';
 
     const YUV_Y_FIRST_FORMATS = new Set(['I420', 'I420A', 'NV12', 'I422', 'I444']);
 
@@ -519,6 +563,13 @@
     const btnTorch = document.getElementById('btn-torch');
     const btnShutter = document.getElementById('btn-shutter');
     const btnDim = document.getElementById('btn-dim');
+    const btnModeSlide = document.getElementById('btn-mode-slide');
+    const btnAutoZero = document.getElementById('btn-auto-zero');
+    const btnUndoZero = document.getElementById('btn-undo-zero');
+    const btnStandMode = document.getElementById('btn-stand-mode');
+    const btnFullBleed = document.getElementById('btn-fullbleed');
+    const btnFullBleedExit = document.getElementById('btn-fullbleed-exit');
+    const btnTape = document.getElementById('btn-tape');
     const btnSound = document.getElementById('btn-sound');
     const zoomRow = document.getElementById('zoom-row');
     const rngZoom = document.getElementById('rng-zoom');
@@ -579,6 +630,12 @@
     const flagRowGuide = isOn('rowGuide');
     const flagPanKalman = isOn('panKalman');
     const flagAllocCleanup = isOn('allocCleanup');
+    const flagSlideMap = isOn('slideMap');
+    const flagAutoZero = isOn('autoZeroFromLabel');
+    const flagAxisRemapAuto = isOn('axisRemapAuto');
+    const flagFullBleed = isOn('arrayFullBleed');
+    const flagPredictCrop = isOn('predictCrop');
+    const flagTapeRecord = isOn('tapeRecord');
 
     const orient = createOrientationTracker({ gravityZero: flagGravityZero });
     const mapper = createPanArrayMapper({
@@ -595,6 +652,31 @@
       panKalman: flagPanKalman,
       allocCleanup: flagAllocCleanup,
     });
+    // A10 (`slideMap`): close-range 8-12 in slide mapper paired with W13 optical flow
+    let slideModeActive = flagSlideMap;
+    let slideMapper = createSlideWallMapper({
+      cols: mapper.cfg.cols,
+      rows: mapper.cfg.rows,
+      toteOrientation: mapper.cfg.toteOrientation,
+      labelLenIn: mapper.cfg.labelLenIn,
+      distanceIn: 10,
+      startCorner: 'top-left',
+    });
+    let lastSlideFrameMs = 0;
+
+    // A6 (`autoZeroFromLabel`): state machine + undo snapshot
+    const autoZero = createAutoZeroStateMachine({
+      expectedScanDeg: mapper.cfg.labelOrientation === 'picket' ? 0 : 90,
+      labelLenIn: mapper.cfg.labelLenIn,
+    });
+    let zeroUndoSnap = null;
+    let standMode = flagGravityZero ? 'in-front' : 'centre';
+    const recentRemapObs = [];
+
+    // GR3 (`tapeRecord`): live .dbct frame + sensor tape recorder
+    const tapeRecorder = flagTapeRecord ? createTapeRecorder({ maxFrames: 180, everyNth: 1, meta: { page: 'array' } }) : null;
+    let tapeRecording = false;
+
     // Sync B6 config inputs with active mapper config
     selToteOrient.value = mapper.cfg.toteOrientation;
     selLabelOrient.value = mapper.cfg.labelOrientation;
@@ -607,6 +689,18 @@
     }
     if (flagFastShutter || flagRowGuide) btnShutter.hidden = false;
     if (flagArrayDim) btnDim.hidden = false;
+    if (flagSlideMap) {
+      btnModeSlide.hidden = false;
+      btnModeSlide.classList.add('active');
+      btnModeSlide.textContent = 'Mode: Slide 8-12″';
+    }
+    if (flagAutoZero) btnAutoZero.hidden = false;
+    if (flagGravityZero) {
+      btnStandMode.hidden = false;
+      btnStandMode.textContent = 'Stand: In-Front';
+    }
+    if (flagFullBleed) btnFullBleed.hidden = false;
+    if (flagTapeRecord) btnTape.hidden = false;
     let arrayOverlayLevel = 'normal'; // 'normal' | 'dim' | 'min' (B3)
     let fastShutterOn = false;
     if (flagCamAlign) {
@@ -711,13 +805,18 @@
       });
     }
 
+    function activeMapper() {
+      return slideModeActive ? slideMapper : mapper;
+    }
+
     function updateSummaryUi() {
-      const s = mapper.getSummary();
+      const m = activeMapper();
+      const s = m.getSummary();
       mCells.textContent = `${s.readCount} / ${s.total}`;
-      mCells.className = `metric-val ${s.complete ? 'good' : (s.conflictCount > 0 ? 'warn' : 'accent')}`;
+      mCells.className = `metric-val ${s.complete ? 'good' : (s.conflictCount > 0 || s.missingCount > 0 ? 'warn' : 'accent')}`;
       btnCopyCsv.disabled = s.readCount === 0 && s.conflictCount === 0;
 
-      const unp = mapper.getUnplaced();
+      const unp = m.getUnplaced();
       if (unp.length > 0) {
         unplacedBox.hidden = false;
         unplacedBox.textContent = `Unplaced reads (${unp.length}): ` + unp.slice(-4).map((u) => u.payload).join(', ');
@@ -731,8 +830,48 @@
       const msg = ev.data;
       if (!msg || msg.type !== 'result') return;
       app.workerBusy = false;
-      if (msg.buffer && msg.buffer.byteLength === app.frameW * app.frameH) {
-        app.recycledBuffer = msg.buffer;
+      if (msg.buffer) {
+        const retView = new Uint8Array(msg.buffer);
+        // GR3 (`tapeRecord`): capture raw Y-plane + live quaternion/gyro snapshot
+        if (tapeRecorder && tapeRecording) {
+          const stNow = orient.getStatus();
+          const qNow = orient.getRelativeQuaternion();
+          const detPayloads = Array.isArray(msg.detections) && msg.detections.length > 0
+            ? msg.detections.map((d) => d.payload).filter(Boolean)
+            : (msg.payload ? [msg.payload] : []);
+          tapeRecorder.pushFrame({
+            frameId: msg.frameId || 0,
+            tFrameMs: msg.tFrameMs || performance.now(),
+            width: msg.frameW || app.frameW,
+            height: msg.frameH || app.frameH,
+            cropX: msg.cropX || 0,
+            cropY: msg.cropY || 0,
+            luma: retView,
+            expectedPayloads: detPayloads,
+            sensorSample: {
+              q: [qNow[0], qNow[1], qNow[2], qNow[3]],
+              wPanDps: stNow.wPanDps,
+              wPitchDps: stNow.wPitchDps,
+              source: stNow.source,
+            },
+          });
+          btnTape.textContent = `Save .dbct (${tapeRecorder.getStats().frameCount})`;
+        }
+        if (msg.buffer.byteLength === app.frameW * app.frameH) {
+          app.recycledBuffer = msg.buffer;
+        }
+      }
+      // C7 (`predictCrop`): back-project cropped detection coordinates into full-frame pixel space
+      const cX = msg.cropX | 0;
+      const cY = msg.cropY | 0;
+      if (cX !== 0 || cY !== 0) {
+        msg.roiX = (msg.roiX || 0) + cX;
+        msg.roiY = (msg.roiY || 0) + cY;
+        msg.roiCenterX = (msg.roiCenterX || 0) + cX;
+        msg.roiCenterY = (msg.roiCenterY || 0) + cY;
+        if (Array.isArray(msg.detections)) {
+          msg.detections = msg.detections.map((d) => offsetDetectionByCrop(d, cX, cY));
+        }
       }
       app.lastResult = msg;
       mWorker.textContent = `${msg.tTotalMs.toFixed(1)} ms`;
@@ -744,6 +883,23 @@
 
       // Interpolate orientation quaternion at (tFrameMs - camSensorOffsetMs)
       orient.getQuaternionAt(tFrameMs - mapper.cfg.camSensorOffsetMs, qFrame);
+      const stCur = orient.getStatus();
+
+      // A10 (`slideMap`): integrate W13 optical flow + gyro de-rotation every frame
+      if (slideModeActive) {
+        const dtMs = lastSlideFrameMs > 0 ? Math.max(8, Math.min(250, tFrameMs - lastSlideFrameMs)) : 33;
+        lastSlideFrameMs = tFrameMs;
+        slideMapper.stepMotion({
+          dtMs,
+          flowDx: msg.flowDx || 0,
+          flowDy: msg.flowDy || 0,
+          flowConf: msg.flowConf || 0,
+          gyroRadX: (stCur.wPitchDps || 0) * (Math.PI / 180),
+          gyroRadY: (stCur.wPanDps || 0) * (Math.PI / 180),
+          frameW: app.frameW,
+          frameH: app.frameH,
+        });
+      }
 
       const dets = Array.isArray(msg.detections) && msg.detections.length > 0
         ? msg.detections
@@ -752,6 +908,53 @@
       let gotNewCell = false;
       for (const d of dets) {
         if (!d.payload) continue;
+
+        // A6 (`autoZeroFromLabel`): evaluate square centred label when armed
+        if (flagAutoZero && autoZero.isArmed()) {
+          const setup = orient.getSetupInfo();
+          const az = autoZero.evaluate({
+            payload: d.payload,
+            cx: d.roiCenterX,
+            cy: d.roiCenterY,
+            lenPx: d.roiMajorLen,
+            thetaDeg: d.thetaDeg,
+            frameW: app.frameW,
+            frameH: app.frameH,
+            focalLengthPx: mapper.getFocalLengthPx(app.frameW, app.frameH),
+            currentDistanceIn: mapper.stance.d,
+            wTotalDps: stCur.wTotalDps || 0,
+            rollDeg: setup.rollDeg || 0,
+          });
+          if (az.triggered) {
+            zeroUndoSnap = { px: mapper.stance.px, py: mapper.stance.py, d: mapper.stance.d, startCorner: app.startCorner };
+            mapper.stance.d = az.estimatedDistanceIn;
+            applyZeroAtCorner(app.startCorner);
+            btnAutoZero.classList.remove('active');
+            btnAutoZero.textContent = 'Auto Zero';
+            btnUndoZero.hidden = false;
+            setBanner(`Zeroed on ${az.payload} (auto, D≈${az.estimatedDistanceIn}″)`, 'active', 'good');
+            showToast(`Auto-zeroed on ${az.payload} (tap Undo Zero if off)`);
+          }
+        }
+
+        if (slideModeActive) {
+          const prevRead = slideMapper.getSummary().readCount;
+          const res = slideMapper.addDetection({
+            payload: d.payload,
+            cx: d.roiCenterX,
+            cy: d.roiCenterY,
+            lenPx: d.roiMajorLen,
+            frameW: app.frameW,
+            frameH: app.frameH,
+            prefixOk: d.prefixOk,
+            tFrameMs,
+          });
+          if (res.placed && slideMapper.getSummary().readCount > prevRead) {
+            gotNewCell = true;
+          }
+          continue;
+        }
+
         mapper.getCellStateSnapshot(cellStateSnap);
         const res = mapper.addObservation(
           {
@@ -770,10 +973,28 @@
         if (res.placed && cellStateSnap[res.cell.index] === 0) {
           gotNewCell = true;
         }
+        // A7 (`axisRemapAuto`): collect recent confident rays to auto-recover axis sign flips if mis-zeroed
+        if (flagAxisRemapAuto && res.proj && res.proj.ok) {
+          recentRemapObs.push({ rx: (res.proj.wx - mapper.stance.px) / Math.max(4, mapper.stance.d), ry: (res.proj.wy - mapper.stance.py) / Math.max(4, mapper.stance.d), wz: res.proj.wzIn });
+          if (recentRemapObs.length > 8) recentRemapObs.shift();
+          if (mapper.stance.stanceWarning && recentRemapObs.length >= 3) {
+            const sol = solveAxisRemap(recentRemapObs, {
+              dIn: mapper.stance.d,
+              pitchXIn: mapper.cfg.pitchXIn,
+              pitchYIn: mapper.cfg.pitchYIn,
+              currentRemapId: mapper.cfg.axisRemapId || 0,
+            });
+            if (sol.improved) {
+              mapper.updateConfig({ axisRemapId: sol.bestId });
+              mapper.stance.stanceWarning = false;
+              showToast(`Auto-fixed sensor axis remap (${sol.bestName})`);
+            }
+          }
+        }
       }
 
       if (gotNewCell) {
-        const summary = mapper.getSummary();
+        const summary = activeMapper().getSummary();
         beep(summary.complete ? 1560 : 1120, summary.complete ? 0.14 : 0.06);
         if (navigator.vibrate) navigator.vibrate(summary.complete ? [30, 40, 60] : 22);
       }
@@ -915,20 +1136,27 @@
       // Save coordinate transform for tap-to-anchor hit testing
       arrayCanvas._geom = { scale, originX, originY };
 
-      const cells = mapper.getCells();
+      const cells = slideModeActive ? slideMapper.getCells() : mapper.getCells();
+      const slideCenterX = (cols - 1) * 0.5 * mapper.cfg.pitchXIn;
+      const slideCenterY = -((rows - 1) * 0.5 * mapper.cfg.pitchYIn);
       for (const c of cells) {
-        const x0 = toX(c.cx - mapper.cfg.pitchXIn * 0.5);
-        const y0 = toY(c.cy + mapper.cfg.pitchYIn * 0.5);
+        const wxCell = slideModeActive ? (c.cx - slideCenterX) : c.cx;
+        const wyCell = slideModeActive ? (c.cy - slideCenterY) : c.cy;
+        const x0 = toX(wxCell - mapper.cfg.pitchXIn * 0.5);
+        const y0 = toY(wyCell + mapper.cfg.pitchYIn * 0.5);
         const tw = mapper.cfg.pitchXIn * scale;
         const th = mapper.cfg.pitchYIn * scale;
 
-        const isAimed = footprint.targetCell && footprint.targetCell.index === c.index;
+        const isAimed = !slideModeActive && footprint.targetCell && footprint.targetCell.index === c.index;
         let fill = '#131d31';
         let stroke = 'rgba(148, 163, 184, 0.30)';
         if (c.state === 'READ') {
           fill = 'rgba(22, 163, 74, 0.28)';
           stroke = '#22c55e';
         } else if (c.state === 'CONFLICT') {
+          fill = 'rgba(239, 68, 68, 0.28)';
+          stroke = '#ef4444';
+        } else if (c.state === 'LOW_CONF' || c.state === 'MISSING') {
           fill = 'rgba(245, 158, 11, 0.28)';
           stroke = '#f59e0b';
         }
@@ -1023,7 +1251,31 @@
       app.workerBusy = true;
       const w = app.frameW;
       const h = app.frameH;
-      const outLuma = new Uint8Array(app.recycledBuffer);
+      let sendW = w;
+      let sendH = h;
+      let cropX = 0;
+      let cropY = 0;
+      let cropRect = null;
+
+      // C7 (`predictCrop`): crop predicted next cell from high-res/4K frame when prediction is fresh & in-frame
+      if (flagPredictCrop && !slideModeActive && Math.max(w, h) >= 1920) {
+        const qNow = orient.getRelativeQuaternion();
+        const fp = mapper.getCameraFootprint(qNow, w, h);
+        if (fp.targetCell) {
+          const pred = mapper.predictLabelPixel(qNow, fp.targetCell.row, fp.targetCell.col, w, h);
+          const cropSol = computePredictedLabelCrop(pred, w, h, { quatAgeMs: 20 });
+          if (!cropSol.fallback && cropSol.rect) {
+            cropRect = cropSol.rect;
+            cropX = cropRect.x;
+            cropY = cropRect.y;
+            sendW = cropRect.width;
+            sendH = cropRect.height;
+          }
+        }
+      }
+
+      const sendBuf = cropRect ? new ArrayBuffer(sendW * sendH) : app.recycledBuffer;
+      const outLuma = new Uint8Array(sendBuf);
       const t0 = performance.now();
       let copied = false;
 
@@ -1034,52 +1286,71 @@
           if (!vf.format || !YUV_Y_FIRST_FORMATS.has(vf.format)) {
             app.useWebCodecs = false;
           } else {
-            const allocSize = vf.allocationSize();
+            const copyOpts = cropRect ? { rect: cropRect } : undefined;
+            const allocSize = copyOpts ? vf.allocationSize(copyOpts) : vf.allocationSize();
             if (!app.webcodecsBuf || app.webcodecsBuf.byteLength < allocSize) {
               app.webcodecsBuf = new Uint8Array(allocSize);
             }
-            const layouts = await vf.copyTo(app.webcodecsBuf);
+            const layouts = copyOpts ? await vf.copyTo(app.webcodecsBuf, copyOpts) : await vf.copyTo(app.webcodecsBuf);
             const stride = layouts[0].stride;
             const off = layouts[0].offset;
-            if (stride === w && off === 0) {
-              outLuma.set(app.webcodecsBuf.subarray(0, w * h));
+            if (stride === sendW && off === 0) {
+              outLuma.set(app.webcodecsBuf.subarray(0, sendW * sendH));
             } else {
-              for (let y = 0; y < h; y++) {
+              for (let y = 0; y < sendH; y++) {
                 const srcOff = off + y * stride;
-                outLuma.set(app.webcodecsBuf.subarray(srcOff, srcOff + w), y * w);
+                outLuma.set(app.webcodecsBuf.subarray(srcOff, srcOff + sendW), y * sendW);
               }
             }
             copied = true;
           }
         } catch {
-          app.useWebCodecs = false;
+          if (cropRect) {
+            // Fall back cleanly to full-frame Canvas if rect copyTo rejected
+            cropRect = null;
+            cropX = 0;
+            cropY = 0;
+            sendW = w;
+            sendH = h;
+          } else {
+            app.useWebCodecs = false;
+          }
         } finally {
           if (vf) vf.close();
         }
       }
 
       if (!copied) {
-        app.fallbackCtx.drawImage(videoEl, 0, 0, w, h);
-        const rgba = app.fallbackCtx.getImageData(0, 0, w, h).data;
-        for (let i = 0, j = 0; i < outLuma.length; i++, j += 4) {
-          outLuma[i] = (77 * rgba[j] + 150 * rgba[j + 1] + 29 * rgba[j + 2]) >> 8;
+        if (cropRect) {
+          app.fallbackCtx.drawImage(videoEl, cropX, cropY, sendW, sendH, 0, 0, sendW, sendH);
+        } else {
+          app.fallbackCtx.drawImage(videoEl, 0, 0, w, h);
+        }
+        const rgba = app.fallbackCtx.getImageData(0, 0, sendW, sendH).data;
+        const dstFallback = cropRect ? outLuma : new Uint8Array(app.recycledBuffer);
+        for (let i = 0, j = 0; i < sendW * sendH; i++, j += 4) {
+          dstFallback[i] = (77 * rgba[j] + 150 * rgba[j + 1] + 29 * rgba[j + 2]) >> 8;
         }
       }
 
       const tCaptureMs = performance.now() - t0;
-      const buf = app.recycledBuffer;
-      app.recycledBuffer = null;
+      const buf = cropRect ? sendBuf : app.recycledBuffer;
+      if (!cropRect) app.recycledBuffer = null;
       app.frameId++;
       pendingFrameTimes.set(app.frameId, tFrameMs);
+      let workerMask = toWorkerMask();
+      if (slideModeActive) workerMask |= WORKER_FLAG_BITS.flowOn;
       worker.postMessage(
         {
           type: 'frame',
           frameId: app.frameId,
           tFrameMs,
-          flags: toWorkerMask(),
+          flags: workerMask,
           vertical: isOn('verticalMode') ? 1 : 0,
-          width: w,
-          height: h,
+          cropX,
+          cropY,
+          width: sendW,
+          height: sendH,
           byteOffset: 0,
           tCaptureMs,
           multi: true,
@@ -1128,13 +1399,20 @@
       mRate.textContent = `${absPan.toFixed(0)} °/s`;
       mRate.className = `metric-val ${absPan > 40 ? 'warn' : ''}`;
 
-      mSensor.textContent = st.active ? `${st.source === 'RelativeOrientationSensor' ? 'RelOrient' : st.source} ${st.measuredHz.toFixed(0)}Hz` : st.source;
-      mDist.textContent = `${Math.round(mapper.stance.d)}″ · ${app.zoom.toFixed(1)}×`;
-
-      if (footprint.targetCell) {
-        aimCellLabel.textContent = `Aim: ${footprint.targetCell.id} (${footprint.center.wx.toFixed(1)}″, ${footprint.center.wy.toFixed(1)}″)`;
+      if (slideModeActive) {
+        const ts = slideMapper.getTrackingState();
+        mSensor.textContent = `${ts.trackingState} (${ts.fallbackTier})`;
+        mDist.textContent = `${Math.round(slideMapper.pose.d)}″ · Slide`;
+        aimCellLabel.textContent = `Slide pose: (${slideMapper.pose.x.toFixed(1)}″, ${slideMapper.pose.y.toFixed(1)}″) · ${ts.trackingState}`;
       } else {
-        aimCellLabel.textContent = `Aim: off-grid (${footprint.center.wx.toFixed(1)}″, ${footprint.center.wy.toFixed(1)}″)`;
+        mSensor.textContent = st.active ? `${st.source === 'RelativeOrientationSensor' ? 'RelOrient' : st.source} ${st.measuredHz.toFixed(0)}Hz` : st.source;
+        mDist.textContent = `${Math.round(mapper.stance.d)}″ · ${app.zoom.toFixed(1)}×`;
+
+        if (footprint.targetCell) {
+          aimCellLabel.textContent = `Aim: ${footprint.targetCell.id} (${footprint.center.wx.toFixed(1)}″, ${footprint.center.wy.toFixed(1)}″)`;
+        } else {
+          aimCellLabel.textContent = `Aim: off-grid (${footprint.center.wx.toFixed(1)}″, ${footprint.center.wy.toFixed(1)}″)`;
+        }
       }
 
       if (mapper.stance.stanceWarning && app.running && app.cal2Step === 0) {
@@ -1234,7 +1512,7 @@
       mapper.stance.stanceWarning = false;
 
       if (orient.getStatus().active) {
-        if (flagGravityZero) {
+        if (flagGravityZero && standMode === 'in-front') {
           const setup = orient.getSetupInfo();
           const row = corner === 'center' ? null : 0;
           const col = corner === 'top-left' ? 0 : (corner === 'top-right' ? mapper.cfg.cols - 1 : null);
@@ -1247,6 +1525,10 @@
         app.manualPanDeg = aim.panDeg;
         app.manualTiltDeg = aim.tiltDeg;
         orient.setManualPanTilt(aim.panDeg, aim.tiltDeg, 0);
+      }
+      if (slideModeActive) {
+        const startCol = corner === 'top-right' ? mapper.cfg.cols - 1 : 0;
+        slideMapper.anchorPoseToCell(0, startCol);
       }
 
       const label = getStartCornerName(corner);
@@ -1440,6 +1722,88 @@
       camBanner.style.opacity = arrayOverlayLevel === 'dim' ? '0.35' : (arrayOverlayLevel === 'min' ? '0.15' : '1');
     });
 
+    btnModeSlide.addEventListener('click', () => {
+      slideModeActive = !slideModeActive;
+      btnModeSlide.classList.toggle('active', slideModeActive);
+      btnModeSlide.textContent = slideModeActive ? 'Mode: Slide 8-12″' : 'Mode: Pan';
+      if (slideModeActive) {
+        slideMapper = createSlideWallMapper({
+          cols: mapper.cfg.cols,
+          rows: mapper.cfg.rows,
+          toteOrientation: mapper.cfg.toteOrientation,
+          labelLenIn: mapper.cfg.labelLenIn,
+          distanceIn: 10,
+          startCorner: app.startCorner === 'top-right' ? 'top-right' : 'top-left',
+        });
+        showToast('Slide Mode active (Part 2, 8-12″ standoff + W13 optical flow)');
+      } else {
+        showToast('Pan Mode active (Part 3 stand-back ray-plane)');
+      }
+      updateSummaryUi();
+    });
+
+    btnAutoZero.addEventListener('click', () => {
+      if (autoZero.isArmed()) {
+        autoZero.disarm();
+        btnAutoZero.classList.remove('active');
+        btnAutoZero.textContent = 'Auto Zero';
+        showToast('Auto-zero disarmed.');
+      } else {
+        autoZero.arm();
+        btnAutoZero.classList.add('active');
+        btnAutoZero.textContent = 'Auto Zero (Armed)';
+        setBanner('Hold square & centred on start label for 2 reads…', 'cal', 'warn');
+      }
+    });
+
+    btnUndoZero.addEventListener('click', () => {
+      if (!zeroUndoSnap) return;
+      mapper.stance.px = zeroUndoSnap.px;
+      mapper.stance.py = zeroUndoSnap.py;
+      mapper.stance.d = zeroUndoSnap.d;
+      app.startCorner = zeroUndoSnap.startCorner;
+      zeroUndoSnap = null;
+      btnUndoZero.hidden = true;
+      showToast('Reverted previous auto-zero.');
+    });
+
+    btnStandMode.addEventListener('click', () => {
+      standMode = standMode === 'in-front' ? 'centre' : 'in-front';
+      btnStandMode.textContent = standMode === 'in-front' ? 'Stand: In-Front' : 'Stand: Centre';
+      showToast(standMode === 'in-front' ? 'Stand directly in front of start tote (flat to wall)' : 'Stand at wall centre and aim to corner');
+    });
+
+    btnFullBleed.addEventListener('click', () => {
+      document.body.classList.toggle('full-bleed');
+      btnFullBleed.classList.toggle('active', document.body.classList.contains('full-bleed'));
+    });
+    btnFullBleedExit.addEventListener('click', () => {
+      document.body.classList.remove('full-bleed');
+      arrayCanvas.classList.remove('pip-expanded');
+      btnFullBleed.classList.remove('active');
+    });
+
+    btnTape.addEventListener('click', () => {
+      if (!tapeRecorder) return;
+      if (!tapeRecording) {
+        tapeRecorder.start();
+        tapeRecording = true;
+        btnTape.classList.add('active');
+        btnTape.textContent = 'Save .dbct (0)';
+        showToast('Recording .dbct frame+sensor tape…');
+      } else {
+        tapeRecording = false;
+        tapeRecorder.stop();
+        btnTape.classList.remove('active');
+        const st = tapeRecorder.getStats();
+        if (st.frameCount > 0) {
+          tapeRecorder.triggerDownload(`dbc-array-${Date.now()}.dbct`);
+          showToast(`Saved ${st.frameCount} frames to .dbct`);
+        }
+        btnTape.textContent = 'Rec Tape';
+      }
+    });
+
     let lastZoomApply = 0;
     rngZoom.addEventListener('input', () => {
       const z = Number(rngZoom.value);
@@ -1453,8 +1817,12 @@
       }
     });
 
-    // Tap any cell on the array canvas to anchor current aim to that exact cell!
+    // Tap any cell on the array canvas to anchor current aim (or toggle PiP expand in full-bleed mode)
     arrayCanvas.addEventListener('click', (e) => {
+      if (document.body.classList.contains('full-bleed') && !arrayCanvas.classList.contains('pip-expanded')) {
+        arrayCanvas.classList.add('pip-expanded');
+        return;
+      }
       const geom = arrayCanvas._geom;
       if (!geom) return;
       const rect = arrayCanvas.getBoundingClientRect();
@@ -1465,17 +1833,23 @@
       const col = Math.round(wx / mapper.cfg.pitchXIn + (mapper.cfg.cols - 1) * 0.5);
       const row = Math.round((mapper.cfg.rows - 1) * 0.5 - wy / mapper.cfg.pitchYIn);
       if (col >= 0 && col < mapper.cfg.cols && row >= 0 && row < mapper.cfg.rows) {
-        mapper.anchorAimToCell(orient.getRelativeQuaternion(), row, col, app.frameW, app.frameH);
-        beep(920, 0.04);
-        showToast(`Anchored current aim to R${row + 1}C${col + 1}`);
-        if (app.running && app.cal2Step === 0) {
-          setBanner(`Anchored on R${row + 1}C${col + 1} — tilt & pan across array`, 'active', 'good');
+        if (slideModeActive) {
+          slideMapper.anchorPoseToCell(row, col);
+          beep(920, 0.04);
+          showToast(`Slide pose anchored to R${row + 1}C${col + 1}`);
+        } else {
+          mapper.anchorAimToCell(orient.getRelativeQuaternion(), row, col, app.frameW, app.frameH);
+          beep(920, 0.04);
+          showToast(`Anchored current aim to R${row + 1}C${col + 1}`);
+          if (app.running && app.cal2Step === 0) {
+            setBanner(`Anchored on R${row + 1}C${col + 1} — tilt & pan across array`, 'active', 'good');
+          }
         }
       }
     });
 
     btnCopyCsv.addEventListener('click', async () => {
-      const csv = mapper.exportCsv();
+      const csv = activeMapper().exportCsv();
       try {
         await navigator.clipboard.writeText(csv);
         showToast('Array CSV copied to clipboard.');
@@ -1486,6 +1860,7 @@
 
     btnReset.addEventListener('click', () => {
       mapper.resetAll();
+      slideMapper.reset();
       app.lastResult = null;
       updateSummaryUi();
       showToast('Array cleared.');
