@@ -52,6 +52,26 @@ function parseUaSummary(ua) {
 }
 
 /**
+ * PP3: Resolves the real OS string by preferring `userAgentData.getHighEntropyValues()`
+ * (`platform` + `platformVersion`, e.g. "Android 16.0.0") over Chrome's frozen/reduced UA string
+ * ("Android 10; K"), falling back to the UA string only when high-entropy values are unavailable.
+ */
+export function resolveOsGuess(ua, highEntropy = null) {
+  if (highEntropy && typeof highEntropy === 'object') {
+    const plat = typeof highEntropy.platform === 'string' ? highEntropy.platform.trim() : '';
+    const ver = typeof highEntropy.platformVersion === 'string' ? highEntropy.platformVersion.trim() : '';
+    if (plat && ver) return `${plat} ${ver}`;
+    if (plat && ver === '') {
+      // Fall back to UA only if UA carries a real version; otherwise return platform name
+      const uaParsed = parseUaSummary(ua);
+      if (uaParsed.osGuess !== 'Unknown OS') return uaParsed.osGuess;
+      return plat;
+    }
+  }
+  return parseUaSummary(ua).osGuess;
+}
+
+/**
  * Collects browser, OS, display, secure-context, and supported MediaTrackConstraints metadata.
  */
 export async function probeEnvironment() {
@@ -80,6 +100,7 @@ export async function probeEnvironment() {
       }
     }
   }
+  parsed.osGuess = resolveOsGuess(ua, highEntropy);
 
   const supportedConstraints =
     typeof navigator !== 'undefined' &&
