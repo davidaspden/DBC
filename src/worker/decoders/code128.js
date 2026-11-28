@@ -74,11 +74,24 @@ for (let c = 0; c < 106; c++) {
   CODE128_E_SUMS_Q8[e + 3] = (CODE128_PATTERNS[p + 3] + CODE128_PATTERNS[p + 4]) << 8;
 }
 
+// W3 (flagged `cribMatch`): exact 18-run width table for Code 128B `t` (84), `s` (83), `X` (56)
+// Preceded by Start B (104) = 2,1,1,2,1,4 -> 44 modules total, weighted checksum mod 103 = 7.
+const TSX_CRIB_RUNS_Q8 = new Int16Array([
+  1 << 8, 2 << 8, 4 << 8, 1 << 8, 1 << 8, 2 << 8, // 't' (84)
+  1 << 8, 1 << 8, 4 << 8, 2 << 8, 1 << 8, 2 << 8, // 's' (83)
+  3 << 8, 3 << 8, 1 << 8, 1 << 8, 2 << 8, 1 << 8, // 'X' (56)
+]);
+const FLAG_CRIB_MATCH = 1 << 2;
+
 /**
  * Pre-allocated scratch state for single-scanline Code 128 decoding (all integers).
  */
 export function createCode128State() {
   return {
+    flags: 0,
+    cribMatched: 0,
+    cribModulePxQ8: 0,
+
     workSymbols: new Uint8Array(MAX_CODE128_SYMBOLS),
     workConfsQ10: new Int32Array(MAX_CODE128_SYMBOLS),
 
@@ -309,6 +322,36 @@ function tryDecodeDirection(runWidthsQ8, runIsBar, runCount, dir, state, multiHi
     let prevCharW = startSum;
     let cursor = (i + Math.imul(6, step)) | 0;
     let stopped = 0;
+
+    // W3 (flagged `cribMatch`): match 44-module StartB+'t'+'s'+'X' crib for rock-solid module scale
+    if (
+      (state.flags & FLAG_CRIB_MATCH) !== 0 &&
+      bestStart === CODE128_START_B &&
+      ((step === 1 && cursor + 18 < rc) || (step === -1 && cursor - 18 >= 0))
+    ) {
+      let cribSum = 0;
+      for (let k = 0; k < 18; k++) {
+        cribSum = (cribSum + runWidthsQ8[(cursor + Math.imul(k, step)) | 0]) | 0;
+      }
+      const total44 = (startSum + cribSum) | 0;
+      if (total44 > 256) {
+        const half44 = total44 >> 1;
+        let cribErr = 0;
+        for (let k = 0; k < 18; k++) {
+          const rw = runWidthsQ8[(cursor + Math.imul(k, step)) | 0] | 0;
+          // 44 modules * 256 = 11264
+          const normQ8 = ((Math.imul(rw, 11264) + half44) / total44) | 0;
+          const d = (normQ8 - TSX_CRIB_RUNS_Q8[k]) | 0;
+          cribErr = (cribErr + (d < 0 ? -d : d)) | 0;
+        }
+        if (cribErr < 2200) { // ~0.48 modules avg L1 error across all 18 runs
+          state.cribMatched = 1;
+          state.cribModulePxQ8 = ((total44 + 22) / 44) | 0;
+          // Seed char width from 44-module average (total44 / 4 = 11 modules!)
+          prevCharW = total44 >> 2;
+        }
+      }
+    }
 
     while (symCount < MAX_CODE128_SYMBOLS) {
       const stopEnd = (cursor + Math.imul(6, step)) | 0;

@@ -25,8 +25,15 @@
 import {
   MAX_SCANLINES,
   MAX_SCANLINE_LEN,
+  FLAG_EXTRA_LINES,
+  FLAG_CRIB_MATCH,
+  FLAG_REQUIRE_PREFIX,
+  FLAG_REQUIRE_PREFIX_STRICT,
+  FLAG_ILLUM_NORM,
+  FLAG_SUBPIX_EDGES,
   buildScanlinePlan,
   sampleScanlineLuma,
+  normaliseScanlineLuma,
   extractRunsFromScanline,
   extractRunsLocalMidCrossing,
 } from './scanline.js';
@@ -221,6 +228,9 @@ function tryTierBSoftVoting(cState, result) {
   if (verifyCode128Checksum(votedSymbols, bestLen) === 1) {
     const payloadLen = decodeCode128SymbolsToBytes(votedSymbols, bestLen, cState.votedPayload);
     if (payloadLen > 0) {
+      if ((cState.c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(cState.votedPayload, 0, payloadLen)) {
+        return 0;
+      }
       emitResult(result, cState.votedPayload, payloadLen, votedSymbols, bestLen, bestLenCount);
       return 1;
     }
@@ -303,6 +313,9 @@ function tryTierCProfileAveraging(scanState, cState, result) {
 
       const status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
       if (status === 2) {
+        if ((c128.flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0 && !hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen)) {
+          continue;
+        }
         const votes = recordExactVote(cState, c128.payloadBytes, c128.payloadLen);
         if (votes >= MIN_CONSENSUS_AGREEMENT) {
           cState.lastLineIdx = b;
@@ -317,6 +330,13 @@ function tryTierCProfileAveraging(scanState, cState, result) {
   return 0;
 }
 
+function hasTsXPrefixBytes(bytes, offset, len) {
+  return len >= 3 &&
+    bytes[offset] === 116 &&     // 't'
+    bytes[offset + 1] === 115 && // 's'
+    bytes[offset + 2] === 88;    // 'X'
+}
+
 /**
  * Runs Stages 2–5 with zero heap allocations and zero float-boxing.
  */
@@ -325,25 +345,43 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
   cState.softCount = 0;
   cState.lastLineIdx = 0;
 
-  const lineCount = buildScanlinePlan(width, height, result, hasRoi, scanState, 11);
+  const flags = scanState.flags | 0;
+  const numLines = (flags & FLAG_EXTRA_LINES) !== 0 ? 13 : 11;
+  const useIllum = (flags & FLAG_ILLUM_NORM) !== 0;
+  const useSubpixFirst = (flags & FLAG_SUBPIX_EDGES) !== 0;
+  const useReqPrefix = (flags & FLAG_REQUIRE_PREFIX) !== 0;
+  const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
+
+  const lineCount = buildScanlinePlan(width, height, result, hasRoi, scanState, numLines);
   if (lineCount <= 0) return 0;
 
   const lumaBank = scanState.lumaBank;
   const c128 = cState.c128;
+  c128.flags = flags;
+  c128.cribMatched = 0;
 
   // Tier A: Sample & decode scanlines center-outward with immediate early-exit on consensus >= 2
   for (let i = 0; i < lineCount; i++) {
     const len = sampleScanlineLuma(luma, width, scanState, i);
     const lumaOffset = Math.imul(i, MAX_SCANLINE_LEN);
-    const runCount = extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
-    if (runCount < 25) continue;
+    if (useIllum) {
+      normaliseScanlineLuma(lumaBank, lumaOffset, len, scanState, 24);
+    }
 
-    let status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
+    c128.cribMatched = 0;
+    const runCount = useSubpixFirst
+      ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
+      : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
+    let status = 0;
+    if (runCount >= 25) {
+      status = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount, c128);
+    }
 
-    // If derivative peaks missed (common on live webcam / mobile autofocus softness),
-    // immediately try local adaptive mid-crossing on the same scanline (immune to blur bloat).
+    // Secondary complementary extractor pass
     if (status < 2) {
-      const runCount2 = extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
+      const runCount2 = useSubpixFirst
+        ? extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18)
+        : extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
       if (runCount2 >= 25) {
         const status2 = decodeCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
         if (status2 > status) status = status2;
@@ -351,9 +389,14 @@ export function runScanlineConsensus(luma, width, height, hasRoi, scanState, cSt
     }
 
     if (status === 2) {
+      const isTsx = hasTsXPrefixBytes(c128.payloadBytes, 0, c128.payloadLen);
+      if (useStrictPrefix && !isTsx) continue;
+
       const votes = recordExactVote(cState, c128.payloadBytes, c128.payloadLen);
       storeSoftCandidate(cState);
-      if (votes >= MIN_CONSENSUS_AGREEMENT) {
+      // W4 (`requirePrefix`): tsX + crib match earns fast lock on 1 line; plain labels still require >= 2
+      const neededVotes = (useReqPrefix && isTsx && c128.cribMatched === 1) ? 1 : MIN_CONSENSUS_AGREEMENT;
+      if (votes >= neededVotes) {
         cState.lastLineIdx = i;
         emitResult(result, c128.payloadBytes, c128.payloadLen, c128.symbols, c128.symbolCount, votes);
         return 1;
@@ -473,34 +516,50 @@ export function runScanlineConsensusMulti(luma, width, height, hasRoi, scanState
   cState.softCount = 0;
   cState.lastLineIdx = 0;
 
-  // For tall/merged clusters (e.g. 2–4 stacked cartons sharing one column), cast 11 lines
+  const flags = scanState.flags | 0;
+  const numLines = (flags & FLAG_EXTRA_LINES) !== 0 ? 13 : 11;
+  const useIllum = (flags & FLAG_ILLUM_NORM) !== 0;
+  const useSubpixFirst = (flags & FLAG_SUBPIX_EDGES) !== 0;
+  const useStrictPrefix = (flags & FLAG_REQUIRE_PREFIX_STRICT) !== 0;
+
+  // For tall/merged clusters (e.g. 2–4 stacked cartons sharing one column), cast 11–13 lines
   // and sweep across the full cluster so every stacked barcode reaches >= 2 agreement.
   const isMergedCluster = hasRoi === 1 && result.roiMajorLen > 360.0;
-  const lineCount = buildScanlinePlan(width, height, result, hasRoi, scanState, 11);
+  const lineCount = buildScanlinePlan(width, height, result, hasRoi, scanState, numLines);
   if (lineCount <= 0) return 0;
 
   const lumaBank = scanState.lumaBank;
   const c128 = cState.c128;
+  c128.flags = flags;
 
   for (let i = 0; i < lineCount; i++) {
     const len = sampleScanlineLuma(luma, width, scanState, i);
     const lumaOffset = Math.imul(i, MAX_SCANLINE_LEN);
+    if (useIllum) {
+      normaliseScanlineLuma(lumaBank, lumaOffset, len, scanState, 24);
+    }
 
-    const runCount1 = extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
+    const runCount1 = useSubpixFirst
+      ? extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20)
+      : extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18);
     let hits1 = 0;
     if (runCount1 >= 25) {
       hits1 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount1, c128);
       for (let h = 0; h < hits1; h++) {
+        if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
         recordMultiLineHit(cState, scanState, i, h);
       }
     }
 
-    // Run local adaptive mid-crossing pass if derivative pass missed or on merged multi-carton columns
+    // Run complementary pass if primary missed or on merged multi-carton columns
     if (hits1 === 0 || isMergedCluster) {
-      const runCount2 = extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
+      const runCount2 = useSubpixFirst
+        ? extractRunsFromScanline(lumaBank, lumaOffset, len, scanState, 72, 18)
+        : extractRunsLocalMidCrossing(lumaBank, lumaOffset, len, scanState, 20);
       if (runCount2 >= 25) {
         const hits2 = decodeAllCode128FromRuns(scanState.runWidthsQ8, scanState.runIsBar, runCount2, c128);
         for (let h = 0; h < hits2; h++) {
+          if (useStrictPrefix && !hasTsXPrefixBytes(c128.hitPayloads, Math.imul(h, MAX_CODE128_PAYLOAD), c128.hitPayloadLens[h])) continue;
           recordMultiLineHit(cState, scanState, i, h);
         }
       }

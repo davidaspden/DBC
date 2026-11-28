@@ -28,8 +28,15 @@ export const MAX_SCANLINES = 15;
 export const MAX_SCANLINE_LEN = 2304; // > hypot(1920, 1080) = 2202.9 px
 export const MAX_RUNS = 512;
 
-// Bit 0 of worker flags bitmask (`src/flags.js` WORKER_FLAG_BITS.vertFallback)
+// Worker feature-flag bits (`src/flags.js` WORKER_FLAG_BITS)
 export const FLAG_VERT_FALLBACK = 1 << 0;
+export const FLAG_EXTRA_LINES = 1 << 1;
+export const FLAG_CRIB_MATCH = 1 << 2;
+export const FLAG_REQUIRE_PREFIX = 1 << 3;
+export const FLAG_REQUIRE_PREFIX_STRICT = 1 << 4;
+export const FLAG_ILLUM_NORM = 1 << 6;
+export const FLAG_SUBPIX_EDGES = 1 << 7;
+export const FLAG_VERTICAL_MODE = 1 << 10;
 
 const DEG_TO_RAD = Math.PI / 180;
 
@@ -59,6 +66,9 @@ export function createScanlineState() {
     lumaBank: new Uint8Array(MAX_SCANLINES * MAX_SCANLINE_LEN),
     // Scratch single-line buffer for Tier C denoised composite profiles
     avgLumaBuf: new Uint8Array(MAX_SCANLINE_LEN),
+
+    // Scratch integer prefix-sum buffer for W6 O(N) illumination normalisation (zero allocation)
+    illumPrefix: new Int32Array(MAX_SCANLINE_LEN + 1),
 
     // Stage 3 1D derivative, local envelope, sub-pixel edge positions (Q8) & run widths (Q8)
     deriv: new Int16Array(MAX_SCANLINE_LEN),
@@ -356,6 +366,37 @@ export function sampleScanlineLuma(luma, width, state, lineIdx) {
   }
 
   return len;
+}
+
+/**
+ * W6 (flagged `illumNorm`): O(N) pure-integer running-mean illumination normalisation in-place
+ * on `lumaBuf[offset .. offset+len-1]`. Removes slow shadow gradients and glare ramps without
+ * allocations so bar/space transitions stay centered around luma 128.
+ */
+export function normaliseScanlineLuma(lumaBuf, offset, len, state, halfWin = 24) {
+  const n = len | 0;
+  if (n < 16) return;
+  const pref = state.illumPrefix;
+  const base = offset | 0;
+  pref[0] = 0;
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    acc = (acc + lumaBuf[(base + i) | 0]) | 0;
+    pref[(i + 1) | 0] = acc;
+  }
+  const hw = halfWin | 0;
+  for (let i = 0; i < n; i++) {
+    let lo = (i - hw) | 0;
+    if (lo < 0) lo = 0;
+    let hi = (i + hw + 1) | 0;
+    if (hi > n) hi = n;
+    const span = (hi - lo) | 0;
+    const mean = ((pref[hi] - pref[lo]) / span) | 0;
+    let v = (128 + (lumaBuf[(base + i) | 0] - mean)) | 0;
+    if (v < 0) v = 0;
+    else if (v > 255) v = 255;
+    lumaBuf[(base + i) | 0] = v;
+  }
 }
 
 /**

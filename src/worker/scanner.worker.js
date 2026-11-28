@@ -17,6 +17,8 @@ import { createRoiState, estimateRoi, selectRoiCluster, MAX_ROI_CLUSTERS } from 
 import {
   createScanlineState,
   MAX_SCANLINE_LEN,
+  FLAG_VERT_FALLBACK,
+  FLAG_VERTICAL_MODE,
   buildScanlinePlan,
   sampleScanlineLuma,
   extractRunsFromScanline,
@@ -268,7 +270,59 @@ function collectMultiConsensusSlots(state, result, width, height) {
 export function processFrameMulti(luma, width, height, state, result, measureStages = false) {
   const t0 = measureStages ? performance.now() : 0;
   state.detCount = 0;
-  state.scanline.flags = state.flags | 0;
+  const activeFlags = state.flags | 0;
+  state.scanline.flags = activeFlags;
+
+  // W10 (flagged `verticalMode`): try 11-line vertical plan BEFORE estimateRoi (skips t_roi on decode!)
+  const useVertFast = (activeFlags & FLAG_VERTICAL_MODE) !== 0 && (state.scanline.mode | 0) === 1;
+  if (useVertFast) {
+    const savedFlags = state.scanline.flags;
+    state.scanline.flags = savedFlags | FLAG_VERT_FALLBACK;
+    result.detected = 0;
+    result.payloadLen = 0;
+    result.symbolCount = 0;
+    result.consensusCount = 0;
+    result.thetaDeg = 90;
+    const fastHits = runScanlineConsensusMulti(
+      luma,
+      width,
+      height,
+      0,
+      state.scanline,
+      state.consensus,
+      result
+    );
+    state.scanline.flags = savedFlags;
+    if (fastHits > 0) {
+      collectMultiConsensusSlots(state, result, width, height);
+      if (state.detCount > 0) {
+        const pLen = state.detPayloadLens[0];
+        for (let k = 0; k < pLen; k++) result.payloadBytes[k] = state.detPayloadBytes[k];
+        const sCount = state.detSymbolCounts[0];
+        for (let k = 0; k < sCount; k++) result.symbolBytes[k] = state.detSymbolBytes[k];
+        result.detected = 1;
+        result.payloadLen = pLen;
+        result.symbolCount = sCount;
+        result.roiX = state.detRoiX[0];
+        result.roiY = state.detRoiY[0];
+        result.roiW = state.detRoiW[0];
+        result.roiH = state.detRoiH[0];
+        result.roiCenterX = state.detCenterX[0];
+        result.roiCenterY = state.detCenterY[0];
+        result.roiMajorLen = state.detMajorLen[0];
+        result.thetaDeg = 90;
+        result.roiConfidence = state.detConfidence[0];
+        result.consensusCount = state.detAgreeCount[0];
+        if (measureStages) {
+          const tEnd = performance.now();
+          result.tRoiMs = 0;
+          result.tDecodeMs = tEnd - t0;
+          result.tTotalMs = tEnd - t0;
+        }
+        return state.detCount;
+      }
+    }
+  }
 
   const hasRoi = estimateRoi(luma, width, height, state.roi, result);
   const t1 = measureStages ? performance.now() : 0;
@@ -277,6 +331,10 @@ export function processFrameMulti(luma, width, height, state, result, measureSta
     const kCount = state.roi.clusterCount | 0;
     for (let c = 0; c < kCount; c++) {
       selectRoiCluster(state.roi, c, result);
+      // W10: in verticalMode, reject non-vertical clusters outside 90 +/- 25 deg
+      if (useVertFast && (result.thetaDeg < 65 || result.thetaDeg > 115)) {
+        continue;
+      }
       result.detected = 0;
       result.payloadLen = 0;
       result.symbolCount = 0;
