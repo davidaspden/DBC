@@ -10,6 +10,12 @@
  *  - Vertical Code 128 barcode centered on each tote: 2 in wide (X) x 6 in tall (Y).
  */
 
+import {
+  LEGACY_PAYLOAD_FN,
+  FC_12_PAYLOAD_FN,
+  computeCode128Modules,
+} from './label.js';
+
 export const TOTE_WIDTH_IN = 14;
 export const TOTE_HEIGHT_IN = 16;
 export const BARCODE_WIDTH_IN = 2;
@@ -23,25 +29,35 @@ const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
 /**
- * Generates the 16 canonical tote definitions (row 0 = top, col 0 = left).
- * Default (`fcMode = false`): 16-char Code 128B (`TOTE-R1C1-000101`, 231 modules, 6 in).
- * FC realism mode (`fcMode = true`): 12-char Code 128B (`tsX11A000101`, 187 modules, 3.5 in).
+ * Generates tote wall cell definitions (row 0 = top, col 0 = left).
+ * Default (`fcMode = false`): 4x4 of 14x16 in totes, 16-char Code 128B (`TOTE-R1C1-000101`, 231 modules, 6 in).
+ * FC realism mode (`fcMode = true`): 12-char Code 128B (`tsX11A00001B`, 187 modules, 3.5 in).
+ * Accepts optional `cols`, `rows`, `pitchXIn`, `pitchYIn`, and `label.payloadFn`.
  */
 export function createWallCells(opts = {}) {
   const fcMode = Boolean(opts && opts.fcMode);
+  const cols = (opts && opts.cols > 0) ? (opts.cols | 0) : GRID_COLS;
+  const rows = (opts && opts.rows > 0) ? (opts.rows | 0) : GRID_ROWS;
+  const pitchXIn = (opts && opts.pitchXIn > 0) ? opts.pitchXIn : TOTE_WIDTH_IN;
+  const pitchYIn = (opts && opts.pitchYIn > 0) ? opts.pitchYIn : TOTE_HEIGHT_IN;
+  const wallWidthIn = pitchXIn * cols;
+  const wallHeightIn = pitchYIn * rows;
+  const payloadFn = (opts && opts.label && typeof opts.label.payloadFn === 'function')
+    ? opts.label.payloadFn
+    : (fcMode ? FC_12_PAYLOAD_FN : LEGACY_PAYLOAD_FN);
+
   const cells = [];
-  for (let r = 0; r < GRID_ROWS; r++) {
-    for (let c = 0; c < GRID_COLS; c++) {
-      const idx = r * GRID_COLS + c;
-      const num = String(idx + 1).padStart(2, '0');
-      const cx = -WALL_WIDTH_IN * 0.5 + (c + 0.5) * TOTE_WIDTH_IN;
-      const cy = WALL_HEIGHT_IN * 0.5 - (r + 0.5) * TOTE_HEIGHT_IN;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      const cx = -wallWidthIn * 0.5 + (c + 0.5) * pitchXIn;
+      const cy = wallHeightIn * 0.5 - (r + 0.5) * pitchYIn;
       cells.push({
         index: idx,
         row: r,
         col: c,
         id: `R${r + 1}C${c + 1}`,
-        payload: fcMode ? `tsX${r + 1}${c + 1}A000${num}B` : `TOTE-R${r + 1}C${c + 1}-00${num}${num}`,
+        payload: payloadFn(r, c, idx),
         cx,
         cy,
       });
@@ -52,7 +68,7 @@ export function createWallCells(opts = {}) {
 
 /**
  * Computes physical field-of-view footprint at `distanceIn` and pixels-per-module (ppm)
- * for a vertical Code 128 barcode of height `labelHeightIn` (default 6 in).
+ * for a Code 128 barcode of parameterised physical dimensions, orientation & payload length.
  *
  * @param {{
  *   distanceIn: number,
@@ -60,7 +76,12 @@ export function createWallCells(opts = {}) {
  *   widthPx: number,
  *   heightPx: number,
  *   totalModules?: number,
- *   labelHeightIn?: number
+ *   labelWidthIn?: number,
+ *   labelHeightIn?: number,
+ *   orientation?: 'ladder' | 'picket',
+ *   payload?: string,
+ *   quietModules?: number,
+ *   label?: { widthIn?: number, heightIn?: number, orientation?: 'ladder' | 'picket', quietModules?: number, payload?: string }
  * }} params
  */
 export function computeOptics({
@@ -68,9 +89,23 @@ export function computeOptics({
   hfovDeg,
   widthPx,
   heightPx,
-  totalModules = 231,
-  labelHeightIn = BARCODE_HEIGHT_IN,
+  totalModules,
+  labelWidthIn,
+  labelHeightIn,
+  orientation,
+  payload,
+  quietModules,
+  label,
 }) {
+  const widthIn = labelWidthIn ?? label?.widthIn ?? BARCODE_WIDTH_IN;
+  const heightIn = labelHeightIn ?? label?.heightIn ?? BARCODE_HEIGHT_IN;
+  const orient = orientation ?? label?.orientation ?? 'ladder';
+  const resolvedQuiet = quietModules ?? label?.quietModules ?? 10;
+  const resolvedPayload = payload ?? label?.payload;
+  const resolvedModules = totalModules !== undefined
+    ? totalModules
+    : (resolvedPayload ? computeCode128Modules(resolvedPayload, resolvedQuiet) : 231);
+
   const aspect = widthPx / heightPx;
   const halfHfovRad = (hfovDeg * 0.5) * DEG2RAD;
   const halfTanH = Math.tan(halfHfovRad);
@@ -80,9 +115,11 @@ export function computeOptics({
   const visibleWidthIn = 2 * distanceIn * halfTanH;
   const visibleHeightIn = 2 * distanceIn * halfTanV;
   const pxPerInch = widthPx / visibleWidthIn;
-  const barcodeHeightPx = labelHeightIn * pxPerInch;
-  const barcodeWidthPx = BARCODE_WIDTH_IN * pxPerInch;
-  const ppm = barcodeHeightPx / totalModules;
+  const barcodeHeightPx = heightIn * pxPerInch;
+  const barcodeWidthPx = widthIn * pxPerInch;
+  const scanLenIn = orient === 'picket' ? widthIn : heightIn;
+  const scanLenPx = scanLenIn * pxPerInch;
+  const ppm = scanLenPx / resolvedModules;
 
   return {
     aspect,
@@ -93,7 +130,10 @@ export function computeOptics({
     pxPerInch,
     barcodeHeightPx,
     barcodeWidthPx,
-    labelHeightIn,
+    labelWidthIn: widthIn,
+    labelHeightIn: heightIn,
+    scanLenIn,
+    totalModules: resolvedModules,
     ppm,
     nyquistOk: ppm >= 2.0,
   };

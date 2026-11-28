@@ -13,7 +13,7 @@
  *    `gl.readPixels` fills a recycled `Uint8Array(width * height)` directly with zero JS loop.
  */
 
-import { encodeCode128 } from '../../tests/harness.js';
+import { encodeCode128B } from './label.js';
 import {
   TOTE_WIDTH_IN,
   TOTE_HEIGHT_IN,
@@ -75,7 +75,10 @@ varying vec3 vWorldPos;
   return `${header}
 uniform sampler2D uBarcodeTex;
 uniform float uTotalModules;
+uniform float uBarcodeWidthIn;
 uniform float uBarcodeHeightIn;
+uniform float uLabelOrientation; // 0 = ladder (horizontal bars), 1 = picket (vertical bars)
+uniform float uPrintGain;
 uniform float uShadowStrength;
 uniform float uNoiseStrength;
 uniform float uGlareStrength;
@@ -88,29 +91,39 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// Analytical 1D sensor-pixel integration of the vertical Code 128 module strip
+// Analytical 1D sensor-pixel integration of the Code 128 module strip
 float sampleBarcodeIntegrated(float cellIdx, float v01, float dvPerPx) {
   float mCenter = v01 * uTotalModules;
   float dm = clamp(dvPerPx * uTotalModules, 0.02, 6.0);
   float m0 = mCenter - 0.5 * dm;
   float m1 = mCenter + 0.5 * dm;
   float texY = (cellIdx + 0.5) / ${MODULE_TEX_H}.0;
+  float halfGainShift = abs(uPrintGain - 1.0) <= 0.001 ? 0.0 : clamp(0.5 * (uPrintGain - 1.0), -0.4, 0.4);
 
   // Integrate exact fractional coverage across every module spanned by [m0, m1]
-  float startIdx = floor(m0);
-  float endIdx = floor(m1);
+  float startIdx = floor(m0) - (halfGainShift > 0.0 ? 1.0 : 0.0);
+  float endIdx = floor(m1) + (halfGainShift > 0.0 ? 1.0 : 0.0);
   float acc = 0.0;
-  for (int step = 0; step < 8; step++) {
+  for (int step = 0; step < 10; step++) {
     float idx = startIdx + float(step);
     if (idx > endIdx) break;
-    float lo = max(m0, idx);
-    float hi = min(m1, idx + 1.0);
-    float overlap = max(0.0, hi - lo);
     float bit = 0.0;
     if (idx >= 0.0 && idx < uTotalModules) {
       bit = TEX2D(uBarcodeTex, vec2((idx + 0.5) / ${MODULE_TEX_W}.0, texY)).r;
     }
-    acc += overlap * bit;
+    if (bit > 0.5) {
+      float barLo = idx;
+      float barHi = idx + 1.0;
+      if (abs(halfGainShift) > 0.0005) {
+        float prevBit = idx > 0.5 ? TEX2D(uBarcodeTex, vec2((idx - 0.5) / ${MODULE_TEX_W}.0, texY)).r : 0.0;
+        float nextBit = idx + 1.0 < uTotalModules ? TEX2D(uBarcodeTex, vec2((idx + 1.5) / ${MODULE_TEX_W}.0, texY)).r : 0.0;
+        if (prevBit < 0.5) barLo -= halfGainShift;
+        if (nextBit < 0.5) barHi += halfGainShift;
+      }
+      float lo = max(m0, barLo);
+      float hi = min(m1, barHi);
+      acc += max(0.0, hi - lo);
+    }
   }
   return clamp(acc / dm, 0.0, 1.0);
 }
@@ -172,21 +185,24 @@ void main() {
   vec3 albedo = toteBase;
   float isLabel = 0.0;
 
-  // Centered vertical barcode label: 2.0 in wide x uBarcodeHeightIn tall (default 6.0 in; 3.5 in in FC presets)
-  float halfBW = ${BARCODE_WIDTH_IN * 0.5}.0;
+  // Centered barcode label: uBarcodeWidthIn wide x uBarcodeHeightIn tall (default 2 x 6 in; 2 x 3.5 in FC)
+  float halfBW = uBarcodeWidthIn * 0.5;
   float halfBH = uBarcodeHeightIn * 0.5;
 
   if (abs(lx) <= halfBW && abs(ly) <= halfBH) {
     isLabel = 1.0;
-    // White thermal label stock (reflectance ~0.92)
+    // White thermal label stock (reflectance ~0.93)
     float paper = 0.93;
     float ink = 0.06;
 
-    // 0.12 in crisp white side margin on left/right of the 2 in label
-    float barHalfW = halfBW - 0.12;
-    if (abs(lx) <= barHalfW) {
-      // Top-to-bottom along the vertical barcode: v01 in [0, 1]
-      float v01 = (halfBH - ly) / uBarcodeHeightIn;
+    // 0.12 in crisp white side margin along the bar edges
+    bool inBars = (uLabelOrientation < 0.5)
+      ? (abs(lx) <= max(0.05, halfBW - 0.12))
+      : (abs(ly) <= max(0.05, halfBH - 0.12));
+    if (inBars) {
+      float v01 = (uLabelOrientation < 0.5)
+        ? ((halfBH - ly) / uBarcodeHeightIn)
+        : ((lx + halfBW) / uBarcodeWidthIn);
       float dv = length(vec2(dFdx(v01), dFdy(v01)));
       float barCov = sampleBarcodeIntegrated(cellIdx, v01, dv);
       float lum = mix(paper, ink, barCov);
@@ -347,10 +363,11 @@ export function createWebGLWallRenderer(canvas, cells) {
   const barcodeTex = gl.createTexture();
   let totalModules = 0;
 
-  function uploadCellsTexture(cellList) {
+  function uploadCellsTexture(cellList, opts = {}) {
+    const quietModules = Number.isFinite(opts.quietModules) ? opts.quietModules : 10;
     const texData = new Uint8Array(MODULE_TEX_W * MODULE_TEX_H * 4);
     for (let i = 0; i < cellList.length && i < MODULE_TEX_H; i++) {
-      const enc = encodeCode128(cellList[i].payload, { subset: 'B', quietZoneModules: 10 });
+      const enc = encodeCode128B(cellList[i].payload, quietModules);
       totalModules = enc.totalModules;
       if (enc.totalModules > MODULE_TEX_W) {
         throw new Error(`Barcode ${cellList[i].payload} has ${enc.totalModules} modules (> ${MODULE_TEX_W})`);
@@ -425,7 +442,10 @@ void main() {
     uMvp: gl.getUniformLocation(wallProg, 'uMvp'),
     uBarcodeTex: gl.getUniformLocation(wallProg, 'uBarcodeTex'),
     uTotalModules: gl.getUniformLocation(wallProg, 'uTotalModules'),
+    uBarcodeWidthIn: gl.getUniformLocation(wallProg, 'uBarcodeWidthIn'),
     uBarcodeHeightIn: gl.getUniformLocation(wallProg, 'uBarcodeHeightIn'),
+    uLabelOrientation: gl.getUniformLocation(wallProg, 'uLabelOrientation'),
+    uPrintGain: gl.getUniformLocation(wallProg, 'uPrintGain'),
     uShadowStrength: gl.getUniformLocation(wallProg, 'uShadowStrength'),
     uNoiseStrength: gl.getUniformLocation(wallProg, 'uNoiseStrength'),
     uGlareStrength: gl.getUniformLocation(wallProg, 'uGlareStrength'),
@@ -494,7 +514,10 @@ void main() {
     gl.uniform1i(wallLoc.uBarcodeTex, 0);
     gl.uniformMatrix4fv(wallLoc.uMvp, false, mvpMat);
     gl.uniform1f(wallLoc.uTotalModules, totalModules);
+    gl.uniform1f(wallLoc.uBarcodeWidthIn, opts.labelWidthIn ?? BARCODE_WIDTH_IN);
     gl.uniform1f(wallLoc.uBarcodeHeightIn, opts.labelHeightIn ?? BARCODE_HEIGHT_IN);
+    gl.uniform1f(wallLoc.uLabelOrientation, opts.labelOrientation === 'picket' ? 1.0 : 0.0);
+    gl.uniform1f(wallLoc.uPrintGain, opts.printGain ?? 1.0);
     gl.uniform1f(wallLoc.uShadowStrength, opts.shadowStrength ?? 0.35);
     gl.uniform1f(wallLoc.uNoiseStrength, opts.noiseStrength ?? 0.015);
     gl.uniform1f(wallLoc.uGlareStrength, opts.glareStrength ?? 0.15);
