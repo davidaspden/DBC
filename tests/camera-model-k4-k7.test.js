@@ -35,6 +35,17 @@ import {
   applyCompression,
 } from '../src/sim/camera-model/compress.js';
 import {
+  DEFAULT_GLARE_CONFIG,
+  computeTorchLuxBoost,
+  predictSpecHotspotPixel,
+  createGlareState,
+  applyGlareModel,
+} from '../src/sim/camera-model/glare.js';
+import {
+  createExposureState,
+  stepExposure,
+} from '../src/sim/camera-model/exposure.js';
+import {
   createPipelineState,
   createPipelineResult,
   processFrameMulti,
@@ -443,6 +454,158 @@ test('K6: zero-allocation hot loop in applyCompression', () => {
     globalThis.gc();
     const bpf = Math.max(0, (process.memoryUsage().heapUsed - h0) / iters);
     assert.ok(bpf < 128, `K6 hot-loop heap growth too high: ${bpf.toFixed(1)} B/frame`);
+  }
+});
+
+// ============================================================================
+// K7 — Moving Specular Glare & Co-Located Camera Torch
+// ============================================================================
+
+test('K7: specular hotspot centers at predicted specular direction and moves with pose', () => {
+  assert.equal(DEFAULT_GLARE_CONFIG.enabled, false);
+  const w = 320;
+  const h = 180;
+  const hfovDeg = 70.7;
+  const base = new Uint8Array(w * h).fill(60);
+  const out = new Uint8Array(w * h);
+
+  const st = createGlareState({
+    enabled: true,
+    torchEnabled: true,
+    torchIntensity: 0.6,
+    roomGlareEnabled: false,
+    gloss: 0.9,
+    specExponent: 40,
+  });
+
+  // Check two poses: head-on and yawed/pitched so hotspot moves off center
+  const poses = [
+    { x: 0, y: 0, z: 12, yawDeg: 0, pitchDeg: 0, rollDeg: 0 },
+    { x: 0, y: 0, z: 12, yawDeg: 14, pitchDeg: -8, rollDeg: 0 },
+  ];
+  const pred = new Float64Array(3);
+  const peakPositions = [];
+
+  for (const pose of poses) {
+    applyGlareModel(base, w, h, pose, hfovDeg, st, out);
+    predictSpecHotspotPixel(pose, w, h, hfovDeg, null, pred, st);
+    assert.equal(pred[2], 0, 'predicted hotspot should be in front of camera');
+
+    // Find brightest pixel centroid (all pixels >= max - 2)
+    let maxV = 0;
+    for (let i = 0; i < out.length; i++) if (out[i] > maxV) maxV = out[i];
+    let sumX = 0, sumY = 0, cnt = 0;
+    for (let y = 0; y < h; y++) {
+      const off = y * w;
+      for (let x = 0; x < w; x++) {
+        if (out[off + x] >= maxV - 2) {
+          sumX += x;
+          sumY += y;
+          cnt++;
+        }
+      }
+    }
+    const peakX = sumX / cnt;
+    const peakY = sumY / cnt;
+    const distPx = Math.hypot(peakX - pred[0], peakY - pred[1]);
+    assert.ok(distPx <= 4.0,
+      `hotspot centroid (${peakX.toFixed(1)}, ${peakY.toFixed(1)}) too far from predicted (${pred[0].toFixed(1)}, ${pred[1].toFixed(1)}), err=${distPx.toFixed(1)} px`);
+    peakPositions.push({ x: peakX, y: peakY });
+  }
+
+  // Verify hotspot actually moved when pose rotated
+  const shift = Math.hypot(peakPositions[1].x - peakPositions[0].x, peakPositions[1].y - peakPositions[0].y);
+  assert.ok(shift > 25, `expected hotspot to move > 25 px on yaw/pitch, moved ${shift.toFixed(1)} px`);
+});
+
+test('K7: label contrast drops inside hotspot, torch boosts AE, and off is exact no-op', () => {
+  const scene = createScene({
+    fcMode: true,
+    shadowStrength: 0,
+    noiseStrength: 0,
+    glareStrength: 0,
+    label: { widthIn: 2.0, heightIn: 3.5, orientation: 'ladder', payloadFn: () => 'tsX07wz7py1' },
+  });
+  const cell = scene.cells[5];
+  const w = 320;
+  const h = 180;
+  const hfovDeg = 70.7;
+  const pose = { x: cell.cx, y: cell.cy, z: 10, yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+
+  const clean = new Uint8Array(w * h);
+  renderFrame(scene, pose, { width: w, height: h, hfovDeg, seed: 1 }, clean);
+
+  const glared = new Uint8Array(w * h);
+  const stGlare = createGlareState({
+    enabled: true,
+    torchEnabled: true,
+    torchIntensity: 0.95,
+    roomGlareEnabled: false,
+    gloss: 0.9,
+    specExponent: 32,
+  });
+  applyGlareModel(clean, w, h, pose, hfovDeg, stGlare, glared);
+
+  // Measure contrast (max - min) in central 20x20 patch over the barcode bars
+  function patchContrast(buf) {
+    let lo = 255, hi = 0;
+    const cx = w >> 1;
+    const cy = h >> 1;
+    for (let y = cy - 10; y <= cy + 10; y++) {
+      for (let x = cx - 10; x <= cx + 10; x++) {
+        const v = buf[y * w + x];
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+    return hi - lo;
+  }
+
+  const cClean = patchContrast(clean);
+  const cGlare = patchContrast(glared);
+  assert.ok(cClean > 120, `expected strong clean bar contrast > 120, got ${cClean}`);
+  assert.ok(cGlare < cClean * 0.4,
+    `expected hotspot to wash out bar contrast: clean=${cClean}, glared=${cGlare}`);
+
+  // Torch illumination boost feeds K2 AE and drives exposure down
+  const boostOn = computeTorchLuxBoost(12, stGlare);
+  const boostOff = computeTorchLuxBoost(12, { enabled: false, torchEnabled: true });
+  assert.ok(boostOn > 500, `expected torch lux boost > 500, got ${boostOn}`);
+  assert.equal(boostOff, 0);
+
+  const expNoTorch = createExposureState({ enabled: true, lux: 'low', convergenceTauSec: 0.3 });
+  const expTorch = createExposureState({ enabled: true, lux: 'low', convergenceTauSec: 0.3 });
+  for (let i = 0; i < 60; i++) {
+    stepExposure(expNoTorch, 0.05, 0);
+    stepExposure(expTorch, 0.05, boostOn);
+  }
+  assert.ok(expNoTorch.outExposure.exposureTimeMs > 95, 'low light without torch should approach 100 ms');
+  assert.ok(expTorch.outExposure.exposureTimeMs < 20,
+    `torch boost should drive AE exposure down < 20 ms, got ${expTorch.outExposure.exposureTimeMs.toFixed(2)} ms`);
+
+  // Exact no-op when glare disabled or both sources disabled
+  const stOff = createGlareState({ enabled: false, torchEnabled: true });
+  const outOff = new Uint8Array(w * h);
+  applyGlareModel(clean, w, h, pose, hfovDeg, stOff, outOff);
+  assert.deepEqual(outOff, clean);
+});
+
+test('K7: zero-allocation hot loop in applyGlareModel', () => {
+  const w = 160;
+  const h = 90;
+  const src = new Uint8Array(w * h).fill(80);
+  const out = new Uint8Array(w * h);
+  const pose = { x: 0, y: 0, z: 12, yawDeg: 5, pitchDeg: -3, rollDeg: 0 };
+  const st = createGlareState({ enabled: true, torchEnabled: true, roomGlareEnabled: true });
+  for (let i = 0; i < 20; i++) applyGlareModel(src, w, h, pose, 70.7, st, out);
+  if (typeof globalThis.gc === 'function') {
+    globalThis.gc();
+    const h0 = process.memoryUsage().heapUsed;
+    const iters = 50;
+    for (let i = 0; i < iters; i++) applyGlareModel(src, w, h, pose, 70.7, st, out);
+    globalThis.gc();
+    const bpf = Math.max(0, (process.memoryUsage().heapUsed - h0) / iters);
+    assert.ok(bpf < 128, `K7 hot-loop heap growth too high: ${bpf.toFixed(1)} B/frame`);
   }
 });
 
